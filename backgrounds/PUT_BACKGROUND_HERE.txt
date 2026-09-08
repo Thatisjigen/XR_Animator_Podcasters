@@ -1,0 +1,8 @@
+Metti qui il tuo sfondo, per esempio:
+  backgrounds/podcast.png
+
+Poi nel pannello Background di XR Animator imposta:
+  Mode: Image
+  Image path: backgrounds/podcast.png
+
+Il percorso viene salvato in xra_profile.json.
