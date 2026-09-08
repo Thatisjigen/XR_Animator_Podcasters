@@ -1,0 +1,805 @@
+:root {
+  --xra-bg: rgba(17, 17, 18, .92);
+  --xra-bg-solid: #151516;
+  --xra-bg-2: rgba(29, 29, 31, .96);
+  --xra-panel-border: rgba(255,255,255,.14);
+  --xra-row-border: rgba(255,255,255,.08);
+  --xra-text: #f5f5f6;
+  --xra-muted: rgba(255,255,255,.60);
+  --xra-control: #272729;
+  --xra-control-border: rgba(255,255,255,.22);
+  --xra-radius: 10px;
+  --xra-right-width: 282px;
+  --xra-left-width: 350px;
+}
+
+/* Never let browser/native CSS change our box math. */
+#XRA_CUSTOM_PANEL,
+#XRA_CUSTOM_PANEL *,
+#XRA_NATIVE_SETTINGS,
+#XRA_NATIVE_SETTINGS *,
+.xra-overlay,
+.xra-overlay * {
+  box-sizing: border-box;
+}
+
+[hidden] { display: none !important; }
+
+/* ============================================================
+   RIGHT — custom controls. Header is intentionally transparent:
+   no black rectangle behind HANDS / hide button.
+   ============================================================ */
+#XRA_CUSTOM_PANEL.xra-right-panel {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  z-index: 999999;
+  width: min(var(--xra-right-width), calc(100vw - 20px));
+  color: var(--xra-text);
+  font: 12px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  pointer-events: auto;
+  background: transparent;
+}
+
+.xra-right-header {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  width: 100%;
+  margin: 0 0 6px;
+  padding: 0;
+  background: transparent !important;
+  border: 0;
+  box-shadow: none;
+}
+
+.xra-hands,
+.xra-hide {
+  min-height: 35px;
+  border: 0;
+  border-radius: 9px;
+  color: #fff;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 0 2px 5px rgba(0,0,0,.28);
+}
+
+.xra-hands {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 7px 10px;
+  background: rgba(20,130,70,.94);
+}
+.xra-hands.off { background: rgba(150,40,40,.94); }
+
+.xra-hide {
+  flex: 0 0 42px;
+  width: 42px;
+  padding: 0;
+  background: rgba(55,55,58,.96);
+  font-size: 16px;
+}
+
+.xra-right-body {
+  max-height: min(82vh, 820px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  padding: 7px;
+  border: 1px solid var(--xra-panel-border);
+  border-radius: var(--xra-radius);
+  background: var(--xra-bg);
+  box-shadow: 0 8px 30px rgba(0,0,0,.38);
+  backdrop-filter: blur(7px);
+}
+
+/* ============================================================
+   Shared controls / accordion
+   ============================================================ */
+.xra-details {
+  margin: 0 0 6px;
+  border: 1px solid var(--xra-row-border);
+  border-radius: 8px;
+  background: rgba(255,255,255,.028);
+  overflow: clip;
+}
+
+.xra-details > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  padding: 8px 9px;
+  font-weight: 800;
+  color: var(--xra-text);
+  background: rgba(255,255,255,.025);
+}
+.xra-details > summary::-webkit-details-marker { display: none; }
+.xra-details > summary::before {
+  content: '›';
+  display: inline-block;
+  width: 13px;
+  opacity: .72;
+  transform-origin: 45% 50%;
+  transition: transform .12s ease;
+}
+.xra-details[open] > summary::before { transform: rotate(90deg); }
+.xra-details[open] > summary { border-bottom: 1px solid var(--xra-row-border); }
+
+.xra-details-body { padding: 6px 8px 8px; }
+
+.xra-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(96px, 118px) 26px;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin: 5px 0;
+}
+.xra-row.no-reset { grid-template-columns: minmax(0,1fr) minmax(96px,118px); }
+.xra-row-label { min-width: 0; }
+.xra-label { color: var(--xra-text); overflow-wrap: anywhere; }
+.xra-sub { color: var(--xra-muted); font-size: 10px; line-height: 1.35; margin-top: 2px; }
+.xra-note {
+  color: var(--xra-muted);
+  font-size: 10px;
+  line-height: 1.45;
+  padding: 6px 7px;
+  margin: 4px 0 7px;
+  border-radius: 6px;
+  background: rgba(255,255,255,.035);
+}
+
+.xra-control,
+.xra-row select,
+.xra-row input[type="text"],
+.xra-row input[type="number"] {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  padding: 5px 6px;
+  color: #fff;
+  background: var(--xra-control);
+  border: 1px solid var(--xra-control-border);
+  border-radius: 6px;
+  font: inherit;
+}
+
+.xra-row input[type="checkbox"] {
+  justify-self: end;
+  width: 17px;
+  height: 17px;
+  accent-color: #4fa879;
+}
+.xra-row input[type="range"] { min-width: 0; width: 100%; accent-color: #6cab89; }
+.xra-row input[type="color"] {
+  width: 48px;
+  height: 29px;
+  padding: 1px;
+  background: var(--xra-control);
+  border: 1px solid var(--xra-control-border);
+  border-radius: 6px;
+}
+
+.xra-stack-control { min-width: 0; width: 100%; }
+.xra-stack-control > input[type="range"] { display: block; width: 100%; }
+
+.xra-reset {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid rgba(255,255,255,.18);
+  border-radius: 6px;
+  background: #303033;
+  color: #fff;
+  cursor: pointer;
+  font-weight: 900;
+  line-height: 1;
+}
+.xra-reset:disabled { opacity: .20; cursor: default; }
+
+.xra-action {
+  width: 100%;
+  margin: 4px 0;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: #3b3b3e;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+}
+.xra-action:hover { filter: brightness(1.11); }
+.xra-action.primary { background: #28634c; font-weight: 800; }
+.xra-action.danger { background: #7b3030; }
+.xra-action.active-warm { background: #735d29; }
+
+.xra-actions { display: flex; gap: 6px; margin-top: 6px; }
+.xra-actions > * { flex: 1 1 0; min-width: 0; }
+
+.xra-status {
+  margin: 5px 0;
+  padding: 6px 7px;
+  border-radius: 6px;
+  background: rgba(0,0,0,.22);
+  color: var(--xra-muted);
+  font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.xra-meter {
+  position: relative;
+  height: 11px;
+  margin: 6px 0 4px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.26);
+  border-radius: 5px;
+  background: #111;
+}
+.xra-meter-fill { height: 100%; width: 0; background: rgba(255,255,255,.56); }
+.xra-meter-gate { position: absolute; top: 0; bottom: 0; width: 2px; left: 20%; background: #fff; }
+
+/* ============================================================
+   LEFT — native XR SETTINGS. It is a drawer, not a second copy of
+   the custom right controls.
+   ============================================================ */
+#XRA_NATIVE_SETTINGS.xra-native-root {
+  position: fixed;
+  left: 0;
+  top: 70px;
+  bottom: 12px;
+  z-index: 999998;
+  pointer-events: none;
+  color: var(--xra-text);
+  font: 12px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.xra-native-launcher {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 116px;
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid var(--xra-panel-border);
+  border-left: 0;
+  border-radius: 0 9px 9px 0;
+  background: rgba(24,24,26,.94);
+  color: #fff;
+  cursor: pointer;
+  font-weight: 800;
+  pointer-events: auto;
+  box-shadow: 0 5px 20px rgba(0,0,0,.30);
+  transition: transform .16s ease;
+}
+
+.xra-native-drawer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: min(var(--xra-left-width), calc(100vw - 20px));
+  max-height: calc(100vh - 82px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--xra-panel-border);
+  border-left: 0;
+  border-radius: 0 11px 11px 0;
+  background: var(--xra-bg);
+  box-shadow: 0 9px 32px rgba(0,0,0,.44);
+  backdrop-filter: blur(8px);
+  transform: translateX(calc(-100% - 8px));
+  opacity: 0;
+  pointer-events: none;
+  transition: transform .16s ease, opacity .16s ease;
+}
+
+.xra-native-root.open .xra-native-drawer {
+  transform: translateX(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+.xra-native-root.open .xra-native-launcher {
+  transform: translateX(var(--xra-left-width));
+  width: 42px;
+  padding: 0;
+}
+
+.xra-native-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--xra-panel-border);
+  background: rgba(255,255,255,.035);
+}
+.xra-native-title { font-weight: 900; letter-spacing: .015em; }
+.xra-native-close {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(255,255,255,.08);
+  color: #fff;
+  cursor: pointer;
+  font-size: 18px;
+}
+
+.xra-native-search {
+  flex: 0 0 auto;
+  width: calc(100% - 16px);
+  margin: 8px;
+  padding: 7px 8px;
+  color: #fff;
+  background: #262628;
+  border: 1px solid var(--xra-control-border);
+  border-radius: 7px;
+  outline: none;
+}
+.xra-native-search:focus { border-color: rgba(120,190,155,.8); }
+
+.xra-native-content {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  padding: 0 8px 8px;
+}
+
+.xra-native-content .xra-row {
+  grid-template-columns: minmax(0, 1fr) minmax(112px, 145px) 26px;
+}
+.xra-native-content .xra-row.no-reset {
+  grid-template-columns: minmax(0, 1fr) minmax(112px, 145px);
+}
+
+.xra-native-json {
+  width: 100%;
+  min-height: 220px;
+  resize: vertical;
+  padding: 8px;
+  color: #e9e9ea;
+  background: #111113;
+  border: 1px solid var(--xra-control-border);
+  border-radius: 7px;
+  font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* ============================================================
+   Startup / toast
+   ============================================================ */
+.xra-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000001;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,.72);
+  color: #fff;
+  font-family: system-ui, sans-serif;
+}
+.xra-start-card {
+  position: relative;
+  width: min(470px, calc(100vw - 28px));
+  padding: 18px;
+  border: 1px solid var(--xra-panel-border);
+  border-radius: var(--xra-radius);
+  background: var(--xra-bg);
+  box-shadow: 0 14px 48px rgba(0,0,0,.65);
+  backdrop-filter: blur(10px);
+}
+.xra-start-card h2 { margin: 0; font-size: 20px; }
+.xra-start-card select {
+  width: 100%;
+  padding: 7px;
+  background: var(--xra-control);
+  color: var(--xra-text);
+  border: 1px solid var(--xra-control-border);
+  border-radius: 6px;
+}
+.xra-start-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.xra-start-close {
+  flex: 0 0 30px; width: 30px; height: 30px; padding: 0;
+  border: 1px solid var(--xra-control-border); border-radius: 7px;
+  background: var(--xra-control); color: var(--xra-text); cursor: pointer;
+  font: 700 18px/1 system-ui, sans-serif;
+}
+.xra-start-close:hover { filter: brightness(1.15); }
+.xra-start-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+.xra-start-field { display: grid; gap: 4px; min-width: 0; color: var(--xra-muted); font-size: 10px; }
+.xra-start-camera {
+  margin: 11px 0 8px; padding: 10px;
+  border: 1px solid var(--xra-row-border); border-radius: 8px;
+  background: rgba(255,255,255,.025);
+}
+.xra-start-camera-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 7px; }
+.xra-start-camera-title { color: var(--xra-text); font-weight: 800; }
+.xra-start-camera-state { color: var(--xra-muted); font: 10px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.xra-start-camera-state::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%; background: #d95757; }
+.xra-start-camera-state.on::before { background: #59c985; }
+.xra-start-camera-actions { display: grid; grid-template-columns: minmax(0,1fr) 38px; gap: 6px; margin-top: 7px; }
+.xra-start-camera-actions .xra-action { margin: 0; }
+.xra-start-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
+.xra-start-foot label { display: flex; gap: 7px; align-items: center; color: var(--xra-muted); font-size: 11px; }
+.xra-start-confirm { min-width: 112px; margin: 0; }
+
+.xra-native-notice-host {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  z-index: 1000002;
+  width: min(480px, calc(100vw - 40px));
+  transform: translateX(-50%);
+  display: grid;
+  gap: 6px;
+  pointer-events: none;
+  color: var(--xra-text);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.xra-native-notice {
+  padding: 9px 11px;
+  border: 1px solid var(--xra-panel-border);
+  border-radius: 9px;
+  background: var(--xra-bg);
+  box-shadow: 0 8px 28px rgba(0,0,0,.42);
+  backdrop-filter: blur(8px);
+}
+.xra-native-notice-heading { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
+.xra-native-notice-dot { width: 7px; height: 7px; border-radius: 50%; background: #59c985; }
+.xra-native-notice-title { color: var(--xra-muted); font: 800 9px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-transform: uppercase; letter-spacing: .08em; }
+.xra-native-notice-message { white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.xra-native-notice.interactive { border-color: rgba(89,201,133,.42); pointer-events: auto; }
+.xra-native-notice-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.xra-native-notice-actions[hidden] { display: none; }
+.xra-native-notice-actions .xra-action { flex: 1 1 150px; margin: 0; text-align: left; }
+
+/* XR Animator writes boot, camera and mocap status into the legacy white
+   Ldebug strip. Keep the useful messages, but present them in our UI language. */
+#Ldebug {
+  display: none !important;
+  position: fixed !important;
+  top: 12px !important;
+  left: 50% !important;
+  right: auto !important;
+  width: min(720px, calc(100vw - 40px)) !important;
+  max-height: min(35vh, 240px) !important;
+  box-sizing: border-box !important;
+  padding: 8px 10px !important;
+  overflow: auto !important;
+  transform: translateX(-50%) !important;
+  transform-origin: center top !important;
+  border: 1px solid var(--xra-panel-border) !important;
+  border-radius: 9px !important;
+  background: var(--xra-bg) !important;
+  color: var(--xra-text) !important;
+  box-shadow: 0 8px 28px rgba(0,0,0,.42) !important;
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+  pointer-events: none !important;
+  z-index: 1000001 !important;
+}
+body.xra-native-debug-visible #Ldebug { display: block !important; }
+
+.xra-toast-host {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  z-index: 1000002;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+}
+.xra-toast {
+  max-width: 360px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(20,20,22,.96);
+  color: #fff;
+  box-shadow: 0 4px 18px rgba(0,0,0,.35);
+}
+.xra-toast.error { background: rgba(120,30,30,.97); }
+
+/* Hide native bottom/inventory UI together with the custom drawers. */
+body.xra-native-ui-hidden #Ldungeon_UI,
+body.xra-native-ui-hidden #Ldungeon_inventory,
+body.xra-native-ui-hidden #Ldungeon_inventory_backpack {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+@media (max-width: 760px) {
+  :root { --xra-right-width: 270px; --xra-left-width: 330px; }
+  #XRA_CUSTOM_PANEL.xra-right-panel { right: 6px; top: 6px; }
+  #XRA_NATIVE_SETTINGS.xra-native-root { top: 58px; }
+  .xra-native-root.open .xra-native-launcher { display: none; }
+}
+
+@media (max-width: 520px) {
+  #XRA_CUSTOM_PANEL.xra-right-panel {
+    left: 6px;
+    right: 6px;
+    width: auto;
+  }
+  .xra-right-body { max-height: 72vh; }
+  #XRA_NATIVE_SETTINGS.xra-native-root { top: 54px; }
+  .xra-native-drawer { width: calc(100vw - 12px); }
+  .xra-row,
+  .xra-native-content .xra-row {
+    grid-template-columns: minmax(0,1fr) minmax(90px,116px) 26px;
+  }
+  .xra-start-grid { grid-template-columns: 1fr; }
+  .xra-native-notice-host { top: 56px; width: calc(100vw - 20px); }
+}
+
+/* ============================================================
+   V7.2 — migrate the useful bottom-toolbar commands to XR SETTINGS.
+   Native speech text is preserved by the DOM notice adapter; only its old
+   3D cloud mesh is retired.
+   ============================================================ */
+body.xra-hide-legacy-toolbar #Ldungeon_inventory,
+body.xra-hide-legacy-toolbar #Ldungeon_inventory_backpack {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+.xra-command-wrap {
+  margin: 5px 0 7px;
+}
+.xra-command-wrap > .xra-action {
+  margin: 0;
+}
+.xra-command-wrap > .xra-sub {
+  margin: 3px 2px 0;
+}
+
+/* ============================================================
+   Hover help / performance impact
+   ============================================================ */
+.xra-help-popup {
+  position: fixed;
+  z-index: 1000005;
+  width: min(330px, calc(100vw - 24px));
+  padding: 10px 11px;
+  border: 1px solid rgba(255,255,255,.18);
+  border-radius: 9px;
+  background: rgba(12,12,14,.97);
+  color: #fff;
+  box-shadow: 0 8px 28px rgba(0,0,0,.48);
+  pointer-events: none;
+  font: 11px/1.42 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.xra-help-title { font-weight: 900; margin-bottom: 5px; font-size: 12px; }
+.xra-help-text { color: rgba(255,255,255,.78); }
+.xra-help-perf {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid rgba(255,255,255,.10);
+  color: rgba(255,255,255,.64);
+}
+.xra-help-badge {
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-weight: 800;
+  color: #fff;
+  background: #414145;
+}
+.xra-help-badge.impact-none { background: #33584b; }
+.xra-help-badge.impact-tiny { background: #3f5e52; }
+.xra-help-badge.impact-low { background: #53613a; }
+.xra-help-badge.impact-medium { background: #735f2e; }
+.xra-help-badge.impact-high { background: #7b4630; }
+.xra-help-badge.impact-very_high { background: #7b3030; }
+.xra-help-badge.impact-variable { background: #535069; }
+
+.xra-inline-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 6px; margin: 5px 0; }
+.xra-inline-grid .xra-action { margin: 0; }
+
+/* ============================================================
+   V7.4 — recorder / webcam / advanced native GUI
+   ============================================================ */
+.xra-inline-grid.xra-three-actions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.xra-secondary-action {
+  opacity: .78;
+  font-size: 10px;
+}
+
+/* Mirror only the local webcam preview. This does not alter the MediaStream
+   or mocap coordinates. Individual transform property avoids clobbering the
+   native preview's existing transform. */
+.xra-webcam-mirrored {
+  scale: -1 1 !important;
+}
+
+/* Reliable local webcam preview. It reuses XR Animator's existing camera
+   MediaStream and is intentionally a DOM overlay, so recorder scene capture
+   remains avatar/background-only. */
+#XRA_WEBCAM_PREVIEW.xra-webcam-preview {
+  position: fixed;
+  left: 14px;
+  bottom: 14px;
+  width: min(40vw, 520px);
+  height: auto;
+  max-height: 42vh;
+  object-fit: contain;
+  z-index: 9000;
+  pointer-events: none;
+  background: #000;
+  border: 1px solid rgba(255,255,255,.28);
+  border-radius: 8px;
+  box-shadow: 0 4px 18px rgba(0,0,0,.38);
+}
+
+/* The native dat.GUI panel is retained as an advanced fallback, but opened
+   in a predictable centered position instead of wherever legacy code left it. */
+.xra-native-fx-centered {
+  position: fixed !important;
+  top: 50% !important;
+  left: 50% !important;
+  right: auto !important;
+  bottom: auto !important;
+  transform: translate(-50%, -50%) !important;
+  z-index: 1000004 !important;
+  max-height: 86vh !important;
+}
+
+@media (max-width: 520px) {
+  .xra-inline-grid.xra-three-actions { grid-template-columns: 1fr; }
+}
+.xra-status.recording {
+  color: #fff;
+  background: rgba(126, 28, 28, .76);
+  border: 1px solid rgba(255, 110, 110, .36);
+  font-weight: 700;
+}
+
+
+/* V7.5 recorder calibration + popup */
+.xra-audio-meter { width: 100%; height: 12px; }
+.xra-gate-meter {
+  position: relative;
+  width: 100%;
+  height: 13px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.28);
+  border-radius: 5px;
+  background: rgba(0,0,0,.48);
+}
+.xra-gate-meter-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: rgba(255,255,255,.58);
+}
+.xra-gate-meter-threshold {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 34%;
+  width: 2px;
+  transform: translateX(-1px);
+  background: rgba(255,255,255,.98);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.42);
+}
+.xra-gate-scale {
+  display: flex;
+  justify-content: space-between;
+  gap: 3px;
+  margin-top: 2px;
+  color: var(--xra-muted);
+  font: 9px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+[data-xra-recording-confirm] .xra-start-card { width: min(520px, calc(100vw - 28px)); }
+[data-xra-recording-confirm] .xra-start-card > label { display: block; margin: 9px 0 4px; }
+[data-xra-recording-confirm] .xra-start-card .xra-control { width: 100%; box-sizing: border-box; margin-bottom: 4px; }
+[data-xra-recording-confirm] .xra-start-card .xra-status { white-space: pre-wrap; margin-top: 10px; }
+
+/* V7.5: legacy bottom toolbar permanently removed from layout. */
+#Ldungeon_inventory,
+#Ldungeon_inventory_backpack { display: none !important; visibility: hidden !important; pointer-events: none !important; }
+
+/* V7.6 persistent recording HUD. HTML overlay is intentionally outside the
+   clean scene compositor, so it remains visible to the user but never enters
+   the recorded video. */
+.xra-recording-hud {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000012;
+  width: min(560px, calc(100vw - 28px));
+  padding: 10px;
+  border: 1px solid rgba(255,105,105,.46);
+  border-radius: 10px;
+  background: rgba(58,16,16,.94);
+  color: #fff;
+  box-shadow: 0 10px 36px rgba(0,0,0,.48);
+  backdrop-filter: blur(8px);
+  font: 12px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  pointer-events: auto;
+}
+.xra-recording-hud.finalizing { background: rgba(58,44,16,.95); border-color: rgba(255,214,105,.42); }
+.xra-recording-hud-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+.xra-recording-hud-badge { font-weight: 900; letter-spacing: .04em; }
+.xra-recording-hud-time { font: 800 20px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.xra-recording-hud-info { white-space: pre-wrap; overflow-wrap: anywhere; color: rgba(255,255,255,.83); font: 10px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.xra-recording-hud-stop {
+  width: 100%; margin-top: 8px; padding: 9px 10px; border: 0; border-radius: 7px;
+  background: #a52f2f; color: #fff; font: 800 12px/1.2 system-ui, sans-serif; cursor: pointer;
+}
+.xra-recording-hud-stop:disabled { opacity: .45; cursor: default; }
+
+/* Lightweight V7.6 diagnostics HUD. */
+.xra-diagnostics-hud {
+  position: fixed; left: 10px; bottom: 10px; z-index: 1000008;
+  min-width: 210px; max-width: min(360px, calc(100vw - 20px));
+  padding: 8px 9px; border: 1px solid rgba(255,255,255,.16); border-radius: 8px;
+  background: rgba(12,12,13,.86); color: rgba(255,255,255,.82);
+  font: 10px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap; pointer-events: none;
+}
+
+
+/* V7.6.2 close control injected into the legacy advanced Visual Effects GUI. */
+.xra-native-fx-centered { overflow: visible !important; }
+.xra-native-fx-close {
+  position: absolute !important; top: -14px; right: -14px; z-index: 1000006 !important;
+  width: 30px; height: 30px; border-radius: 999px; border: 1px solid rgba(255,255,255,.35);
+  background: rgba(20,20,24,.95); color: #fff; font-size: 22px; line-height: 24px; cursor: pointer;
+}
+
+
+/* V7.6.24 — exact native shell cleanup + cheap 1 Hz health indicators. */
+/* Stable upstream ids: quick menu = native Restart/About/File strip;
+   Cdungeon_status_bar = circular avatar medallion. Keep semantic classes as
+   fallbacks for builds which wrap/recreate the same controls dynamically. */
+#Lquick_menu,
+#Cdungeon_status_bar,
+.xra-retired-native-topbar,
+.xra-retired-avatar-badge {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.xra-health-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  margin: 0 0 7px;
+  padding: 5px;
+  border: 1px solid var(--xra-row-border);
+  border-radius: 8px;
+  background: rgba(0,0,0,.18);
+}
+.xra-health-item {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  color: var(--xra-muted);
+  font: 800 9px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.xra-health-dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(255,255,255,.30); box-shadow: 0 0 0 1px rgba(255,255,255,.10); }
+.xra-health-item[data-state="ok"] { color: rgba(255,255,255,.86); }
+.xra-health-item[data-state="ok"] .xra-health-dot { background: #59c985; }
+.xra-health-item[data-state="warn"] { color: #ffd58a; }
+.xra-health-item[data-state="warn"] .xra-health-dot { background: #e0a84e; }
+.xra-health-item[data-state="error"] { color: #ff9b9b; }
+.xra-health-item[data-state="error"] .xra-health-dot { background: #d95757; }
+.xra-start-avatar { margin: 8px 0; padding: 7px; border-radius: 7px; background: rgba(255,255,255,.035); }
+.xra-start-avatar .xra-action { margin: 5px 0 0; }
