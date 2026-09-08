@@ -2,11 +2,80 @@
 
 const is_worker = (typeof window !== "object");
 
+// Runtime controls shared with the custom XR Animator UI.
+
+let XRA_hands_enabled = true;
+let XRA_pose_target_fps = 30;
+let XRA_hand_target_fps = 20;
+let XRA_telemetry_enabled = false;
+let XRA_hand_recovery_mode = 'normal';
+let XRA_hand_detection_sensitivity = 'high';
+// Invalid landmark packets are never useful to the rig. Keep the loss gate
+// fail-safe even before/without the UI BroadcastChannel handshake; the control
+// message can still explicitly disable it for legacy behavior.
+let XRA_body_stabilization_enabled = true;
+let XRA_last_hands_seen_ms = 0;
+let XRA_last_hand_recovery_scan_ms = 0;
+let XRA_control_channel = null;
+
+function XRA_hand_recovery_interval() {
+  if (XRA_hand_recovery_mode === 'aggressive') return 80;
+  if (XRA_hand_recovery_mode === 'normal') return 180;
+  return Infinity;
+}
+
+function XRA_should_hand_recover(now = performance.now()) {
+  if (!XRA_hands_enabled || XRA_hand_recovery_mode === 'off') return false;
+  if (XRA_last_hands_seen_ms && now - XRA_last_hands_seen_ms < 420) return false;
+  const interval = XRA_hand_recovery_interval();
+  if (now - XRA_last_hand_recovery_scan_ms < interval) return false;
+  XRA_last_hand_recovery_scan_ms = now;
+  return true;
+}
+
+try {
+  if (typeof BroadcastChannel !== "undefined") {
+    XRA_control_channel = new BroadcastChannel("XRA_CONTROL");
+    XRA_control_channel.onmessage = (e) => {
+      const d = e.data || {};
+      if (d.type === "hands_enabled") {
+        XRA_hands_enabled = !!d.value;
+      }
+      else if (d.type === "mocap_rates") {
+        if (Number.isFinite(Number(d.pose_fps))) XRA_pose_target_fps = Math.max(5, Math.min(60, Number(d.pose_fps)));
+        if (Number.isFinite(Number(d.hand_fps))) XRA_hand_target_fps = Math.max(1, Math.min(60, Number(d.hand_fps)));
+      }
+      else if (d.type === "hands_config") {
+        const recovery = String(d.recovery || 'normal').toLowerCase();
+        XRA_hand_recovery_mode = ['off','normal','aggressive'].includes(recovery) ? recovery : 'normal';
+        const sensitivity = String(d.sensitivity || 'high').toLowerCase();
+        XRA_hand_detection_sensitivity = ['normal','high'].includes(sensitivity) ? sensitivity : 'high';
+      }
+      else if (d.type === "benchmark_telemetry") {
+        XRA_telemetry_enabled = !!d.value;
+      }
+      else if (d.type === "body_stabilization") {
+        XRA_body_stabilization_enabled = !!d.value;
+      }
+    };
+    XRA_control_channel.postMessage({ type:"hands_state_request" });
+    XRA_control_channel.postMessage({ type:"mocap_rates_request" });
+    XRA_control_channel.postMessage({ type:"tracking_state_request" });
+  }
+}
+catch (e) {
+  console.warn("[XRA MOCAP] Control channel unavailable", e);
+}
 function path_adjusted(url) {
   if (!is_worker && !/^\w+\:/i.test(url)) {
     url = url.replace(/^(\.?\/?)([\w\@])/, "$1js/$2")
   }
   return url
+}
+
+function XRA_pose_model_asset_path(quality) {
+  const tier = quality === 'Best' ? 'heavy' : quality === 'Lite' ? 'lite' : 'full';
+  return path_adjusted(`@mediapipe/tasks/pose_landmarker_${tier}.task`);
 }
 
 async function load_scripts(url) {
@@ -336,7 +405,7 @@ vision,
 vision,
 {
   baseOptions: {
-    modelAssetPath: path_adjusted('@mediapipe/tasks/' + 'pose_landmarker_' + ((pose_model_quality == 'Best') ? 'heavy' : 'full') + '.task'),
+    modelAssetPath: XRA_pose_model_asset_path(pose_model_quality),
     delegate: "GPU"
   },
   runningMode: 'VIDEO',
@@ -481,7 +550,7 @@ else {
     pose_model_quality = options.model_quality;
     pose_landmarker.setOptions({
       baseOptions: {
-        modelAssetPath: path_adjusted('@mediapipe/tasks/pose_landmarker_' + ((pose_model_quality == 'Best') ? 'heavy' : 'full') + '.task'),
+        modelAssetPath: XRA_pose_model_asset_path(pose_model_quality),
         delegate: "GPU"
       },
     });
@@ -640,7 +709,7 @@ vision,
 set_score: (()=>{
   let timestamp = 0;
   return function (w,h, options) {
-    if (!options.pose_enabled) {
+    if (!options.pose_enabled || XRA_hand_detection_sensitivity === 'high' || options.XRA_full_hand_recovery) {
       f_index = 1;
       return;
     }
@@ -747,6 +816,244 @@ var fps = 0, fps_count = 0, fps_ms = 0;
 
 
 var skip_hand_countdown = 0
+
+// Standalone inference-rate control. The pose worker still replies on every
+// camera frame, but may reuse the last result instead of running MediaPipe.
+var XRA_last_pose_run_ms = 0;
+var XRA_last_pose_payload = null;
+var XRA_last_hand_run_ms = 0;
+var XRA_last_hands_result = null;
+var XRA_last_stable_pose = null;
+var XRA_last_stable_hands = null;
+var XRA_pose_loss_active = false;
+var XRA_pose_reacquire_count = 0;
+var XRA_pose_reacquire_state = null;
+const XRA_STABLE_HISTORY_SIZE = 10;
+const XRA_STABLE_LOOKBACK_MS = 120;
+var XRA_stable_tracking_history = new Array(XRA_STABLE_HISTORY_SIZE);
+var XRA_stable_tracking_write = 0;
+var XRA_stable_tracking_count = 0;
+
+function XRA_hand_due(now) {
+  if (!XRA_hands_enabled) return false;
+  const interval = 1000 / Math.max(1, XRA_hand_target_fps || 20);
+  if (!XRA_last_hands_result || (now - XRA_last_hand_run_ms) >= interval) {
+    XRA_last_hand_run_ms = now;
+    return true;
+  }
+  return false;
+}
+
+function XRA_send_telemetry(payload) {
+  if (!XRA_telemetry_enabled || !XRA_control_channel) return;
+  try {
+    XRA_control_channel.postMessage(Object.assign({ type:"mocap_telemetry" }, payload));
+  } catch (e) {}
+}
+
+// Report detector validity from the worker that owns the fresh inference result.
+// Reading pose data back from the renderer is unreliable because several XR
+// Animator pipelines retain their last result after the person has disappeared.
+function XRA_pose_tracking_state(pose, width, height, enabled) {
+  if (!enabled) {
+    return { type:'pose_tracking_state', available:false, present:false, confidence:null, signature:'', source:'mocap-worker' };
+  }
+  const points = Array.isArray(pose?.keypoints) ? pose.keypoints : [];
+  let core = points.filter(point => /shoulder|hip/i.test(String(point?.part || point?.name || '')));
+  if (!core.length) {
+    const indices = points.length >= 30 ? [11, 12, 23, 24] : [5, 6, 11, 12];
+    core = indices.map(index => points[index]).filter(Boolean);
+  }
+
+  let confidenceTotal = 0;
+  let confidenceCount = 0;
+  let visibleCore = 0;
+  let insideCore = 0;
+  let visibleShoulders = 0;
+  let visibleHips = 0;
+  let insideShoulders = 0;
+  let insideHips = 0;
+  const signature = [];
+  const shoulderPoints = [];
+  const hipPoints = [];
+  for (let index = 0; index < core.length; index++) {
+    const point = core[index];
+    const position = point?.position || point;
+    const x = Number(position?.x);
+    const y = Number(position?.y);
+    const label = String(point?.part || point?.name || '');
+    const shoulder = /shoulder/i.test(label) || (!label && index < 2);
+    const hip = /hip/i.test(label) || (!label && index >= 2);
+    const confidence = Number(point?.score ?? point?.visibility ?? point?.presence);
+    const usableConfidence = Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 1;
+    if (Number.isFinite(confidence)) {
+      confidenceTotal += usableConfidence;
+      confidenceCount++;
+    }
+    if (usableConfidence >= 0.25) {
+      visibleCore++;
+      if (shoulder) visibleShoulders++;
+      if (hip) visibleHips++;
+    }
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+      const normalized = Math.abs(x) <= 2.5 && Math.abs(y) <= 2.5;
+      const marginX = normalized ? 0.10 : Math.max(1, Number(width) || 1) * 0.10;
+      const marginY = normalized ? 0.10 : Math.max(1, Number(height) || 1) * 0.10;
+      const maxX = normalized ? 1 : Math.max(1, Number(width) || 1);
+      const maxY = normalized ? 1 : Math.max(1, Number(height) || 1);
+      if (x >= -marginX && x <= maxX + marginX && y >= -marginY && y <= maxY + marginY) {
+        insideCore++;
+        if (shoulder) insideShoulders++;
+        if (hip) insideHips++;
+      }
+      const nx = normalized ? x : x / maxX;
+      const ny = normalized ? y : y / maxY;
+      if (shoulder) shoulderPoints.push([nx, ny]);
+      if (hip) hipPoints.push([nx, ny]);
+      signature.push(`${Math.round(x / (normalized ? .02 : 8))},${Math.round(y / (normalized ? .02 : 8))}`);
+    }
+  }
+
+  const confidence = confidenceCount ? confidenceTotal / confidenceCount : (points.length ? 1 : 0);
+  const midpoint = pair => pair.length >= 2
+    ? [(pair[0][0] + pair[1][0]) / 2, (pair[0][1] + pair[1][1]) / 2]
+    : null;
+  const distance = (a, b) => a && b ? Math.hypot(a[0] - b[0], a[1] - b[1]) : 0;
+  const shouldersMid = midpoint(shoulderPoints);
+  const hipsMid = midpoint(hipPoints);
+  const shoulderSpan = shoulderPoints.length >= 2 ? distance(shoulderPoints[0], shoulderPoints[1]) : 0;
+  const hipSpan = hipPoints.length >= 2 ? distance(hipPoints[0], hipPoints[1]) : 0;
+  const torsoSpan = distance(shouldersMid, hipsMid);
+  const geometryValid = shoulderSpan >= .035 && shoulderSpan <= .85 &&
+    hipSpan >= .025 && hipSpan <= .75 && torsoSpan >= .035 && torsoSpan <= .90;
+  const present = points.length > 0 && core.length > 0 &&
+    visibleCore >= 4 && insideCore >= 4 &&
+    visibleShoulders >= 2 && visibleHips >= 2 &&
+    insideShoulders >= 2 && insideHips >= 2 &&
+    confidence >= 0.25 && geometryValid;
+
+  return {
+    type:'pose_tracking_state', available:true, present, confidence,
+    core_points:core.length, visible_core:visibleCore, inside_core:insideCore,
+    visible_shoulders:visibleShoulders, visible_hips:visibleHips,
+    center_x:shouldersMid && hipsMid ? (shouldersMid[0] + hipsMid[0]) / 2 : null,
+    center_y:shouldersMid && hipsMid ? (shouldersMid[1] + hipsMid[1]) / 2 : null,
+    shoulder_span:shoulderSpan, hip_span:hipSpan, torso_span:torsoSpan,
+    geometry_valid:geometryValid,
+    signature:signature.join('|'), source:'mocap-worker'
+  };
+}
+
+function XRA_send_pose_tracking_state(state) {
+  if (!XRA_control_channel || !state) return;
+  try { XRA_control_channel.postMessage(state); }
+  catch (e) {}
+}
+
+function XRA_remember_stable_tracking(pose, hands, state) {
+  const slot = XRA_stable_tracking_history[XRA_stable_tracking_write] || {};
+  slot.at = performance.now();
+  slot.pose = pose;
+  slot.hands = hands;
+  slot.state = state;
+  XRA_stable_tracking_history[XRA_stable_tracking_write] = slot;
+  XRA_stable_tracking_write = (XRA_stable_tracking_write + 1) % XRA_STABLE_HISTORY_SIZE;
+  XRA_stable_tracking_count = Math.min(XRA_stable_tracking_count + 1, XRA_STABLE_HISTORY_SIZE);
+  XRA_last_stable_pose = pose;
+  if (Array.isArray(hands) && hands.length) XRA_last_stable_hands = hands;
+}
+
+function XRA_trusted_tracking() {
+  if (!XRA_stable_tracking_count) return { pose:XRA_last_stable_pose, hands:XRA_last_stable_hands };
+  const target = performance.now() - XRA_STABLE_LOOKBACK_MS;
+  let fallback = null;
+  for (let offset = 1; offset <= XRA_stable_tracking_count; offset++) {
+    const index = (XRA_stable_tracking_write - offset + XRA_STABLE_HISTORY_SIZE) % XRA_STABLE_HISTORY_SIZE;
+    const sample = XRA_stable_tracking_history[index];
+    if (!sample) continue;
+    fallback ||= sample;
+    if (sample.at <= target) return sample;
+  }
+  return fallback || { pose:XRA_last_stable_pose, hands:XRA_last_stable_hands };
+}
+
+function XRA_tracking_states_discontinuous(state, previous, centerLimit = .24) {
+  if (!previous?.present) return false;
+  const centerJump = Math.hypot(
+    Number(state.center_x) - Number(previous.center_x),
+    Number(state.center_y) - Number(previous.center_y)
+  );
+  const ratioOutside = (current, old, low, high) => {
+    current = Number(current); old = Number(old);
+    if (!(current > 0) || !(old > 0)) return true;
+    const ratio = current / old;
+    return ratio < low || ratio > high;
+  };
+  return !Number.isFinite(centerJump) || centerJump > centerLimit ||
+    ratioOutside(state.shoulder_span, previous.shoulder_span, .48, 2.1) ||
+    ratioOutside(state.hip_span, previous.hip_span, .42, 2.3) ||
+    ratioOutside(state.torso_span, previous.torso_span, .42, 2.3);
+}
+
+function XRA_pose_discontinuous(state) {
+  if (!state?.present || !XRA_stable_tracking_count) return false;
+  const previousIndex = (XRA_stable_tracking_write - 1 + XRA_STABLE_HISTORY_SIZE) % XRA_STABLE_HISTORY_SIZE;
+  return XRA_tracking_states_discontinuous(state, XRA_stable_tracking_history[previousIndex]?.state);
+}
+
+// Stop invalid landmarks before they reach IK/bone solving. Keeping this in the
+// worker also protects native code that runs before XRA's final render hooks.
+function XRA_hold_invalid_tracking(pose, hands, state) {
+  if (!state?.available) {
+    XRA_pose_loss_active = false;
+    XRA_pose_reacquire_count = 0;
+    XRA_pose_reacquire_state = null;
+    return { pose, hands };
+  }
+
+  if (!XRA_body_stabilization_enabled) {
+    XRA_pose_loss_active = false;
+    XRA_pose_reacquire_count = 0;
+    XRA_pose_reacquire_state = null;
+    if (state.present && pose?.keypoints?.length) XRA_remember_stable_tracking(pose, hands, state);
+    return { pose, hands };
+  }
+
+  if (!XRA_pose_loss_active && state.present && XRA_pose_discontinuous(state)) {
+    state.present = false;
+    state.reason = 'pose-discontinuity';
+  }
+
+  if (!state.present) {
+    XRA_pose_loss_active = true;
+    XRA_pose_reacquire_count = 0;
+    XRA_pose_reacquire_state = null;
+    const trusted = XRA_trusted_tracking();
+    return { pose:trusted.pose || pose, hands:trusted.hands || XRA_last_stable_hands || hands };
+  }
+
+  // A single plausible frame is not enough after an occlusion. Four consecutive
+  // detections prevent flicker between a hand/poster and the returning user.
+  if (XRA_pose_loss_active) {
+    if (XRA_pose_reacquire_state && XRA_tracking_states_discontinuous(state, XRA_pose_reacquire_state, .10)) {
+      XRA_pose_reacquire_count = 1;
+    }
+    else {
+      XRA_pose_reacquire_count += 1;
+    }
+    XRA_pose_reacquire_state = state;
+    if (XRA_pose_reacquire_count < 4) {
+      const trusted = XRA_trusted_tracking();
+      return { pose:trusted.pose || pose, hands:trusted.hands || XRA_last_stable_hands || hands };
+    }
+  }
+
+  XRA_pose_loss_active = false;
+  XRA_pose_reacquire_count = 0;
+  XRA_pose_reacquire_state = null;
+  if (pose?.keypoints?.length) XRA_remember_stable_tracking(pose, hands, state);
+  return { pose, hands };
+}
 
 var eyes;
 var eyes_xy_last = [[0,0],[0,0]];
@@ -1274,8 +1581,10 @@ hand.annotations = {
 
   hand_clip.length = 0;
   function get_hand_canvas(pose) {
+    // When wrists are unreliable, periodically search the complete frame.
+    if (options?.XRA_full_hand_recovery) return rgba;
 //return rgba;
-if (!canvas_hands) return rgba;
+    if (!canvas_hands) return rgba;
 
 const ctx = canvas_hands.getContext('2d');
 ctx.save();
@@ -1555,6 +1864,17 @@ catch (err) {
 }
 
 async function PoseAT_process_video_buffer() {
+  const XRA_pose_gate_now = performance.now();
+  const XRA_pose_interval = 1000 / Math.max(5, XRA_pose_target_fps || 30);
+  if (XRA_last_pose_payload && (XRA_pose_gate_now - XRA_last_pose_run_ms) < XRA_pose_interval) {
+    // Reply with the last complete mocap packet so the parent worker/main thread
+    // remains ready for the next frame. This limits actual inference, not render.
+    const reused = Object.assign({}, XRA_last_pose_payload, { xra_reused:true, _t:0 });
+    postMessageAT(JSON.stringify(reused));
+    return;
+  }
+  XRA_last_pose_run_ms = XRA_pose_gate_now;
+
   async function process_hands_worker(_pose=pose) {
     if (!hands_worker_ready) await new Promise((resolve)=>{ setTimeout(resolve, 0); });
 
@@ -1624,7 +1944,7 @@ hands_worker_ready = false;
 //console.log(result)
 
     pose = pose_adjust(result);
-    hands = hands_adjust(result, vt, pose);
+    hands = XRA_hands_enabled ? hands_adjust(result, vt, pose) : undefined;
 
     if (result.faceLandmarks && result.faceLandmarks.length) {
       let faces = process_facemesh({multiFaceLandmarks:[result.faceLandmarks]}, w,h, {x:0, y:0, w:w, h:h, ratio:0, scale:1});
@@ -1637,8 +1957,9 @@ hands_worker_ready = false;
     }
   }
   else if (use_human_only) {
-    const result = await human.detect(rgba, {hand:{enabled:options.use_handpose}})
-//    console.log(result)
+    const result = await human.detect(rgba, {
+      hand: { enabled: options.use_handpose && XRA_hands_enabled }
+    });
 
     pose = result.body[0]
     hands = result.hand
@@ -1652,10 +1973,21 @@ hands_worker_ready = false;
   }
   else {//if (no_hand_countdown <= 0) {
     let _use_hands_worker_parallel;
-    if (use_hands_worker_parallel && pose_last && is_hand_visible(pose_last)) {
+    const XRA_hand_now = performance.now();
+    const XRA_parallel_hand_visible = pose_last && is_hand_visible(pose_last);
+    const XRA_parallel_recovery = !!(pose_last && !XRA_parallel_hand_visible && XRA_should_hand_recover(XRA_hand_now));
+    if (
+      XRA_hands_enabled &&
+      use_hands_worker_parallel &&
+      pose_last &&
+      (XRA_parallel_hand_visible || XRA_parallel_recovery) &&
+      XRA_hand_due(XRA_hand_now)
+    ) {
       _use_hands_worker_parallel = true;
       hands_worker_data = null;
+      options.XRA_full_hand_recovery = XRA_parallel_recovery;
       await process_hands_worker(pose_last);
+      options.XRA_full_hand_recovery = false;
     }
 
     let result;
@@ -1714,7 +2046,7 @@ else {
     }
 
     if (options.use_holistic_landmarker) {
-      hands = hands_adjust(result, vt, pose);
+      hands = XRA_hands_enabled ? hands_adjust(result, vt, pose) : undefined;
 
       if (result.faceLandmarks && result.faceLandmarks.length) {
         let faces = process_facemesh({multiFaceLandmarks:result.faceLandmarks}, w,h, {x:0, y:0, w:w, h:h, ratio:0, scale:1});
@@ -1726,10 +2058,27 @@ else {
 //console.log(facemesh)
       }
     }
-    else if (options.use_handpose && (use_hands_worker || ((handpose_model || use_human_hands) && (use_hands_worker || (skip_hand_countdown-- <= 0))))) {
+    else if (
+      XRA_hands_enabled &&
+      options.use_handpose &&
+      (
+        use_hands_worker ||
+        ((handpose_model || use_human_hands) && skip_hand_countdown-- <= 0)
+      ) &&
+      XRA_hand_due(performance.now())
+    ) {
       skip_hand_countdown = options.skip_hand_countdown_max||0;
-      if (!options.pose_enabled || is_hand_visible(pose)) {
+      const XRA_visible_hands = !options.pose_enabled ? true : is_hand_visible(pose);
+      const XRA_recovery_due = !XRA_visible_hands && XRA_should_hand_recover(performance.now());
+      if (!options.pose_enabled || XRA_visible_hands || XRA_recovery_due) {
+        options.XRA_full_hand_recovery = !!XRA_recovery_due;
         if (use_hands_worker_parallel) {
+          if (!_use_hands_worker_parallel && XRA_recovery_due) {
+            hands_worker_data = null;
+            options.XRA_full_hand_recovery = true;
+            await process_hands_worker(pose);
+            _use_hands_worker_parallel = true;
+          }
           if (_use_hands_worker_parallel && !hands_worker_data) await new Promise((resolve)=>{ resolve_hands_worker_parallel = resolve; });
           resolve_hands_worker_parallel = null;
         }
@@ -1745,6 +2094,7 @@ else {
           const result = await human.detect(rgba)
           hands = result.hand
         }
+        options.XRA_full_hand_recovery = false;
         no_hand_countdown = no_hand_countdown_max
       }
       else {
@@ -1784,6 +2134,22 @@ else {
   }
 */
 
+  const XRA_pose_state = XRA_pose_tracking_state(pose, w, h, !!options.pose_enabled);
+  const XRA_held_tracking = XRA_hold_invalid_tracking(pose, hands, XRA_pose_state);
+  pose = XRA_held_tracking.pose;
+  hands = XRA_held_tracking.hands;
+
+  const XRA_fresh_hands_this_frame = !!(hands && Array.isArray(hands) && hands.length);
+  if (XRA_fresh_hands_this_frame) XRA_last_hands_seen_ms = performance.now();
+
+  // Standalone Split mode: when hand inference is intentionally throttled, keep
+  // the latest valid hand pose rather than clearing/flickering between samples.
+  if (!options.use_holistic_landmarker && XRA_hands_enabled) {
+    if (hands && Array.isArray(hands) && hands.length) XRA_last_hands_result = hands;
+    else if (XRA_last_hands_result) hands = XRA_last_hands_result;
+  }
+  if (!XRA_hands_enabled) XRA_last_hands_result = null;
+
   _t = performance.now() - _t +(options._t||0);
 
   fps_ms += _t
@@ -1793,9 +2159,12 @@ else {
   }
 
   let _t_hands, fps_hands;
-
+  if (!XRA_hands_enabled) {
+    hands_worker_data = null;
+  }
   if (use_hands_worker_parallel && hands_worker_data) {
     hands = hands_worker_data.handpose;
+    if (hands && Array.isArray(hands) && hands.length) XRA_last_hands_seen_ms = performance.now();
     hands_worker_data = null;
   }
 
@@ -1830,13 +2199,52 @@ else {
     fps_hands = fps;
     hands = hands.filter((h)=>h.annotations&&Object.keys(h.annotations).length);
   }
+
+  // A parallel hand worker may finish after the body hold was selected above.
+  // Re-assert the cached hands so that late results cannot bypass loss freeze.
+  if (XRA_body_stabilization_enabled && XRA_pose_loss_active && XRA_last_stable_hands) {
+    hands = XRA_last_stable_hands;
+  }
  
+  if (XRA_hands_enabled && hands && Array.isArray(hands) && hands.length) {
+    XRA_last_hands_result = hands;
+  }
+
   if (facemesh) {
     facemesh._t = _t
     facemesh.fps = fps
   }
 
-  postMessageAT(JSON.stringify({ posenet:pose, object_detection:object_detection_data, handpose:hands, facemesh:facemesh, _t:_t, fps:fps, _t_hands:_t_hands, fps_hands:fps_hands }));
+  if (!XRA_hands_enabled) hands = [];
+
+  XRA_send_pose_tracking_state(XRA_pose_state);
+
+  // Holistic pipelines can report face presence directly to the UI thread.
+  // Split Face+Body uses the native facemesh runtime and is detected there.
+  if (XRA_control_channel && (options.use_holistic_landmarker || options.use_holistic_legacy)) {
+    const faces = facemesh?.faces;
+    const present = !!(Array.isArray(faces) && faces.length);
+    const c = present ? Number(faces[0]?.faceInViewConfidence ?? faces[0]?.faceScore) : NaN;
+    XRA_control_channel.postMessage({
+      type: 'face_tracking_state',
+      available: true,
+      present,
+      confidence: Number.isFinite(c) ? Math.max(0, Math.min(1, c)) : null,
+      source: 'mocap-worker',
+      signature: present ? String(faces[0]?.scaledMesh?.length || faces[0]?.mesh?.length || 1) : '0'
+    });
+  }
+
+  const XRA_payload = { posenet:pose, object_detection:object_detection_data, handpose:hands, facemesh:facemesh, _t:_t, fps:fps, _t_hands:_t_hands, fps_hands:fps_hands };
+  XRA_last_pose_payload = XRA_payload;
+  XRA_send_telemetry({
+    inference_ms:_t,
+    fps:fps,
+    hands_ms:_t_hands,
+    hands_fps:fps_hands,
+    holistic:!!options.use_holistic_landmarker
+  });
+  postMessageAT(JSON.stringify(XRA_payload));
 }
 
 async function HandsAT_process_video_buffer() {
@@ -1880,6 +2288,8 @@ async function HandsAT_process_video_buffer() {
   if (hands) {
     hands = hands.filter((h)=>h.annotations&&Object.keys(h.annotations).length);
   }
+
+  if (!XRA_hands_enabled) hands = [];
 
   postMessageAT(JSON.stringify({ handpose:hands, _t:_t, fps:fps }));
 }

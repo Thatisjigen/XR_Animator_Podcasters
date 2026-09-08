@@ -9,7 +9,7 @@ var PoseAT = (function () {
     type: 'PoseAT',
     init: async function init(_worker, param) {
 // core START
-module_common = await import('./mocap_lib_module.js');
+module_common = await import('./mocap_lib_module.js?v=xra-7.80');
 core = new module_common.Core(_PoseAT);
 // core END
 
