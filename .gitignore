@@ -6,3 +6,12 @@ node_modules/OSC-js/
 node_modules/nut.js/
 au3/*.exe
 au3/*/*.exe
+
+# XR Animator local state and generated recording data
+xra_profile.json
+xra_profile.backup.json
+xra_profile.json.tmp
+recordings/
+.xra_recording_sessions/
+__pycache__/
+*.py[cod]
