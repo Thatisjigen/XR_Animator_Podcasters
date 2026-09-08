@@ -12,6 +12,7 @@ xra_profile.json
 xra_profile.backup.json
 xra_profile.json.tmp
 recordings/
+avatars/
 .xra_recording_sessions/
 __pycache__/
 *.py[cod]

@@ -23,13 +23,10 @@ RECORDINGS_DIR = ROOT / "recordings"
 RECORDING_MANIFEST_DIR = ROOT / ".xra_recording_sessions"
 XRA_RECORDER_API_VERSION = 766
 RECORDING_MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
-AVATAR_SEARCH_DIRS = (
-    ROOT,
-    ROOT.parent.parent / "Avatars",
-    Path.home() / "Scaricati",
-    Path.home() / "Scaricati" / "Dietrologico",
-    Path.home() / "Scrivania",
-)
+AVATAR_DIR = ROOT / "avatars"
+AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+AVATAR_EXTS = {".vrm", ".glb", ".gltf"}
+AVATAR_MAX_BYTES = 256 * 1024 * 1024
 
 DEFAULT_CUSTOM = {
     "camera": {"optimized": True, "width": 640, "height": 480, "fps": 30},
@@ -193,25 +190,71 @@ def load_profile():
     return clean
 
 
-def avatar_file(filename):
-    """Resolve a saved avatar by basename inside a small, explicit local allowlist."""
+def safe_avatar_name(filename):
     name = Path(unquote(str(filename or ""))).name
-    if not name or Path(name).suffix.lower() not in {".vrm", ".glb", ".gltf"}:
+    ext = Path(name).suffix.lower()
+    if ext not in AVATAR_EXTS:
         return None
-    for folder in AVATAR_SEARCH_DIRS:
-        candidate = folder / name
-        try:
-            if candidate.is_file():
-                return candidate.resolve()
-            # Linux paths are case-sensitive; preserve profiles written on
-            # case-insensitive systems without recursively scanning the home.
-            if folder.is_dir():
-                match = next((item for item in folder.iterdir() if item.is_file() and item.name.casefold() == name.casefold()), None)
-                if match:
-                    return match.resolve()
-        except OSError:
-            continue
+    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", Path(name).stem).strip().strip(".")
+    stem = (stem or "avatar")[:160]
+    return stem + ext
+
+
+def _avatar_dir():
+    AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+    return AVATAR_DIR.resolve()
+
+
+def avatar_file(filename):
+    """Resolve a saved avatar only inside the app-local avatars library."""
+    name = safe_avatar_name(filename)
+    if not name:
+        return None
+    folder = _avatar_dir()
+    try:
+        candidate = (folder / name).resolve()
+        if candidate.parent != folder:
+            return None
+        if candidate.is_file():
+            return candidate
+        wanted = name.casefold()
+        for item in folder.iterdir():
+            if item.is_file() and item.name.casefold() == wanted:
+                resolved = item.resolve()
+                if resolved.parent == folder:
+                    return resolved
+    except OSError:
+        return None
     return None
+
+
+def save_avatar_upload(filename, stream, length):
+    name = safe_avatar_name(filename)
+    if not name:
+        raise ValueError("Invalid avatar filename")
+    if length <= 0 or length > AVATAR_MAX_BYTES:
+        raise ValueError("Invalid avatar size")
+    folder = _avatar_dir()
+    dest = (folder / name).resolve()
+    if dest.parent != folder:
+        raise ValueError("Invalid avatar path")
+    tmp = dest.with_name(dest.name + f".{uuid.uuid4().hex}.tmp")
+    remaining = length
+    try:
+        with tmp.open("wb") as handle:
+            while remaining:
+                data = stream.read(min(1024 * 1024, remaining))
+                if not data:
+                    raise IOError("Unexpected end of avatar upload")
+                handle.write(data)
+                remaining -= len(data)
+        tmp.replace(dest)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return dest.name
 
 
 def background_files(force=False):
@@ -826,6 +869,21 @@ class Handler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
+        if path == "/__xra_avatar":
+            try:
+                params = {}
+                for pair in parsed.query.split("&"):
+                    if "=" in pair:
+                        k, v = pair.split("=", 1)
+                        params[k] = unquote(v)
+                filename = params.get("filename") or self.headers.get("X-Filename") or ""
+                length = int(self.headers.get("Content-Length", "0"))
+                stored = save_avatar_upload(filename, self.rfile, length)
+                self.send_json({"ok": True, "filename": stored})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+
         if path == "/__xra_recording/start":
             try:
                 obj = self.read_json_body(128 * 1024)
@@ -1003,4 +1061,5 @@ if __name__ == "__main__":
     print("http://127.0.0.1:8000/XR_Animator.html")
     print(f"Profile: {PROFILE_FILE}")
     print(f"Backup:  {BACKUP_FILE}")
+    print(f"Avatars: {AVATAR_DIR}")
     server.serve_forever()
