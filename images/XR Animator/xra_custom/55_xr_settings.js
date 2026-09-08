@@ -225,7 +225,7 @@
 
   function addAvatarApp(content) {
     const box = details(content, '👤 Avatar / app', { open: true });
-    box.body.appendChild(el('div', 'xra-note', 'Il VRM usato l’ultima volta resta quello predefinito. Usa questo pulsante solo quando vuoi cambiarlo.'));
+    box.body.appendChild(el('div', 'xra-note', 'L’ultimo VRM scelto viene copiato nella cartella avatars/ dell’app (non dipende da Download/Desktop). Usa questo pulsante solo quando vuoi cambiarlo.'));
 
     commandButton(box.body, 'Load / change VRM…', async () => {
       await XRA.nativeBridge?.openVrmPicker?.();

@@ -108,7 +108,7 @@
     avatar.className = 'xra-start-avatar';
     const avatarText = document.createElement('div');
     avatarText.className = 'xra-sub';
-    avatarText.textContent = 'Avatar: viene mantenuto automaticamente l’ultimo VRM usato.';
+    avatarText.textContent = 'Avatar: l’ultimo VRM scelto viene copiato in avatars/ e ripristinato all’avvio.';
     const avatarButton = document.createElement('button');
     avatarButton.type = 'button';
     avatarButton.className = 'xra-action';

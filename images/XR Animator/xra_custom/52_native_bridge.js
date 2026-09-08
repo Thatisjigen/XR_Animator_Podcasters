@@ -166,12 +166,37 @@
 
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-  async function persistAvatar(filename) {
-    config.avatar ||= {};
-    config.avatar.filename = String(filename || '');
-    const saved = await XRA.profileService.save(0);
-    if (!saved) XRA.toast('Avatar attivo, ma il profilo non è stato salvato', 'error', 6000);
-    return saved;
+  async function uploadAvatarCopy(file) {
+    const filename = file?.name || basename(file?.path) || 'avatar.vrm';
+    const response = await fetch(`/__xra_avatar?filename=${encodeURIComponent(filename)}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': file.type || 'application/octet-stream',
+        'X-Filename': filename
+      },
+      body: file
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok || !data.filename) {
+      throw new Error(data.error || `Impossibile copiare “${filename}” nella libreria avatar`);
+    }
+    return String(data.filename);
+  }
+
+  async function persistAvatar(file) {
+    try {
+      const stored = await uploadAvatarCopy(file);
+      config.avatar ||= {};
+      config.avatar.filename = stored;
+      const saved = await XRA.profileService.save(0);
+      if (!saved) XRA.toast('Avatar copiato, ma il profilo non è stato salvato', 'error', 6000);
+      return saved;
+    }
+    catch (error) {
+      console.error(TAG, 'avatar library save failed', error);
+      XRA.toast('Avatar attivo, ma non è stato salvato in avatars/: ' + (error.message || error), 'error', 6000);
+      return false;
+    }
   }
 
   async function loadVrmFile(file, { persist = true, quiet = false } = {}) {
@@ -204,7 +229,7 @@
           await sleep(350);
           try {
             if (await swapToModel(candidate)) {
-              if (persist) await persistAvatar(filename);
+              if (persist) await persistAvatar(file);
               if (!quiet) XRA.toast(`Avatar attivo: ${filename}`);
               events.emit('avatar-changed', { name: filename, modelIndex: candidate });
               return true;
@@ -222,7 +247,7 @@
       // an extra model. If the list itself changed, accept that as success.
       const afterModels = modelList();
       if (afterModels.length && (afterModels.length !== beforeModels.length || afterModels.some((m,i) => m !== beforeModels[i]))) {
-        if (persist) await persistAvatar(filename);
+        if (persist) await persistAvatar(file);
         if (!quiet) XRA.toast(`Avatar caricato: ${filename}`);
         events.emit('avatar-changed', { name: filename, modelIndex: -1 });
         return true;
@@ -236,10 +261,7 @@
   }
 
   function savedAvatarFilename() {
-    const explicit = String(config.avatar?.filename || '').trim();
-    if (explicit) return explicit;
-    const paths = extraModelPaths();
-    return paths.length ? basename(paths[paths.length - 1]) : '';
+    return String(config.avatar?.filename || '').trim();
   }
 
   async function restoreSavedVrm() {
@@ -255,7 +277,7 @@
       if (existing >= 0 && await swapToModel(existing)) return true;
 
       const response = await fetch(`/__xra_avatar/${encodeURIComponent(filename)}`, { cache:'no-store' });
-      if (!response.ok) throw new Error(`VRM salvato non trovato: ${filename}`);
+      if (!response.ok) throw new Error(`Avatar non trovato in avatars/: ${filename}. Caricalo di nuovo una volta: verrà copiato nella cartella dell’app e riusato agli avvii successivi.`);
       const blob = await response.blob();
       const file = new File([blob], filename, { type:blob.type || 'model/gltf-binary' });
       return loadVrmFile(file, { persist:false, quiet:true });
