@@ -1,0 +1,128 @@
+{
+  "version": 7.80,
+  "custom": {
+    "camera": {
+      "optimized": true,
+      "width": 640,
+      "height": 480,
+      "fps": 30
+    },
+    "pose_model": "Normal",
+    "lip": {
+      "optimized": true,
+      "fft_size": 512,
+      "analysis_fps": 30,
+      "mic_mix": 0.6,
+      "threshold": 0.018,
+      "meter_visible": false,
+      "response_gain": 1.0,
+      "vowel_emphasis": 1.0
+    },
+    "performance": {
+      "preset": "CUSTOM",
+      "master_preset": "CUSTOM",
+      "tracking_pipeline": "SPLIT",
+      "disable_postfx": false,
+      "pose_fps": 30,
+      "hand_fps": 20,
+      "auto_last_result": null,
+      "runtime_adaptive": false,
+      "diagnostics_hud": false
+    },
+    "body": {
+      "anchor_strength": 0.8,
+      "transition_ms": 450,
+      "stable": false
+    },
+    "tracking": {
+      "hands_enabled": true,
+      "hand_recovery_mode": "normal",
+      "hand_detection_sensitivity": "high",
+      "native_smoothing": 0,
+      "body_bend_reduction": 0,
+      "upper_body_guard": false,
+      "upper_body_guard_strength": 0.0,
+      "guard_jump_deg": 42,
+      "guard_hold_ms": 650,
+      "guard_reacquire_deg": 60,
+      "guard_mode": "off",
+      "desk_torso_lock": 0.55,
+      "desk_hips_lock": 0.92,
+      "desk_legs_lock": 1.0,
+      "adaptive_smoothing": true,
+      "adaptive_smoothing_strength": 0.45,
+      "guard_confidence_min": 0.35,
+      "desk_max_yaw_deg": 25,
+      "desk_max_pitch_deg": 15,
+      "desk_max_roll_deg": 12,
+      "guard_release_ms": 450,
+      "freeze_head_on_face_loss": false,
+      "freeze_recovery_ms": 350
+    },
+    "background": {
+      "mode": "color",
+      "color": "#202020",
+      "path": "backgrounds/default.png"
+    },
+    "collider": {
+      "preset": "CUSTOM",
+      "mode": 0,
+      "reaction": "z_push",
+      "head": 100,
+      "chest": 100,
+      "waist": 100,
+      "hip": 100
+    },
+    "visual_effects": {
+      "UnrealBloom": null,
+      "N8AO": null,
+      "DOF": null
+    },
+    "left_settings": {},
+    "avatar": {
+      "filename": ""
+    },
+    "devices": {
+      "mic_device_id": "",
+      "camera_device_id": "",
+      "camera_label": "",
+      "mirror_preview": false,
+      "selfie_mode": false
+    },
+    "recorder": {
+      "preset": "PODCAST",
+      "mode": "video_audio",
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "video_bps": 3000000,
+      "audio_bps": 128000,
+      "audio_profile": "podcast",
+      "noise_gate": true,
+      "gate_threshold_db": -48,
+      "gate_noise_floor_db": null,
+      "gate_hold_ms": 160,
+      "gate_release_ms": 120,
+      "segment_minutes": 0,
+      "output_format": "webm",
+      "output_dir": "",
+      "filename": "XR_Animator_{date}_{time}",
+      "raw_audio_backup": true,
+      "raw_audio_format": "flac",
+      "hardware_encode": "auto",
+      "chroma_safe": true,
+      "force_render_resolution": true,
+      "capture_source": "classic_v74"
+    },
+    "ui": {
+      "visible": true,
+      "show_startup": true,
+      "active_tab": "quick",
+      "language": "auto",
+      "preview_video": null,
+      "preview_wireframe": null,
+      "preview_debug": null
+    }
+  },
+  "XR_Animator_settings": null
+}
