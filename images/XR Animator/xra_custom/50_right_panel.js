@@ -183,6 +183,74 @@
     box.body.append(note, open);
   }
 
+  function installCameraView(parent) {
+    const box = details(parent, '📷 Camera & Viewport');
+    const note = el('div', 'xra-note');
+    note.textContent = 'Gestione dell\'inquadratura 3D, zoom e blocco dello spostamento con il mouse.';
+
+    const lockWrap = el('div', 'xra-stack-control');
+    const lockInput = document.createElement('input');
+    lockInput.type = 'checkbox';
+    const lockStatus = el('div', 'xra-sub');
+    lockWrap.append(lockInput, lockStatus);
+
+    const applyLock = (locked) => {
+      if (window.MMD_SA?._trackball_camera) {
+        window.MMD_SA._trackball_camera.enabled = !locked;
+      }
+      lockStatus.textContent = locked ? 'Controlli mouse: BLOCCATI (inquadratura fissa)' : 'Controlli mouse: ATTIVI';
+    };
+
+    bindRefresh(() => {
+      const locked = !!config.camera?.mouse_locked;
+      lockInput.checked = locked;
+      applyLock(locked);
+    });
+
+    lockInput.onchange = async () => {
+      config.camera ||= {};
+      config.camera.mouse_locked = !!lockInput.checked;
+      applyLock(config.camera.mouse_locked);
+      await XRA.profileService.save();
+    };
+
+    row(box.body, 'Lock mouse camera controls', lockWrap, {
+      reset: async () => {
+        config.camera ||= {};
+        config.camera.mouse_locked = false;
+        applyLock(false);
+        await XRA.profileService.save();
+        refreshAll();
+      },
+      isDefault: () => !config.camera?.mouse_locked,
+      sub: 'Disabilita rotazione, rotellina dello zoom e Ctrl+trascinamento per evitare modifiche involontarie all\'inquadratura.'
+    });
+
+    const resetBtn = button('Reset camera view', 'xra-action');
+    resetBtn.onclick = () => {
+      try {
+        if (window.MMD_SA?.reset_camera) window.MMD_SA.reset_camera(true);
+        if (window.System?._browser?.camera?._update_camera_reset) {
+          window.System._browser.camera._update_camera_reset();
+        }
+        XRA.toast('Inquadratura ripristinata', 'info');
+      } catch (e) {
+        console.warn(TAG, 'camera reset failed', e);
+        XRA.toast('Errore ripristino inquadratura', 'error');
+      }
+    };
+
+    row(box.body, 'Reset camera framing', resetBtn, {
+      sub: 'Azzera zoom, pan e rotazione della visuale tornando alle coordinate predefinite.'
+    });
+
+    window.addEventListener('MMDStarted', () => {
+      if (config.camera?.mouse_locked && window.MMD_SA?._trackball_camera) {
+        window.MMD_SA._trackball_camera.enabled = false;
+      }
+    });
+  }
+
   function installLip(parent) {
     const box = details(parent, '🎙 Lip sync', { open: true });
     lipDetails = box.details;
@@ -991,43 +1059,56 @@
         isDefault: () => safeGetFx() === captureBaseline()
       });
     }
-    const nativeFx = button('Open advanced visual effects');
-    const closeNativeFx = button('Close advanced visual effects');
-    const closeFxGui = () => {
-      const gui = window.MMD_SA?.THREEX?.GUI?.obj?.visual_effects;
-      const dom = gui?.domElement || gui?.__ul?.closest?.('.dg') || document.querySelector('.dg.main.xra-native-fx-centered');
-      try { gui?.hide?.(); } catch (e) {}
-      if (dom instanceof HTMLElement) {
-        dom.classList.remove('xra-native-fx-centered');
-        if (!gui?.hide) dom.style.display = 'none';
-        dom.querySelector('.xra-native-fx-close')?.remove();
-      }
-    };
-    nativeFx.onclick = async () => {
+    const fxParamsBox = details(fxAdvanced.body, 'Advanced effect parameters (Lights & Shaders)');
+    const fxMount = el('div', 'xra-native-fx-mount');
+    const fxStatus = el('div', 'xra-note');
+    fxStatus.textContent = 'Apri per caricare i parametri dettagliati (luci, bloom, DOF)...';
+    fxMount.appendChild(fxStatus);
+    fxParamsBox.body.appendChild(fxMount);
+
+    const mountFxGui = async () => {
       try {
+        if (window.MMD_SA?.THREEX?.PPE && !window.MMD_SA.THREEX.PPE.initialized) {
+          await window.MMD_SA.THREEX.PPE.init?.();
+        }
+        if (window.MMD_SA?.THREEX?.GUI && !window.MMD_SA.THREEX.GUI.obj?.visual_effects) {
+          await window.MMD_SA.THREEX.GUI.init?.();
+        }
         const gui = window.MMD_SA?.THREEX?.GUI?.obj?.visual_effects;
-        if (!gui) throw new Error('Visual Effects GUI not ready');
-        if (window.MMD_SA?.THREEX?.PPE && !MMD_SA.THREEX.PPE.initialized) await MMD_SA.THREEX.PPE.init?.();
-        gui.show?.();
-        requestAnimationFrame(() => {
-          const dom = gui.domElement || gui.__ul?.closest?.('.dg') || document.querySelector('.dg.main');
-          if (dom instanceof HTMLElement) {
-            dom.style.display = '';
-            dom.classList.add('xra-native-fx-centered');
-            let x = dom.querySelector('.xra-native-fx-close');
-            if (!x) {
-              x = document.createElement('button'); x.type = 'button'; x.className = 'xra-native-fx-close'; x.textContent = '×'; x.title = 'Close advanced visual effects';
-              x.onclick = event => { event.preventDefault(); event.stopPropagation(); closeFxGui(); };
-              dom.appendChild(x);
+        if (!gui) {
+          fxStatus.textContent = 'Parametri avanzati non ancora pronti.';
+          return;
+        }
+        const dom = gui.domElement || gui.__ul?.closest?.('.dg') || document.querySelector('.lil-gui.root') || document.querySelector('.dg.main');
+        if (dom instanceof HTMLElement) {
+          dom.classList.remove('xra-native-fx-centered');
+          dom.classList.add('xra-native-fx-embedded');
+          dom.querySelector('.xra-native-fx-close')?.remove();
+          dom.querySelectorAll('button').forEach(btn => {
+            if (/hide controls/i.test(btn.textContent)) {
+              const row = btn.closest('.controller') || btn.parentElement;
+              if (row) row.style.display = 'none';
             }
+          });
+          fxStatus.remove();
+          if (!fxMount.contains(dom)) {
+            fxMount.appendChild(dom);
           }
-        });
+          dom.style.display = '';
+          gui.show?.();
+        }
       }
-      catch (e) { XRA.toast(e.message, 'error'); }
+      catch (e) {
+        console.warn(TAG, 'mountFxGui failed', e);
+        fxStatus.textContent = 'Impossibile caricare i parametri: ' + e.message;
+      }
     };
-    closeNativeFx.onclick = closeFxGui;
-    const nativeFxActions = el('div', 'xra-actions'); nativeFxActions.append(nativeFx, closeNativeFx);
-    fxAdvanced.body.appendChild(nativeFxActions);
+
+    fxParamsBox.details.addEventListener('toggle', () => {
+      if (fxParamsBox.details.open) {
+        mountFxGui();
+      }
+    });
 
     const native = el('div', 'xra-status');
     bindRefresh(() => {
@@ -1254,6 +1335,7 @@
     const content = el('div', 'xra-right-content');
     installHealth(content);
     installStudioLink(content);
+    installCameraView(content);
     installLip(content);
     installBody(content);
     installCollider(content);
