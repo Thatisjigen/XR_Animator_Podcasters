@@ -194,12 +194,108 @@
     const lockStatus = el('div', 'xra-sub');
     lockWrap.append(lockInput, lockStatus);
 
-    const applyLock = (locked) => {
-      if (window.MMD_SA?._trackball_camera) {
-        window.MMD_SA._trackball_camera.enabled = !locked;
+    const isUiElement = (target) => {
+      if (!target || !(target instanceof Element)) return false;
+      if (target.closest(`
+        #XRA_CUSTOM_PANEL,
+        #XRA_NATIVE_SETTINGS,
+        .xra-right-panel,
+        .xra-panel,
+        [class*="xra-"],
+        .lil-gui,
+        .dg,
+        #Ldrag_box,
+        #Ltitle,
+        #Lsettings,
+        #Lsystem,
+        #Lquick_menu,
+        #Lside_menu,
+        #Lmessage_box,
+        #Lspeech_bubble_host,
+        dialog,
+        [role="dialog"],
+        [role="button"],
+        [role="menu"],
+        [role="menuitem"],
+        [role="tab"]
+      `)) {
+        return true;
       }
+      const tag = target.tagName.toLowerCase();
+      if (['button', 'input', 'select', 'textarea', 'label', 'summary', 'details', 'a', 'option'].includes(tag)) {
+        return true;
+      }
+      return false;
+    };
+
+    let isUiDragActive = false;
+    window.addEventListener('pointerdown', (e) => {
+      if (isUiElement(e.target)) isUiDragActive = true;
+    }, true);
+    window.addEventListener('mousedown', (e) => {
+      if (isUiElement(e.target)) isUiDragActive = true;
+    }, true);
+    window.addEventListener('pointerup', () => { isUiDragActive = false; }, true);
+    window.addEventListener('mouseup', () => { isUiDragActive = false; }, true);
+    window.addEventListener('pointercancel', () => { isUiDragActive = false; }, true);
+
+    const patchTrackball = (tb) => {
+      if (!tb || tb._xra_lock_patched) return;
+      tb._xra_lock_patched = true;
+      const origUpdate = tb.update;
+      tb.update = function() {
+        if (config.camera?.mouse_locked) return;
+        return origUpdate.apply(this, arguments);
+      };
+    };
+
+    const applyLock = (locked) => {
+      const tb = window.MMD_SA?._trackball_camera;
+      if (tb) {
+        patchTrackball(tb);
+        tb.enabled = !locked;
+        tb._enabled = !locked;
+        tb.noRotate = !!locked;
+        tb.noZoom = !!locked;
+        tb.noPan = !!locked;
+      }
+      if (window.MMD_SA?.THREEX?.camera?.control) {
+        window.MMD_SA.THREEX.camera.control.enabled = !locked;
+      }
+      try {
+        window.System?.Gadget?.Settings?.writeString?.('MMDTrackballCamera', locked ? 'non_default' : '');
+      } catch (e) {}
       lockStatus.textContent = locked ? 'Controlli mouse: BLOCCATI (inquadratura fissa)' : 'Controlli mouse: ATTIVI';
     };
+
+    const shouldBlockEvent = (e) => {
+      if (!config.camera?.mouse_locked) return false;
+      if (isUiDragActive) return false;
+      return !isUiElement(e.target);
+    };
+
+    const blockEvent = (e) => {
+      if (shouldBlockEvent(e)) {
+        e.stopImmediatePropagation();
+        e.preventDefault();
+      }
+    };
+
+    const blockMoveEvent = (e) => {
+      if (shouldBlockEvent(e) && (e.buttons > 0 || e.which > 0)) {
+        e.stopImmediatePropagation();
+        e.preventDefault();
+      }
+    };
+
+    window.addEventListener('mousedown', blockEvent, true);
+    window.addEventListener('pointerdown', blockEvent, true);
+    window.addEventListener('mousemove', blockMoveEvent, true);
+    window.addEventListener('pointermove', blockMoveEvent, true);
+    window.addEventListener('wheel', blockEvent, { capture: true, passive: false });
+    window.addEventListener('touchstart', blockEvent, true);
+    window.addEventListener('touchmove', blockEvent, true);
+    window.addEventListener('contextmenu', blockEvent, true);
 
     bindRefresh(() => {
       const locked = !!config.camera?.mouse_locked;
@@ -229,6 +325,9 @@
     const resetBtn = button('Reset camera view', 'xra-action');
     resetBtn.onclick = () => {
       try {
+        if (window.MMD_SA?._trackball_camera?.reset) {
+          window.MMD_SA._trackball_camera.reset();
+        }
         if (window.MMD_SA?.reset_camera) window.MMD_SA.reset_camera(true);
         if (window.System?._browser?.camera?._update_camera_reset) {
           window.System._browser.camera._update_camera_reset();
@@ -245,9 +344,10 @@
     });
 
     window.addEventListener('MMDStarted', () => {
-      if (config.camera?.mouse_locked && window.MMD_SA?._trackball_camera) {
-        window.MMD_SA._trackball_camera.enabled = false;
-      }
+      applyLock(!!config.camera?.mouse_locked);
+    });
+    window.addEventListener('jThree_ready', () => {
+      applyLock(!!config.camera?.mouse_locked);
     });
   }
 
@@ -1083,6 +1183,15 @@
         if (dom instanceof HTMLElement) {
           dom.classList.remove('xra-native-fx-centered');
           dom.classList.add('xra-native-fx-embedded');
+          dom.style.position = 'static';
+          dom.style.width = '100%';
+          dom.style.maxWidth = '100%';
+          dom.style.transform = 'none';
+          dom.style.zIndex = 'auto';
+          dom.style.top = 'auto';
+          dom.style.left = 'auto';
+          dom.style.right = 'auto';
+          dom.style.bottom = 'auto';
           dom.querySelector('.xra-native-fx-close')?.remove();
           dom.querySelectorAll('button').forEach(btn => {
             if (/hide controls/i.test(btn.textContent)) {
@@ -1105,6 +1214,17 @@
     };
 
     fxParamsBox.details.addEventListener('toggle', () => {
+      if (fxParamsBox.details.open) {
+        mountFxGui();
+      }
+    });
+
+    window.addEventListener('MMDStarted', () => {
+      if (fxParamsBox.details.open) {
+        mountFxGui();
+      }
+    });
+    window.addEventListener('jThree_ready', () => {
       if (fxParamsBox.details.open) {
         mountFxGui();
       }
