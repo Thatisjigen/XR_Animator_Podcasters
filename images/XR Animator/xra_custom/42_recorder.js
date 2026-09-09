@@ -268,10 +268,15 @@
     if (!ppe) return;
     chromaFxRestore = {};
     for (const key of ['UnrealBloom', 'DOF']) {
-      const fx = ppe?.[key];
-      if (!fx || typeof fx.enabled !== 'boolean') continue;
-      chromaFxRestore[key] = !!fx.enabled;
-      fx.enabled = false;
+      try {
+        const fx = ppe?.[key];
+        if (!fx) continue;
+        let isEnabled = false;
+        try { isEnabled = !!fx.enabled; } catch (e) { continue; }
+        if (!isEnabled) continue;
+        chromaFxRestore[key] = true;
+        try { fx.enabled = false; } catch (e) {}
+      } catch (e) {}
     }
   }
 
@@ -314,7 +319,25 @@
     return captureSourceMode() === 'native_xr' && (cfg().mode || 'video_audio') !== 'audio';
   }
 
+  function ensureNativeGlobals() {
+    try {
+      window.System = window.System || {};
+      window.System._browser = window.System._browser || {};
+      window.System._browser.camera = window.System._browser.camera || {};
+      if (!window.System._browser.camera.bodyPix) window.System._browser.camera.bodyPix = { enabled: false };
+      if (!window.System._browser.camera.face_detection) window.System._browser.camera.face_detection = { enabled: false };
+      if (window.System._browser.video_capture && !window.System._browser.video_capture.FFmpeg) {
+        window.System._browser.video_capture.FFmpeg = { enabled: false };
+      }
+      window.MMD_SA = window.MMD_SA || {};
+      if (!window.MMD_SA.motion_player_control) {
+        window.MMD_SA.motion_player_control = { enabled: false, paused: false, pause() {}, play() {}, currentTime: 0, duration: 0 };
+      }
+    } catch (e) {}
+  }
+
   function nativeVideoCapture() {
+    ensureNativeGlobals();
     const vc = window.System?._browser?.video_capture;
     if (!vc || typeof vc.start !== 'function' || typeof vc.stop !== 'function') {
       throw new Error('XR Animator native video recorder is not available in this runtime. Use Clean scene output instead.');
