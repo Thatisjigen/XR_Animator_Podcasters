@@ -9,8 +9,8 @@
   --xra-control: #272729;
   --xra-control-border: rgba(255,255,255,.22);
   --xra-radius: 10px;
-  --xra-right-width: 282px;
-  --xra-left-width: 350px;
+  --xra-right-width: 420px;
+  --xra-left-width: 420px;
 }
 
 /* Never let browser/native CSS change our box math. */
@@ -39,6 +39,13 @@
   font: 12px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   pointer-events: auto;
   background: transparent;
+  transition: width .15s ease;
+}
+
+#XRA_CUSTOM_PANEL.xra-right-panel.panel-closed {
+  width: 200px;
+  right: 0;
+  top: 10px;
 }
 
 .xra-right-header {
@@ -52,6 +59,36 @@
   background: transparent !important;
   border: 0;
   box-shadow: none;
+  transition: width .15s ease;
+}
+
+.panel-closed .xra-right-header {
+  width: 200px;
+  margin: 0 0 4px;
+  padding-right: 0;
+  gap: 4px;
+}
+
+.panel-closed .xra-hands {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 10px;
+  padding: 7px 4px;
+  letter-spacing: 0;
+  text-align: center;
+  border-radius: 8px;
+}
+
+.panel-closed .xra-hide {
+  flex: 0 0 32px;
+  width: 32px;
+  border-radius: 8px;
+}
+
+.panel-closed .xra-total-hide {
+  flex: 0 0 32px;
+  width: 32px;
+  border-radius: 8px;
 }
 
 .xra-hands,
@@ -101,16 +138,16 @@
 }
 
 .xra-right-launcher {
-  position: fixed;
-  right: 0;
-  top: 52px;
-  width: auto;
-  min-height: 36px;
-  height: 36px;
-  padding: 7px 12px;
+  position: static;
+  width: 200px;
+  min-width: 200px;
+  max-width: 200px;
+  min-height: 108px;
+  height: 108px;
+  padding: 12px 14px;
   border: 1px solid var(--xra-panel-border);
   border-right: 0;
-  border-radius: 9px 0 0 9px;
+  border-radius: 12px 0 0 12px;
   background: rgba(24,24,26,.94);
   color: #fff;
   cursor: pointer;
@@ -123,8 +160,10 @@
   transition: background .15s ease, border-color .15s ease;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  z-index: 999999;
+  box-sizing: border-box;
+  text-align: center;
 }
 .xra-right-launcher:hover {
   background: var(--xra-bg-2);
@@ -229,13 +268,19 @@
 
 .xra-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(96px, 118px) 26px;
+  grid-template-columns: minmax(0, 1fr) 160px 26px;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   min-width: 0;
   margin: 5px 0;
 }
-.xra-row.no-reset { grid-template-columns: minmax(0,1fr) minmax(96px,118px); }
+.xra-row.no-reset {
+  grid-template-columns: minmax(0, 1fr) 160px 26px;
+}
+.xra-row.no-reset > .xra-action,
+.xra-row.no-reset > .xra-actions {
+  grid-column: 2 / 4;
+}
 .xra-row-label { min-width: 0; }
 .xra-label { color: var(--xra-text); overflow-wrap: anywhere; }
 .xra-sub { color: var(--xra-muted); font-size: 10px; line-height: 1.35; margin-top: 2px; }
@@ -269,6 +314,7 @@
   width: 17px;
   height: 17px;
   accent-color: #4fa879;
+  cursor: pointer;
 }
 .xra-row input[type="range"] { min-width: 0; width: 100%; accent-color: #6cab89; }
 .xra-row input[type="color"] {
@@ -280,8 +326,31 @@
   border-radius: 6px;
 }
 
-.xra-stack-control { min-width: 0; width: 100%; }
-.xra-stack-control > input[type="range"] { display: block; width: 100%; }
+.xra-stack-control {
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  text-align: right;
+}
+.xra-stack-control > input[type="range"],
+.xra-stack-control > input[type="text"],
+.xra-stack-control > select,
+.xra-stack-control > button,
+.xra-stack-control > .xra-control,
+.xra-stack-control > .xra-meter {
+  display: block;
+  width: 100%;
+}
+.xra-stack-control > input[type="checkbox"] {
+  width: 17px;
+  height: 17px;
+  accent-color: #4fa879;
+  cursor: pointer;
+  align-self: flex-end;
+  margin: 0;
+}
 
 .xra-reset {
   width: 26px;
@@ -313,8 +382,21 @@
 .xra-action.danger { background: #7b3030; }
 .xra-action.active-warm { background: #735d29; }
 
-.xra-actions { display: flex; gap: 6px; margin-top: 6px; }
-.xra-actions > * { flex: 1 1 0; min-width: 0; }
+.xra-actions { display: flex; gap: 6px; margin-top: 4px; width: 100%; }
+.xra-actions > * {
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: 11px;
+  padding: 6px 6px;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: normal;
+  line-height: 1.25;
+}
+.xra-stack-control .xra-actions {
+  flex-direction: column;
+}
 
 .xra-status {
   margin: 5px 0;
@@ -346,7 +428,7 @@
 #XRA_NATIVE_SETTINGS.xra-native-root {
   position: fixed;
   left: 0;
-  top: 52px;
+  top: 50px;
   bottom: 12px;
   z-index: 999998;
   pointer-events: none;
@@ -358,13 +440,15 @@
   position: absolute;
   left: 0;
   top: 0;
-  width: auto;
-  min-height: 36px;
-  height: 36px;
-  padding: 7px 12px;
+  width: 200px;
+  min-width: 200px;
+  max-width: 200px;
+  min-height: 108px;
+  height: 108px;
+  padding: 12px 14px;
   border: 1px solid var(--xra-panel-border);
   border-left: 0;
-  border-radius: 0 9px 9px 0;
+  border-radius: 0 12px 12px 0;
   background: rgba(24,24,26,.94);
   color: #fff;
   cursor: pointer;
@@ -377,7 +461,10 @@
   transition: transform .16s ease, background .15s ease;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
+  box-sizing: border-box;
+  text-align: center;
 }
 .xra-native-launcher:hover {
   background: var(--xra-bg-2);
@@ -474,11 +561,13 @@
   padding: 0 8px 8px;
 }
 
-.xra-native-content .xra-row {
-  grid-template-columns: minmax(0, 1fr) minmax(112px, 145px) 26px;
-}
+.xra-native-content .xra-row,
 .xra-native-content .xra-row.no-reset {
-  grid-template-columns: minmax(0, 1fr) minmax(112px, 145px);
+  grid-template-columns: minmax(0, 1fr) 160px 26px;
+}
+.xra-native-content .xra-row.no-reset > .xra-action,
+.xra-native-content .xra-row.no-reset > .xra-actions {
+  grid-column: 2 / 4;
 }
 
 .xra-native-json {
@@ -1044,8 +1133,13 @@ body.xra-hide-legacy-toolbar #Ldungeon_inventory_backpack {
 }
 
 /* Close & legacy overrides */
-.xra-native-fx-mount .xra-native-fx-close {
+.xra-native-fx-mount .xra-native-fx-close,
+.xra-native-fx-mount .close-button,
+.xra-native-fx-mount .close-bottom,
+.xra-native-fx-mount .close-top {
   display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
 }
 
 @media (max-width: 520px) {
