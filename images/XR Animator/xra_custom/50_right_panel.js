@@ -15,6 +15,7 @@
   let lipDetails = null;
   let backgroundsLoaded = false;
   let healthTimer = 0;
+  let studioWindow = null;
 
   function markCustomPreset() {
     if (config.performance?.master_preset && config.performance.master_preset !== 'CUSTOM') {
@@ -153,6 +154,33 @@
     healthTimer = setInterval(update, 1000);
     events.on('camera-started', update); events.on('camera-stopped', update);
     events.on('hands', update); events.on('audio-engine', update); events.on('audio-engine-stop', update);
+  }
+
+  function openStudioLink() {
+    if (studioWindow && !studioWindow.closed) {
+      studioWindow.focus();
+      return;
+    }
+
+    studioWindow = window.open(
+      '/p2p_chat.html',
+      'xra-studio-link',
+      'popup=yes,width=980,height=760,resizable=yes,scrollbars=yes'
+    );
+    if (!studioWindow) {
+      XRA.toast('Il browser ha bloccato la finestra della chat.', 'error', 4500);
+      return;
+    }
+    studioWindow.focus();
+  }
+
+  function installStudioLink(parent) {
+    const box = details(parent, '💬 Studio Link');
+    const note = el('div', 'xra-note');
+    note.textContent = 'Apre chat, voce e condivisione schermo P2P in una finestra separata.';
+    const open = button('APRI CHAT', 'xra-action primary');
+    open.onclick = openStudioLink;
+    box.body.append(note, open);
   }
 
   function installLip(parent) {
@@ -339,7 +367,34 @@
     row(box.body, 'Body stabilization', stabilizationWrap, {
       reset: async () => XRA.tracking.setBodyStabilization(false, false),
       isDefault: () => !XRA.tracking.bodyStable,
-      sub: 'OFF keeps body tracking fully live. ON captures the current body pose and stabilizes it with Anchor strength; an internal anti-glitch guard rejects implausible torso jumps.'
+      sub: 'OFF keeps body tracking fully live. ON captures the current pose; Anchor strength blends both avatar root translation and body rotation.'
+    });
+
+    const hysteresis = document.createElement('input');
+    hysteresis.type = 'checkbox';
+    const hysteresisWrap = el('div', 'xra-stack-control');
+    const hysteresisStatus = el('div', 'xra-sub');
+    hysteresisWrap.append(hysteresis, hysteresisStatus);
+    bindRefresh(() => {
+      hysteresis.checked = !!XRA.tracking.motionHysteresis;
+      hysteresisStatus.textContent = XRA.tracking.guardHoldActive
+        ? 'Motion hysteresis: HOLDING LAST VALID'
+        : (hysteresis.checked ? 'Motion hysteresis: ON' : 'Motion hysteresis: OFF');
+    });
+    hysteresis.onchange = () => {
+      XRA.tracking.setMotionHysteresis(hysteresis.checked, hysteresis.checked);
+      refreshAll();
+    };
+    events.on('upper-body-guard-reject', () => {
+      if (XRA.tracking.motionHysteresis) hysteresisStatus.textContent = 'Motion hysteresis: HOLDING LAST VALID';
+    });
+    events.on('upper-body-guard-reacquired', () => {
+      if (XRA.tracking.motionHysteresis) hysteresisStatus.textContent = 'Motion hysteresis: ON';
+    });
+    row(box.body, 'Motion hysteresis (anti-jerk)', hysteresisWrap, {
+      reset: async () => XRA.tracking.setMotionHysteresis(false, false),
+      isDefault: () => !config.tracking?.motion_hysteresis_enabled,
+      sub: 'Detects rapid pose bursts across a short multi-frame window, holds the last valid pose, then resumes after coherent frames. Independent from body stabilization and tracking-loss protection.'
     });
 
     const strengthWrap = el('div', 'xra-stack-control');
@@ -365,7 +420,7 @@
     const anchorRow = row(box.body, 'Anchor strength', strengthWrap, {
       reset: async () => { config.body.anchor_strength = defaults.body.anchor_strength; },
       isDefault: anchorIsDefault,
-      sub: '0% is almost live while keeping anti-glitch rejection available when stabilization is ON. 100% holds the captured body pose as strongly as possible.'
+      sub: '0% keeps body rotation and translation live. 100% locks the captured body pose and root position; intermediate values blend both.'
     });
     anchorReset = anchorRow.querySelector('.xra-reset');
 
@@ -402,11 +457,15 @@
     recovery.onchange = async () => {
       config.tracking ||= {};
       config.tracking.freeze_recovery_ms = Number(recovery.value);
+      XRA.tracking.broadcastTrackingState?.();
       await XRA.profileService.save();
       refreshAll();
     };
     row(box.body, 'Recovery speed', recovery, {
-      reset: async () => { config.tracking.freeze_recovery_ms = defaults.tracking?.freeze_recovery_ms ?? 350; },
+      reset: async () => {
+        config.tracking.freeze_recovery_ms = defaults.tracking?.freeze_recovery_ms ?? 350;
+        XRA.tracking.broadcastTrackingState?.();
+      },
       isDefault: () => Number(config.tracking?.freeze_recovery_ms ?? 350) === Number(defaults.tracking?.freeze_recovery_ms ?? 350),
       sub: 'Controls how quickly the avatar blends from the frozen pose back to live tracking after the detector is stable again.'
     });
@@ -418,7 +477,7 @@
     recapture.onclick = async () => {
       if (!XRA.tracking.bodyStable) return;
       const body = XRA.tracking.captureBodyPose();
-      const guard = XRA.tracking.captureGuardPose();
+      const guard = XRA.tracking.motionHysteresis ? XRA.tracking.captureGuardPose() : 0;
       XRA.toast(body || guard ? 'Reference pose captured' : 'Avatar bones not ready', body || guard ? 'info' : 'error');
     };
     advanced.body.appendChild(recapture);
@@ -451,7 +510,7 @@
         const value = Number(config.tracking?.[key] ?? def);
         input.value = String(value * scale);
         text.textContent = `${Number(input.value).toFixed(step < 1 ? 1 : 0)}${suffix}`;
-        if (disabledWhenOff) input.disabled = !XRA.tracking.bodyStable;
+        if (disabledWhenOff) input.disabled = !XRA.tracking.motionHysteresis;
         if (resetButton) resetButton.disabled = isDefault();
       });
       input.oninput = () => {
@@ -476,7 +535,7 @@
 
     trackingSlider(advanced.body, 'Reject jump above', 'guard_jump_deg',
       { min: 15, max: 100, step: 1, suffix: '°', defaultValue: 42,
-        sub: 'Rejects implausibly large tracked-pose rotation jumps while body stabilization is active.' });
+        sub: 'Sets the rapid-rotation threshold used across the motion hysteresis multi-frame window.' });
     trackingSlider(advanced.body, 'Hold last valid pose', 'guard_hold_ms',
       { min: 100, max: 2000, step: 50, suffix: ' ms', defaultValue: 650,
         sub: 'How long the anti-glitch safety holds the last valid full pose after a rejected tracking jump.' });
@@ -490,7 +549,7 @@
     const adaptiveSmooth = document.createElement('input'); adaptiveSmooth.type = 'checkbox';
     bindRefresh(() => {
       adaptiveSmooth.checked = config.tracking?.adaptive_smoothing !== false;
-      adaptiveSmooth.disabled = !XRA.tracking.bodyStable;
+      adaptiveSmooth.disabled = !XRA.tracking.motionHysteresis;
     });
     adaptiveSmooth.onchange = async () => {
       config.tracking ||= {}; config.tracking.adaptive_smoothing = adaptiveSmooth.checked;
@@ -510,8 +569,8 @@
       confidenceTimer = 0;
       if (!advanced.details.open) return;
       confidenceTimer = setInterval(() => {
-        if (!XRA.tracking.bodyStable) {
-          confidenceStatus.textContent = 'Body stabilization is off';
+        if (!XRA.tracking.motionHysteresis) {
+          confidenceStatus.textContent = 'Motion hysteresis is off';
           return;
         }
         const measured = XRA.tracking?.guardMeasuredConfidence;
@@ -663,32 +722,21 @@
     const perfAdvanced = details(box.body, 'Advanced');
 
     const pipeline = select([
-      ['Face', 'Face only'],
-      ['Face+Body', 'Face + Body (Split)'],
       ['Full Body', 'Full body (MediaPipe Vision)'],
-      ['Full Body Holistic', 'Full body (Legacy Holistic)']
+      ['Face', 'Face only']
     ]);
     bindRefresh(() => {
-      const current = XRA.performance.currentNativeType() || 'Face+Body';
+      let current = XRA.performance.currentNativeType() || 'Full Body';
+      if (current === 'Face+Body' || current === 'Full Body Holistic') current = 'Full Body';
       pipeline.querySelector('option[data-xra-legacy-current]')?.remove();
       if ([...pipeline.options].some(o => o.value === current)) {
         pipeline.value = current;
       }
       else {
-        // Do not pretend an old Body / Body+Hands profile is Face-only. Show
-        // the legacy state accurately, but keep it non-selectable so the normal
-        // menu still contains only the useful modes requested for V7.4.
-        const legacy = document.createElement('option');
-        legacy.value = current;
-        legacy.textContent = `Current mode (compatibility): ${current}`;
-        legacy.disabled = true;
-        legacy.dataset.xraLegacyCurrent = '1';
-        pipeline.prepend(legacy);
-        pipeline.value = current;
+        pipeline.value = 'Full Body';
       }
     });
     pipeline.onchange = async () => {
-      if (!confirm('Changing tracking mode restarts mocap. Continue?')) { refreshAll(); return; }
       pipeline.disabled = true;
       try { await XRA.performance.setMocapMode(pipeline.value); }
       finally { pipeline.disabled = false; refreshAll(); }
@@ -816,6 +864,60 @@
       sub: 'Diagnostic overlay with render FPS, inference targets, recorder frame estimate, mic/gate and Torso Guard confidence. Cost is near-zero when disabled.'
     });
 
+    const debugSession = document.createElement('input'); debugSession.type = 'checkbox';
+    const debugSessionWrap = el('div', 'xra-stack-control');
+    const debugStatus = el('div', 'xra-sub');
+    debugSessionWrap.append(debugSession, debugStatus);
+    const refreshDebugStatus = () => {
+      const active = !!XRA.debug?.enabled;
+      debugSession.checked = active;
+      debugStatus.textContent = active
+        ? `Debug session: ON · ${XRA.debug?.eventCount || 0} events`
+        : `Debug session: OFF · ${XRA.debug?.eventCount || 0} events in memory`;
+    };
+    bindRefresh(refreshDebugStatus);
+    events.on('debug-count', refreshDebugStatus);
+    events.on('debug-session', refreshDebugStatus);
+    events.on('debug-log', refreshDebugStatus);
+    debugSession.onchange = async () => {
+      XRA.debug?.setEnabled(debugSession.checked);
+      refreshDebugStatus();
+      await XRA.profileService.save(0);
+      refreshAll();
+    };
+    row(perfAdvanced.body, 'Debug session', debugSessionWrap, {
+      sub: 'Records tracking, stabilization and pose-change diagnostics in memory. Off by default; no camera frames or device IDs are saved.'
+    });
+
+    const debugActions = el('div', 'xra-actions');
+    const exportDebug = button('Export debug log');
+    const clearDebug = button('Clear debug log');
+    exportDebug.onclick = async () => {
+      exportDebug.disabled = true;
+      try {
+        const result = await XRA.debug?.exportLog?.();
+        if (result?.cancelled) XRA.toast('Debug log save cancelled');
+        else if (result?.ok) XRA.toast(`Debug log saved: ${result.path} (${result.count} events)`);
+        else XRA.toast('Debug log save failed', 'error');
+      }
+      catch (error) {
+        XRA.toast(`Debug log save failed: ${error?.message || error}`, 'error', 5000);
+      }
+      finally {
+        exportDebug.disabled = false;
+        refreshDebugStatus();
+      }
+    };
+    clearDebug.onclick = () => {
+      XRA.debug?.clear?.();
+      XRA.toast('Debug log cleared');
+      refreshAll();
+    };
+    debugActions.append(exportDebug, clearDebug);
+    row(perfAdvanced.body, 'Debug log', debugActions, {
+      sub: 'Enable the session, reproduce the problem, then export the JSON file.'
+    });
+
     const post = document.createElement('input');
     post.type = 'checkbox';
     bindRefresh(() => { post.checked = !!config.performance.disable_postfx; });
@@ -841,34 +943,52 @@
     ]) {
       const input = document.createElement('input');
       input.type = 'checkbox';
+      const safeGetFx = () => {
+        try {
+          const fx = window.MMD_SA?.THREEX?.PPE?.[key];
+          if (!fx) return false;
+          return !!fx.enabled;
+        } catch (e) {
+          return false;
+        }
+      };
+      const safeSetFx = val => {
+        try {
+          const fx = window.MMD_SA?.THREEX?.PPE?.[key];
+          if (fx) fx.enabled = !!val;
+        } catch (e) {}
+      };
       let baselineCaptured = false;
       let baseline = false;
       const captureBaseline = () => {
-        const fx = window.MMD_SA?.THREEX?.PPE?.[key];
-        if (fx && !baselineCaptured) {
-          baseline = !!fx.enabled;
-          baselineCaptured = true;
+        if (!baselineCaptured) {
+          try {
+            const fx = window.MMD_SA?.THREEX?.PPE?.[key];
+            if (fx) {
+              baseline = safeGetFx();
+              baselineCaptured = true;
+            }
+          } catch (e) {}
         }
         return baseline;
       };
       bindRefresh(() => {
         captureBaseline();
         const saved = config.visual_effects?.[key];
-        input.checked = saved == null ? !!window.MMD_SA?.THREEX?.PPE?.[key]?.enabled : !!saved;
-        const fx = window.MMD_SA?.THREEX?.PPE?.[key];
-        if (fx && saved != null) fx.enabled = !!saved;
+        input.checked = saved == null ? safeGetFx() : !!saved;
+        if (saved != null) safeSetFx(saved);
       });
       input.onchange = async () => {
-        config.visual_effects ||= {}; config.visual_effects[key] = !!input.checked;
-        const fx = window.MMD_SA?.THREEX?.PPE?.[key]; if (fx) fx.enabled = !!input.checked;
+        config.visual_effects ||= {};
+        config.visual_effects[key] = !!input.checked;
+        safeSetFx(input.checked);
         await XRA.profileService.save();
       };
       row(fxAdvanced.body, label, input, {
         reset: async () => {
-          const fx = window.MMD_SA?.THREEX?.PPE?.[key];
-          if (fx) fx.enabled = captureBaseline();
+          safeSetFx(captureBaseline());
         },
-        isDefault: () => !!window.MMD_SA?.THREEX?.PPE?.[key]?.enabled === captureBaseline()
+        isDefault: () => safeGetFx() === captureBaseline()
       });
     }
     const nativeFx = button('Open advanced visual effects');
@@ -912,7 +1032,7 @@
     const native = el('div', 'xra-status');
     bindRefresh(() => {
       const state = XRA.performance.nativeSummary();
-      native.textContent = `Native: ${state.mocap}\n${state.width}×${state.height} @ ${state.fps} · Pose ${state.pose}`;
+      native.textContent = `${state.mocap}\n${state.width}×${state.height} @ ${state.fps} · ${state.pose}`;
     });
     box.body.appendChild(native);
   }
@@ -1079,26 +1199,70 @@
     hands.onclick = () => XRA.tracking.setHands(!XRA.tracking.handsEnabled);
 
     const hide = button('🙈', 'xra-hide');
-    hide.title = 'Nascondi tutta la UI';
+    hide.title = 'Nascondi i menu';
     bindRefresh(() => {
       hide.textContent = UI.hidden ? '👁️' : '🙈';
-      hide.title = UI.hidden ? 'Mostra tutta la UI' : 'Nascondi tutta la UI';
+      hide.title = UI.hidden ? 'Mostra i menu' : 'Nascondi i menu';
     });
     hide.onclick = () => UI.setHidden(!UI.hidden);
-    header.append(hands, hide);
+
+    const totalHide = button('🎬', 'xra-total-hide');
+    totalHide.title = "Nascondi completamente l'interfaccia (Premi Esc per ripristinare)";
+    totalHide.onclick = () => UI.setTotalHidden(true);
+
+    header.append(hands, hide, totalHide);
+
+    let panelBodyOpen = true;
+
+    const launcher = button('📋 CONTROL PANEL', 'xra-right-launcher');
+    launcher.hidden = true;
+    launcher.dataset.xraRightLauncher = '1';
+    bindRefresh(() => {
+      const title = XRA.i18n?.t?.('Control panel') || 'Control panel';
+      launcher.textContent = `📋 ${title.toUpperCase()}`;
+      launcher.title = XRA.i18n?.t?.('Open control panel') || 'Open control panel';
+    });
+    launcher.onclick = () => {
+      panelBodyOpen = true;
+      body.hidden = false;
+      launcher.hidden = true;
+      updateMeterLoop();
+    };
 
     body = el('div', 'xra-right-body');
-    UI.registerHideable(body);
 
-    installHealth(body);
-    installLip(body);
-    installBody(body);
-    installCollider(body);
-    installPerformance(body);
-    installBackground(body);
-    installProfile(body);
+    const menuTop = el('div', 'xra-menu-top');
+    const menuTitle = el('div', 'xra-menu-title', 'Control panel');
+    bindRefresh(() => {
+      const title = XRA.i18n?.t?.('Control panel') || 'Control panel';
+      menuTitle.textContent = `📋 ${title.toUpperCase()}`;
+    });
+    const menuClose = button('×', 'xra-menu-close');
+    menuClose.title = 'Close panel';
+    bindRefresh(() => {
+      menuClose.title = XRA.i18n?.t?.('Close panel') || 'Close panel';
+    });
+    menuClose.onclick = () => {
+      panelBodyOpen = false;
+      body.hidden = true;
+      if (!UI.hidden) launcher.hidden = false;
+      updateMeterLoop();
+    };
+    menuTop.append(menuTitle, menuClose);
+    body.appendChild(menuTop);
 
-    panel.append(header, body);
+    const content = el('div', 'xra-right-content');
+    installHealth(content);
+    installStudioLink(content);
+    installLip(content);
+    installBody(content);
+    installCollider(content);
+    installPerformance(content);
+    installBackground(content);
+    installProfile(content);
+    body.appendChild(content);
+
+    panel.append(header, launcher, body);
     document.body.appendChild(panel);
 
     navigator.mediaDevices?.addEventListener?.('devicechange', refreshMicrophones);
@@ -1107,7 +1271,16 @@
       refreshMicrophones();
       refreshAll();
     });
-    events.on('ui-hidden', updateMeterLoop);
+    events.on('ui-hidden', hidden => {
+      if (hidden) {
+        body.hidden = true;
+        launcher.hidden = true;
+      } else {
+        body.hidden = !panelBodyOpen;
+        launcher.hidden = panelBodyOpen;
+      }
+      updateMeterLoop();
+    });
 
     refreshMicrophones();
     refreshAll();
@@ -1121,7 +1294,8 @@
     refresh: refreshAll,
     refreshMicrophones,
     refreshBackgrounds,
-    setHidden: UI.setHidden
+    setHidden: UI.setHidden,
+    setTotalHidden: UI.setTotalHidden
   });
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', create, { once: true });

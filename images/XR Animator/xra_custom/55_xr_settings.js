@@ -225,11 +225,11 @@
 
   function addAvatarApp(content) {
     const box = details(content, '👤 Avatar / app', { open: true });
-    box.body.appendChild(el('div', 'xra-note', 'L’ultimo VRM scelto viene copiato nella cartella avatars/ dell’app (non dipende da Download/Desktop). Usa questo pulsante solo quando vuoi cambiarlo.'));
+    box.body.appendChild(el('div', 'xra-note', 'The selected VRM is saved in the app avatars/ folder. Use this button whenever you want to change avatar.'));
 
     commandButton(box.body, 'Load / change VRM…', async () => {
       await XRA.nativeBridge?.openVrmPicker?.();
-    }, { sub: 'Apre il caricatore VRM nativo di XR Animator senza mantenere la vecchia barra superiore.' });
+    }, { sub: 'Opens the VRM model picker directly.' });
 
     const actions = el('div', 'xra-actions');
     const restart = button('↻ Restart XR Animator');
@@ -259,7 +259,7 @@
     applyLegacyToolbarVisibility();
 
     const note = el('div', 'xra-note',
-      'Native settings are available directly in this panel without opening XR Animator speech-bubble menus.');
+      'Controls are available directly in this panel for a clean, immediate setup.');
     box.body.appendChild(note);
   }
 
@@ -268,6 +268,7 @@
     const current = el('div', 'xra-status');
     const poseSelect = select([['', 'Loading poses…']]);
     let poseBusy = false;
+    let poseRequestSequence = 0;
 
     function poseList() {
       const useTracked = !!(
@@ -320,28 +321,114 @@
       return isCurrentPose(target);
     }
 
-    async function changePoseByKey(key) {
-      const item = window.MMD_SA_options?.Dungeon_options?.item_base?.pose;
-      if (typeof item?._change_motion_ !== 'function') throw new Error('Pose engine not ready');
-      const resolved = resolvePoseByKey(key);
-      if (resolved.index < 0 || !resolved.pose) throw new Error('Selected pose is no longer in the active native list');
+    function preparePoseVariant(target) {
+      if (!target || target.name !== 'stand_simple') return;
+      const motion = window.MMD_SA_options?.motion_para?.stand_simple;
+      if (motion) motion.center_view_enforced = !target.is_full_body;
 
-      // Re-resolve immediately before the native call. This protects against a
-      // list reorder between rendering the dropdown and clicking it.
-      await item._change_motion_(resolved.index, true);
-      let ok = await waitForPose(resolved.pose);
-
-      // A late native list refresh/load can race the first request. Retry once
-      // by identity, never by the old dropdown index.
-      if (!ok) {
-        const retry = resolvePoseByKey(key);
-        if (retry.index >= 0) {
-          await item._change_motion_(retry.index, true);
-          ok = await waitForPose(retry.pose, 1800);
-        }
+      // stand_simple exposes upper/full through a getter which also checks this
+      // native scene flag. Our direct dropdown bypasses the legacy _POSE_ menu
+      // that normally sets it, so the full-body entry otherwise reloads the
+      // same filename but remains upper-body forever.
+      if (target.is_full_body && window.MMD_SA_options?.Dungeon_options) {
+        MMD_SA_options.Dungeon_options.character_movement_disabled = true;
       }
-      if (!ok) throw new Error(`XR Animator did not switch to “${resolved.pose.info || resolved.pose.name}”`);
-      return resolved.pose;
+    }
+
+    async function changePoseByKey(key) {
+      const requestId = `pose-${Date.now().toString(36)}-${++poseRequestSequence}`;
+      const started = performance.now();
+      const item = window.MMD_SA_options?.Dungeon_options?.item_base?.pose;
+      let resolved = null;
+      let suspended = false;
+      const debugContext = () => {
+        let mesh = null;
+        let modelX = null;
+        try { mesh = window.MMD_SA?.THREEX?._THREE?.MMD?.getModels?.()?.[0]?.mesh || null; }
+        catch (e) {}
+        try { modelX = window.MMD_SA?.THREEX?.get_model?.(0) || window.MMD_SA?.THREEX?.models?.[0] || null; }
+        catch (e) {}
+        return {
+          request_id:requestId,
+          selected_key:key,
+          active_list_size:poseList().length,
+          native_change_ready:typeof item?._change_motion_ === 'function',
+          current_motion:window.MMD_SA?.MMD?.motionManager?.filename || null,
+          pipeline:config.performance?.tracking_pipeline || null,
+          camera_initialized:!!window.System?._browser?.camera?.initialized,
+          pose_tracking_enabled:!!window.System?._browser?.camera?.poseNet?.enabled,
+          upper_body_only:!!window.MMD_SA?.MMD?.motionManager?.para_SA?.motion_tracking_upper_body_only,
+          character_movement_disabled:window.MMD_SA_options?.Dungeon_options?.character_movement_disabled ?? null,
+          mmd_mesh_present:!!mesh,
+          mmd_mesh_visible:mesh?.visible ?? null,
+          avatar_type:modelX?.type || modelX?.constructor?.name || null
+        };
+      };
+
+      XRA.debug?.record('pose.change.request', debugContext());
+
+      try {
+        if (typeof item?._change_motion_ !== 'function') throw new Error('Pose engine not ready');
+        resolved = resolvePoseByKey(key);
+        if (resolved.index < 0 || !resolved.pose) throw new Error('Selected pose is no longer in the active native list');
+        XRA.debug?.record('pose.change.resolved', {
+          request_id:requestId, index:resolved.index, name:resolved.pose.name,
+          info:resolved.pose.info, full_body:!!resolved.pose.is_full_body
+        });
+
+        XRA.tracking?.suspendForPoseChange?.();
+        suspended = true;
+        // Re-resolve immediately before the native call. This protects against a
+        // list reorder between rendering the dropdown and clicking it.
+        preparePoseVariant(resolved.pose);
+        const nativeResult = await item._change_motion_(resolved.index, true);
+        XRA.debug?.record('pose.change.native-return', {
+          request_id:requestId, attempt:1, index:resolved.index,
+          return_type:typeof nativeResult,
+          return_value:['string','number','boolean'].includes(typeof nativeResult) ? nativeResult : null
+        });
+        let ok = await waitForPose(resolved.pose);
+
+        // A late native list refresh/load can race the first request. Retry once
+        // by identity, never by the old dropdown index.
+        if (!ok) {
+          const retry = resolvePoseByKey(key);
+          XRA.debug?.record('pose.change.retry', {
+            request_id:requestId, first_index:resolved.index, retry_index:retry.index,
+            list_size:retry.list.length, target_found:!!retry.pose
+          });
+          if (retry.index >= 0) {
+            preparePoseVariant(retry.pose);
+            const retryResult = await item._change_motion_(retry.index, true);
+            XRA.debug?.record('pose.change.native-return', {
+              request_id:requestId, attempt:2, index:retry.index,
+              return_type:typeof retryResult,
+              return_value:['string','number','boolean'].includes(typeof retryResult) ? retryResult : null
+            });
+            ok = await waitForPose(retry.pose, 1800);
+          }
+        }
+        if (!ok) throw new Error(`XR Animator did not switch to “${resolved.pose.info || resolved.pose.name}”`);
+        XRA.debug?.record('pose.change.success', {
+          request_id:requestId, name:resolved.pose.name,
+          elapsed_ms:Math.round((performance.now() - started) * 10) / 10,
+          context:debugContext()
+        });
+        return resolved.pose;
+      }
+      catch (error) {
+        XRA.debug?.record('pose.change.failure', {
+          request_id:requestId,
+          elapsed_ms:Math.round((performance.now() - started) * 10) / 10,
+          error,
+          resolved:resolved ? { index:resolved.index, name:resolved.pose?.name || null } : null,
+          context:debugContext()
+        });
+        throw error;
+      }
+      finally {
+        if (suspended) XRA.tracking?.resumeAfterPoseChange?.();
+      }
     }
 
     function refreshPoseList() {
@@ -597,42 +684,6 @@
     events.on('camera-stopped', () => refreshCameras(false));
   }
 
-  function addSceneNative(content) {
-    const box = details(content, '🌄 Scene / 3D');
-    box.body.appendChild(el('div', 'xra-note',
-      'Il background rapido resta a destra. Qui sono esposte direttamente le opzioni 3D native più utili, senza aprire il menu a fumetto.'));
-
-    const wallpaper = () => window.MMD_SA?.Wallpaper3D || null;
-    const wopt = () => wallpaper()?.options || null;
-
-    addToggle(box.body, '3D wallpaper',
-      () => !!wallpaper()?.enabled,
-      value => { if (wallpaper()) wallpaper().enabled = value; });
-
-    for (const [label, key, min, max, step, suffix] of [
-      ['3D scale XY', 'scale_xy_percent', 10, 300, 5, '%'],
-      ['3D scale Z', 'scale_z_percent', 0, 300, 5, '%'],
-      ['Depth shift', 'depth_shift_percent', -100, 100, 1, '%'],
-      ['Depth contrast', 'depth_contrast_percent', 0, 300, 5, '%'],
-      ['Depth blur', 'depth_blur', 0, 30, 1, 'px'],
-      ['Depth smoothing', 'depth_smoothing_percent', 0, 100, 5, '%'],
-      ['3D X offset', 'pos_x_offset_percent', -200, 200, 5, '%'],
-      ['3D Y offset', 'pos_y_offset_percent', -200, 200, 5, '%'],
-      ['3D Z offset', 'pos_z_offset_percent', -200, 200, 5, '%']
-    ]) {
-      addRange(box.body, label,
-        () => Number(wopt()?.[key] ?? 0),
-        value => {
-          const o = wopt();
-          if (!o) return;
-          o[key] = value;
-          wallpaper()?.update_transform?.();
-          wallpaper()?.update_mesh?.();
-        },
-        { min, max, step, suffix });
-    }
-  }
-
   function addMiscNative(content) {
     const box = details(content, '🔧 Miscellaneous / native tools');
 
@@ -657,13 +708,13 @@
       });
 
     box.body.appendChild(el('div', 'xra-note',
-      'Le opzioni native ancora troppo specifiche per un controllo dedicato restano accessibili nell’editor JSON in fondo al pannello, senza speech bubble.'));
+      'I parametri di configurazione avanzata sono modificabili direttamente nell’editor JSON in fondo al pannello.'));
   }
 
   function addMotion(content) {
     const box = details(content, '🧍 Motion capture', { open: true });
 
-    box.body.appendChild(el('div', 'xra-note', 'Tracking / mocap mode is now in Performance → Advanced on the right, with only the useful combined modes.'));
+    box.body.appendChild(el('div', 'xra-note', 'La modalità di tracciamento (Corpo intero o Solo viso) si seleziona dal pannello rapido a destra sotto Prestazioni → Avanzate.'));
 
     addSelect(box.body, 'Upper body blend', [[0, 'Auto'], [1, 'Simple'], [2, 'Normal']],
       () => camera()?.upper_body_blend_mode_raw ?? 0,
@@ -895,7 +946,7 @@
     box.body.appendChild(handCameraButton);
 
     box.body.appendChild(el('div', 'xra-note',
-      'Hand Camera attaches the virtual camera to the tracked hand. Left / right / off are cycled by the button below; FOV applies while Hand Camera is active.'));
+      'La Hand Camera vincola l\'inquadratura alla mano tracciata. Tramite il pulsante sottostante è possibile alternare tra mano sinistra, destra e disattivata.'));
 
     addNumber(box.body, 'Hand camera FOV',
       () => window.MMD_SA_options?.Dungeon_options?.item_base?.hand_camera?.fov ?? 50,
@@ -910,14 +961,14 @@
 
   function addVisual(content) {
     const box = details(content, '✨ Visual effects');
-    box.body.appendChild(el('div', 'xra-note', 'Bloom / AO / DOF sono sotto Performance → Advanced a destra, insieme alla scorciatoia Post FX. Qui resta l’accesso alle altre funzioni native Visual Effects.'));
+    box.body.appendChild(el('div', 'xra-note', 'Bloom, Occlusione Ambientale e Profondità di Campo sono regolabili nel pannello rapido a destra sotto Prestazioni → Avanzate.'));
 
     addToggle(box.body, 'Audio visualizer',
       () => !!window.MMD_SA_options?.use_CircularSpectrum,
       value => { if (window.MMD_SA_options) MMD_SA_options.use_CircularSpectrum = value; });
 
     box.body.appendChild(el('div', 'xra-note',
-      'Bloom / AO / DOF e il master Post FX sono già nel pannello Performance a destra. Le altre proprietà native esportabili restano nell’Advanced JSON: nessuna apertura del vecchio GUI/fumetto da qui.'));
+      'Gli effetti visivi principali sono gestiti dal pannello rapido a destra. Ulteriori parametri della scena rimangono accessibili nell\'editor JSON avanzato.'));
   }
 
   function addCaptureVMC(content) {
@@ -926,7 +977,7 @@
 
     const recorderBox = details(capture.body, 'Recorder', { open: true });
     recorderBox.body.appendChild(el('div', 'xra-note',
-      'XR native output is recommended: it uses XR Animator’s original high-quality video path (no Chrome screen-sharing permission), while XRA still handles file name, Linux folder, processed podcast audio, RAW mic backup and final format. Clean scene remains experimental for UI-free capture.'));
+      'Consigliato l\'output integrato ad alta fedeltà: registra direttamente la scena senza richiedere la condivisione dello schermo nel browser.'));
 
     const preset = select([
       ['COMPACT', 'Compact'], ['PODCAST', 'Podcast'], ['HIGH', 'High'], ['VERY_HIGH', 'Very High'], ['CUSTOM', 'Custom']
@@ -1133,12 +1184,44 @@
     rawFormat.onchange = () => saveRec('raw_audio_format', rawFormat.value, false);
     row(recorderBox.body, 'RAW backup format', rawFormat);
 
+    const ENCODER_LABELS = {
+      'h264_nvenc': 'NVIDIA NVENC (Hardware)',
+      'h264_qsv': 'Intel Quick Sync (Hardware)',
+      'h264_amf': 'AMD AMF (Hardware)',
+      'h264_videotoolbox': 'Apple VideoToolbox (Hardware)',
+      'libx264': 'CPU · libx264'
+    };
+
     const hwEncode = select([
-      ['auto','Auto hardware / CPU fallback'], ['libx264','CPU · libx264'],
-      ['h264_nvenc','NVIDIA NVENC'], ['h264_qsv','Intel Quick Sync'], ['h264_amf','AMD AMF'], ['h264_videotoolbox','Apple VideoToolbox']
+      ['auto', 'Auto hardware / CPU fallback'],
+      ['libx264', 'CPU · libx264']
     ]);
     bindRefresh(() => { hwEncode.value = rc().hardware_encode || 'auto'; });
     hwEncode.onchange = () => saveRec('hardware_encode', hwEncode.value, false);
+
+    async function refreshHwEncoders() {
+      try {
+        const caps = await XRA.recorder?.capabilities?.();
+        const available = caps?.h264 || [];
+        const opts = [['auto', 'Auto hardware / CPU fallback']];
+        for (const enc of available) {
+          if (enc === 'libx264') continue;
+          opts.push([enc, ENCODER_LABELS[enc] || enc]);
+        }
+        opts.push(['libx264', 'CPU · libx264']);
+        const currentVal = rc().hardware_encode || 'auto';
+        hwEncode.innerHTML = '';
+        for (const [val, label] of opts) {
+          const opt = document.createElement('option');
+          opt.value = val;
+          opt.textContent = label;
+          hwEncode.appendChild(opt);
+        }
+        hwEncode.value = opts.some(([v]) => v === currentVal) ? currentVal : 'auto';
+      } catch (e) {}
+    }
+    refreshHwEncoders();
+
     row(recorderBox.body, 'MP4 encoder', hwEncode, { sub: 'Auto tries available hardware encoding first and falls back to libx264 if the hardware path fails.' });
 
     const segment = select([[0, 'Off'], [30, 'Every 30 min'], [60, 'Every 60 min']]);
@@ -1334,7 +1417,7 @@
 
     const vmc = details(content, '📡 VMC / OSC');
     vmc.body.appendChild(el('div', 'xra-note',
-      'Il vecchio menu VMC non viene aperto. In browser il comando nativo Electron-only non è utile; sender/host/port/delay sono controllati qui direttamente.'));
+      'Consente la trasmissione in tempo reale dei dati di movimento via protocollo VMC/OSC verso software esterni compatibili.'));
     addToggle(vmc.body, 'VMC sender',
       () => !!window.MMD_SA?.OSC?.VMC?.sender_enabled,
       value => {
@@ -1359,7 +1442,7 @@
 
   function addAdvanced(content) {
     const box = details(content, '🧪 Advanced native settings');
-    box.body.appendChild(el('div', 'xra-note', 'Editor completo delle impostazioni native esportate da XR Animator. È il fallback per le opzioni non ancora trasformate in controlli grafici. Non viene eseguito nessun init_mocap automatico da questo pannello.'));
+    box.body.appendChild(el('div', 'xra-note', 'Visualizzatore ed editor completo per esportare e importare la configurazione dei parametri in formato JSON.'));
 
     nativeJson = stopInputPropagation(document.createElement('textarea'));
     nativeJson.className = 'xra-native-json';
@@ -1442,22 +1525,22 @@
     const header = el('div', 'xra-native-header');
     header.appendChild(el('div', 'xra-native-title', '⚙ XR SETTINGS'));
     const close = button('×', 'xra-native-close');
+    close.title = 'Close panel';
     close.onclick = () => setOpen(false);
     header.appendChild(close);
 
     search = stopInputPropagation(document.createElement('input'));
     search.type = 'search';
     search.className = 'xra-native-search';
-    search.placeholder = 'Search native settings…';
+    search.placeholder = 'Search settings…';
     search.oninput = filterRows;
 
     const content = el('div', 'xra-native-content');
-    content.appendChild(el('div', 'xra-note', 'XR SETTINGS contains native controls that are not duplicated in the right panel. The original XR Animator shell stays hidden while useful controls remain available here.'));
+    content.appendChild(el('div', 'xra-note', 'XR SETTINGS includes advanced avatar and scene settings not present in the quick panel.'));
     addAvatarApp(content);
     addUIAndOverlays(content);
     addPose(content);
     addWebcamMedia(content);
-    addSceneNative(content);
     addMotion(content);
     addHands(content);
     addFace(content);
