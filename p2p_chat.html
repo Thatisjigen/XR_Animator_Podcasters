@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Studio Link · XR Animator</title>
+  <script>
+    const chatParams = new URLSearchParams(location.search);
+    if (chatParams.get('embed') === '1') {
+      document.documentElement.classList.add('is-embedded');
+    }
+  </script>
+  <link rel="stylesheet" href="css/p2p_chat.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand" aria-label="XR Animator Studio Link">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i></span>
+        <span>
+          <strong>STUDIO LINK</strong>
+          <small>XR Animator</small>
+        </span>
+      </div>
+
+      <div class="network-state" aria-live="polite">
+        <span id="status-dot" class="status-dot"></span>
+        <span id="status-text">Avvio rete…</span>
+      </div>
+    </header>
+
+    <main>
+      <section id="setup-view" class="onboarding">
+        <div class="intro-copy">
+          <span class="eyebrow">CONNESSIONE DIRETTA</span>
+          <h1>Il backstage del tuo podcast.</h1>
+          <p>Chat, voce e condivisione schermo tra due postazioni, senza account. Aprite entrambi Studio Link e scambiatevi l’ID.</p>
+          <div class="feature-line" aria-label="Funzioni disponibili">
+            <span>● Chat P2P</span>
+            <span>● Audio WebRTC</span>
+            <span>● Screen share</span>
+          </div>
+        </div>
+
+        <div class="setup-grid">
+          <article class="card identity-card">
+            <div class="card-heading">
+              <span class="step">01</span>
+              <div>
+                <h2>Il tuo studio</h2>
+                <p>Invia questo ID all’altro partecipante.</p>
+              </div>
+            </div>
+            <button id="copy-id-btn" class="id-display" type="button" title="Copia ID">
+              <span id="my-id">generazione-id…</span>
+              <span class="copy-glyph" aria-hidden="true">⧉</span>
+            </button>
+            <button id="copy-invite-btn" class="secondary-button" type="button" disabled>Copia invito</button>
+          </article>
+
+          <article class="card connect-card">
+            <div class="card-heading">
+              <span class="step">02</span>
+              <div>
+                <h2>Entra in studio</h2>
+                <p>Incolla l’ID ricevuto e collegati.</p>
+              </div>
+            </div>
+            <label for="peer-id-input">ID dell’altro partecipante</label>
+            <div class="connect-row">
+              <input id="peer-id-input" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="peer-id">
+              <button id="connect-btn" class="primary-button" type="button" disabled>Connetti</button>
+            </div>
+            <p id="connect-hint" class="hint">L’ID appare appena il collegamento alla rete è pronto.</p>
+          </article>
+
+          <details class="card device-card">
+            <summary>Audio e dispositivi <span>Impostazioni</span></summary>
+            <div class="device-grid">
+              <label>
+                <span>Microfono</span>
+                <select id="audio-input-select"><option value="">Predefinito</option></select>
+              </label>
+              <label>
+                <span>Uscita audio</span>
+                <select id="audio-output-select"><option value="">Predefinita</option></select>
+              </label>
+            </div>
+            <button id="refresh-devices-btn" class="text-button" type="button">Aggiorna dispositivi</button>
+          </details>
+        </div>
+      </section>
+
+      <section id="session-view" class="session" hidden>
+        <section class="stage-panel">
+          <div class="session-bar">
+            <div>
+              <span class="eyebrow">SESSIONE ATTIVA</span>
+              <strong id="session-peer">Peer</strong>
+            </div>
+            <button id="disconnect-btn" class="quiet-button" type="button">Disconnetti</button>
+          </div>
+
+          <div class="video-stage">
+            <video id="main-video" autoplay playsinline muted></video>
+            <div id="no-video-msg" class="stage-empty">
+              <span class="screen-icon" aria-hidden="true">▱</span>
+              <strong>Nessuno schermo condiviso</strong>
+              <small>La voce e la chat continuano a funzionare.</small>
+            </div>
+            <span id="share-label" class="share-label" hidden>STAI CONDIVIDENDO</span>
+          </div>
+
+          <div class="call-controls" aria-label="Controlli chiamata">
+            <button id="call-btn" type="button">
+              <span aria-hidden="true">◉</span>
+              <span>Avvia voce</span>
+            </button>
+            <button id="screenshare-btn" type="button">
+              <span aria-hidden="true">▣</span>
+              <span>Condividi schermo</span>
+            </button>
+            <button id="hangup-btn" class="danger-button" type="button" disabled>
+              <span aria-hidden="true">■</span>
+              <span>Termina media</span>
+            </button>
+          </div>
+        </section>
+
+        <aside class="conversation">
+          <div class="conversation-head">
+            <div>
+              <span class="eyebrow">REGIA</span>
+              <h2>Chat</h2>
+            </div>
+            <span id="chat-state" class="chat-state">in attesa</span>
+          </div>
+
+          <div id="chat-box" class="chat-box" aria-live="polite">
+            <div id="chat-empty" class="chat-empty">
+              <span aria-hidden="true">↗</span>
+              <strong>Canale pronto</strong>
+              <small>I messaggi compariranno qui.</small>
+            </div>
+          </div>
+
+          <div class="composer">
+            <textarea id="chat-input" rows="1" maxlength="4000" placeholder="Scrivi un messaggio…" disabled></textarea>
+            <button id="send-btn" class="send-button" type="button" disabled aria-label="Invia messaggio">↑</button>
+          </div>
+          <p class="composer-hint">Invio per spedire · Maiusc+Invio per andare a capo</p>
+        </aside>
+      </section>
+    </main>
+
+    <footer>
+      <span>WebRTC cifrato durante il trasporto</span>
+      <span>Il server PeerJS viene usato solo per trovare l’altro peer</span>
+    </footer>
+  </div>
+
+  <audio id="remote-audio" autoplay playsinline hidden></audio>
+  <script src="js/peerjs.min.js"></script>
+  <script src="js/p2p_chat.js"></script>
+</body>
+</html>
