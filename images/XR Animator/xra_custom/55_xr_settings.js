@@ -472,6 +472,13 @@
       finally { poseBusy = false; refreshPoseList(); }
     };
     row(box.body, 'Pose', poseSelect, {
+      reset: async () => {
+        if (poseBusy) return;
+        poseBusy = true; poseSelect.disabled = true;
+        try { await resetAvatarPose(); }
+        catch (e) { XRA.toast('Reset pose: ' + e.message, 'error', 4500); }
+        finally { poseBusy = false; poseSelect.disabled = false; refreshPoseList(); }
+      },
       sub: 'Selezione per identità nativa della posa (non per indice): resta corretta anche se XR Animator riordina la libreria.'
     });
     box.body.appendChild(current);
@@ -537,6 +544,14 @@
       await saveNative();
     };
     row(box.body, 'Shoulder adjust', shoulder, {
+      reset: async () => {
+        if (window.MMD_SA?.THREEX) MMD_SA.THREEX.shoulder_adjust = '';
+        shoulder.value = '';
+        persistShoulder();
+        await saveNative();
+        refreshAll();
+      },
+      isDefault: () => !(window.MMD_SA?.THREEX?.shoulder_adjust),
       sub: 'La correzione delle spalle è nativa; per pose già caricate può richiedere un riavvio.'
     });
 
@@ -1004,7 +1019,10 @@
     const mode = select([['video_audio', 'Video + Audio'], ['video', 'Video only'], ['audio', 'Audio only']]);
     bindRefresh(() => { mode.value = rc().mode || 'video_audio'; });
     mode.onchange = () => saveRec('mode', mode.value, false);
-    row(recorderBox.body, 'Mode', mode);
+    row(recorderBox.body, 'Mode', mode, {
+      reset: () => saveRec('mode', defaults.recorder.mode, false),
+      isDefault: () => (rc().mode || 'video_audio') === defaults.recorder.mode
+    });
 
     const captureSource = select([
       ['classic_v74', 'Classic output · recommended'],
@@ -1018,6 +1036,8 @@
     });
     captureSource.onchange = () => saveRec('capture_source', captureSource.value, false);
     row(recorderBox.body, 'Recording source', captureSource, {
+      reset: () => saveRec('capture_source', defaults.recorder.capture_source, false),
+      isDefault: () => (rc().capture_source || 'classic_v74') === defaults.recorder.capture_source,
       sub: "XR native output uses the original XR Animator recorder for video fidelity, then XRA intercepts/finalizes the file using your name, Linux folder, MP4/WebM/MKV choice and processed audio. It does not use Chrome screen sharing."
     });
 
@@ -1025,6 +1045,8 @@
     bindRefresh(() => { outputFormat.value = rc().output_format || 'webm'; });
     outputFormat.onchange = () => saveRec('output_format', outputFormat.value, false);
     row(recorderBox.body, 'Output format', outputFormat, {
+      reset: () => saveRec('output_format', defaults.recorder.output_format, false),
+      isDefault: () => (rc().output_format || 'webm') === defaults.recorder.output_format,
       sub: 'Reliability mode: XR Animator always captures a valid WebM source, then finalizes MP4 (H.264/AAC) or MKV on the local server after Stop. This avoids .bin/mislabeled MP4 files.'
     });
 
@@ -1032,7 +1054,11 @@
     filename.type = 'text'; filename.className = 'xra-control'; filename.placeholder = 'XR_Animator_{date}_{time}';
     bindRefresh(() => { if (document.activeElement !== filename) filename.value = rc().filename || 'XR_Animator_{date}_{time}'; });
     filename.onchange = () => saveRec('filename', filename.value || 'XR_Animator_{date}_{time}', false);
-    row(recorderBox.body, 'Default file name', filename, { sub: 'Supports {date} and {time}. You can change it again in the Record popup.' });
+    row(recorderBox.body, 'Default file name', filename, {
+      reset: () => saveRec('filename', defaults.recorder.filename, false),
+      isDefault: () => (rc().filename || defaults.recorder.filename) === defaults.recorder.filename,
+      sub: 'Supports {date} and {time}. You can change it again in the Record popup.'
+    });
 
     const folderWrap = el('div', 'xra-stack-control');
     const folder = stopInputPropagation(document.createElement('input'));
@@ -1041,7 +1067,11 @@
     bindRefresh(() => { if (document.activeElement !== folder) folder.value = rc().output_dir || ''; });
     folder.onchange = () => saveRec('output_dir', folder.value.trim(), false);
     folderWrap.append(folder);
-    row(recorderBox.body, 'Recording folder', folderWrap, { sub: 'Type or paste an absolute Linux path. Leave empty to use XR Animator / recordings.' });
+    row(recorderBox.body, 'Recording folder', folderWrap, {
+      reset: () => saveRec('output_dir', defaults.recorder.output_dir, false),
+      isDefault: () => (rc().output_dir || '') === defaults.recorder.output_dir,
+      sub: 'Type or paste an absolute Linux path. Leave empty to use XR Animator / recordings.'
+    });
 
     const resolution = select([['1280x720', '1280×720'], ['1920x1080', '1920×1080']]);
     bindRefresh(() => { resolution.value = `${rc().width || 1280}x${rc().height || 720}`; });
@@ -1051,7 +1081,15 @@
       // the visible 30-minute estimate should reflect exactly what the user chose.
       XRA.profileService.save(); events.emit('recorder-config', rc()); refreshAll();
     };
-    row(recorderBox.body, 'Resolution', resolution);
+    row(recorderBox.body, 'Resolution', resolution, {
+      reset: () => {
+        rc().width = defaults.recorder.width;
+        rc().height = defaults.recorder.height;
+        rc().preset = 'CUSTOM';
+        XRA.profileService.save(); events.emit('recorder-config', rc()); refreshAll();
+      },
+      isDefault: () => (rc().width || defaults.recorder.width) === defaults.recorder.width && (rc().height || defaults.recorder.height) === defaults.recorder.height
+    });
 
     const recFps = select([[24, '24 FPS'], [30, '30 FPS'], [60, '60 FPS']]);
     bindRefresh(() => { recFps.value = String(rc().fps || 30); });
@@ -1059,32 +1097,56 @@
       rc().fps = Number(recFps.value); rc().preset = 'CUSTOM';
       XRA.profileService.save(); events.emit('recorder-config', rc()); refreshAll();
     };
-    row(recorderBox.body, 'Capture FPS', recFps);
+    row(recorderBox.body, 'Capture FPS', recFps, {
+      reset: () => {
+        rc().fps = defaults.recorder.fps;
+        rc().preset = 'CUSTOM';
+        XRA.profileService.save(); events.emit('recorder-config', rc()); refreshAll();
+      },
+      isDefault: () => (rc().fps || defaults.recorder.fps) === defaults.recorder.fps
+    });
 
     const videoBitrate = select([[1500000, '1.5 Mbps'], [2000000, '2 Mbps'], [2500000, '2.5 Mbps'], [3000000, '3 Mbps'], [4000000, '4 Mbps'], [5000000, '5 Mbps'], [6000000, '6 Mbps'], [8000000, '8 Mbps'], [10000000, '10 Mbps']]);
     bindRefresh(() => { videoBitrate.value = String(rc().video_bps || 3000000); });
     videoBitrate.onchange = () => saveRec('video_bps', Number(videoBitrate.value), true);
-    row(recorderBox.body, 'Video bitrate', videoBitrate, { sub: '1080p30: 4-5 Mbps is the balanced range for this avatar/podcast use case. Higher values mainly increase file size.' });
+    row(recorderBox.body, 'Video bitrate', videoBitrate, {
+      reset: () => saveRec('video_bps', defaults.recorder.video_bps, true),
+      isDefault: () => (rc().video_bps || defaults.recorder.video_bps) === defaults.recorder.video_bps,
+      sub: '1080p30: 4-5 Mbps is the balanced range for this avatar/podcast use case. Higher values mainly increase file size.'
+    });
 
     const trueResolution = document.createElement('input'); trueResolution.type = 'checkbox';
     bindRefresh(() => { trueResolution.checked = rc().force_render_resolution !== false; });
     trueResolution.onchange = () => saveRec('force_render_resolution', trueResolution.checked, false);
-    row(recorderBox.body, 'Render at recording resolution', trueResolution, { sub: 'Recommended. If XR Animator is rendering below 1080p, temporarily raises the WebGL render buffer during REC instead of merely upscaling a smaller canvas.' });
+    row(recorderBox.body, 'Render at recording resolution', trueResolution, {
+      reset: () => saveRec('force_render_resolution', defaults.recorder.force_render_resolution, false),
+      isDefault: () => (rc().force_render_resolution !== false) === defaults.recorder.force_render_resolution,
+      sub: 'Recommended. If XR Animator is rendering below 1080p, temporarily raises the WebGL render buffer during REC instead of merely upscaling a smaller canvas.'
+    });
 
     const chromaSafe = document.createElement('input'); chromaSafe.type = 'checkbox';
     bindRefresh(() => { chromaSafe.checked = rc().chroma_safe !== false; chromaSafe.disabled = (rc().mode || 'video_audio') === 'audio'; });
     chromaSafe.onchange = () => saveRec('chroma_safe', chromaSafe.checked, false);
-    row(recorderBox.body, 'Chroma-safe recording', chromaSafe, { sub: 'For solid-color backgrounds: uses the exact background color and temporarily disables Bloom / Depth of Field while recording to reduce halos around the avatar. The switch stays editable; on non-color backgrounds it is simply ignored. Restores the effects at Stop.' });
+    row(recorderBox.body, 'Chroma-safe recording', chromaSafe, {
+      reset: () => saveRec('chroma_safe', defaults.recorder.chroma_safe, false),
+      isDefault: () => (rc().chroma_safe !== false) === defaults.recorder.chroma_safe,
+      sub: 'For solid-color backgrounds: uses the exact background color and temporarily disables Bloom / Depth of Field while recording to reduce halos around the avatar. The switch stays editable; on non-color backgrounds it is simply ignored. Restores the effects at Stop.'
+    });
 
     const audioBitrate = select([[96000, '96 kbps'], [128000, '128 kbps'], [160000, '160 kbps'], [192000, '192 kbps'], [256000, '256 kbps']]);
     bindRefresh(() => { audioBitrate.value = String(rc().audio_bps || 128000); });
     audioBitrate.onchange = () => saveRec('audio_bps', Number(audioBitrate.value), true);
-    row(recorderBox.body, 'Audio bitrate', audioBitrate);
+    row(recorderBox.body, 'Audio bitrate', audioBitrate, {
+      reset: () => saveRec('audio_bps', defaults.recorder.audio_bps, true),
+      isDefault: () => (rc().audio_bps || defaults.recorder.audio_bps) === defaults.recorder.audio_bps
+    });
 
     const audioProfile = select([['podcast', 'Podcast / Natural'], ['call', 'Voice / Call']]);
     bindRefresh(() => { audioProfile.value = rc().audio_profile || 'podcast'; });
     audioProfile.onchange = () => saveRec('audio_profile', audioProfile.value, false);
     row(recorderBox.body, 'Audio profile', audioProfile, {
+      reset: () => saveRec('audio_profile', defaults.recorder.audio_profile, false),
+      isDefault: () => (rc().audio_profile || defaults.recorder.audio_profile) === defaults.recorder.audio_profile,
       sub: 'Podcast disables browser echo cancellation/noise suppression/AGC. Voice/Call enables them.'
     });
 
@@ -1092,6 +1154,8 @@
     bindRefresh(() => { gate.checked = !!rc().noise_gate; });
     gate.onchange = () => saveRec('noise_gate', gate.checked, false);
     row(recorderBox.body, 'Noise gate', gate, {
+      reset: () => saveRec('noise_gate', defaults.recorder.noise_gate, false),
+      isDefault: () => !!rc().noise_gate === defaults.recorder.noise_gate,
       sub: 'Closes the mic below the threshold with hold/release smoothing to reduce steady background noise.'
     });
 
@@ -1113,6 +1177,14 @@
     };
     gateRange.onchange = () => XRA.profileService.save();
     row(recorderBox.body, 'Gate threshold', gateWrap, {
+      reset: () => {
+        rc().gate_threshold_db = defaults.recorder.gate_threshold_db;
+        renderGateThreshold();
+        updateGateMeterThreshold?.();
+        XRA.profileService.save();
+        refreshAll();
+      },
+      isDefault: () => (rc().gate_threshold_db ?? defaults.recorder.gate_threshold_db) === defaults.recorder.gate_threshold_db,
       sub: 'Focused voice-gate range -55 to -5 dB, in 0.25 dB steps. This trades extreme low-end range for much finer control around normal room noise and quiet speech.'
     });
 
@@ -1177,12 +1249,19 @@
     const rawBackup = document.createElement('input'); rawBackup.type = 'checkbox';
     bindRefresh(() => { rawBackup.checked = !!rc().raw_audio_backup; rawBackup.disabled = (rc().mode || 'video_audio') === 'video'; });
     rawBackup.onchange = () => saveRec('raw_audio_backup', rawBackup.checked, false);
-    row(recorderBox.body, 'RAW microphone backup', rawBackup, { sub: 'Records a second, un-gated microphone track so a bad gate/compressor choice never ruins the podcast source.' });
+    row(recorderBox.body, 'RAW microphone backup', rawBackup, {
+      reset: () => saveRec('raw_audio_backup', defaults.recorder.raw_audio_backup, false),
+      isDefault: () => !!rc().raw_audio_backup === defaults.recorder.raw_audio_backup,
+      sub: 'Records a second, un-gated microphone track so a bad gate/compressor choice never ruins the podcast source.'
+    });
 
     const rawFormat = select([['flac','FLAC (lossless)'],['opus','Opus'],['wav','WAV (large)']]);
     bindRefresh(() => { rawFormat.value = rc().raw_audio_format || 'flac'; rawFormat.disabled = !rc().raw_audio_backup || (rc().mode || 'video_audio') === 'video'; });
     rawFormat.onchange = () => saveRec('raw_audio_format', rawFormat.value, false);
-    row(recorderBox.body, 'RAW backup format', rawFormat);
+    row(recorderBox.body, 'RAW backup format', rawFormat, {
+      reset: () => saveRec('raw_audio_format', defaults.recorder.raw_audio_format, false),
+      isDefault: () => (rc().raw_audio_format || defaults.recorder.raw_audio_format) === defaults.recorder.raw_audio_format
+    });
 
     const ENCODER_LABELS = {
       'h264_nvenc': 'NVIDIA NVENC (Hardware)',
@@ -1222,12 +1301,18 @@
     }
     refreshHwEncoders();
 
-    row(recorderBox.body, 'MP4 encoder', hwEncode, { sub: 'Auto tries available hardware encoding first and falls back to libx264 if the hardware path fails.' });
+    row(recorderBox.body, 'MP4 encoder', hwEncode, {
+      reset: () => saveRec('hardware_encode', defaults.recorder.hardware_encode, false),
+      isDefault: () => (rc().hardware_encode || defaults.recorder.hardware_encode) === defaults.recorder.hardware_encode,
+      sub: 'Auto tries available hardware encoding first and falls back to libx264 if the hardware path fails.'
+    });
 
     const segment = select([[0, 'Off'], [30, 'Every 30 min'], [60, 'Every 60 min']]);
     bindRefresh(() => { segment.value = String(rc().segment_minutes || 0); });
     segment.onchange = () => saveRec('segment_minutes', Number(segment.value), false);
     row(recorderBox.body, 'Segment files', segment, {
+      reset: () => saveRec('segment_minutes', defaults.recorder.segment_minutes, false),
+      isDefault: () => Number(rc().segment_minutes || 0) === defaults.recorder.segment_minutes,
       sub: 'Available for Clean scene. XR native output currently keeps one continuous native file so video fidelity is not interrupted.'
     });
 

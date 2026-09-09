@@ -97,7 +97,7 @@
       cancelAnimationFrame(meterRAF);
       meterRAF = 0;
     }
-    const active = !!config.lip?.meter_visible && !UI.hidden && !!lipDetails?.open;
+    const active = !!config.lip?.meter_visible && !UI.hidden && !body?.hidden && !!lipDetails?.open;
     if (!active) return;
 
     const fill = panel?.querySelector('[data-xra="meter-fill"]');
@@ -106,7 +106,7 @@
 
     let last = 0;
     const draw = t => {
-      if (!(config.lip?.meter_visible && !UI.hidden && lipDetails?.open)) return;
+      if (!(config.lip?.meter_visible && !UI.hidden && !body?.hidden && lipDetails?.open)) return;
       if (t - last >= 66) {
         last = t;
         const envelope = Number(window.XR_LIP?.status?.().envelope || 0);
@@ -1018,6 +1018,12 @@
       refreshAll();
     };
     row(perfAdvanced.body, 'Runtime adaptive performance', runtimeAdaptive, {
+      reset: async () => {
+        config.performance.runtime_adaptive = false;
+        await XRA.profileService.save();
+        refreshAll();
+      },
+      isDefault: () => !config.performance?.runtime_adaptive,
       sub: 'Lightweight governor: temporarily reduces inference rates only when render timing is under sustained stress. It never rewrites the selected performance preset.'
     });
 
@@ -1029,6 +1035,12 @@
       refreshAll();
     };
     row(perfAdvanced.body, 'Performance / REC HUD', diagnosticsHud, {
+      reset: async () => {
+        XRA.performance.setDiagnosticsHud(false);
+        await XRA.profileService.save();
+        refreshAll();
+      },
+      isDefault: () => !config.performance?.diagnostics_hud,
       sub: 'Diagnostic overlay with render FPS, inference targets, recorder frame estimate, mic/gate and Torso Guard confidence. Cost is near-zero when disabled.'
     });
 
@@ -1054,12 +1066,22 @@
       refreshAll();
     };
     row(perfAdvanced.body, 'Debug session', debugSessionWrap, {
+      reset: async () => {
+        XRA.debug?.setEnabled(false);
+        refreshDebugStatus();
+        await XRA.profileService.save(0);
+        refreshAll();
+      },
+      isDefault: () => !XRA.debug?.enabled,
       sub: 'Records tracking, stabilization and pose-change diagnostics in memory. Off by default; no camera frames or device IDs are saved.'
     });
 
+    const debugWrap = el('div', 'xra-command-wrap');
+    const debugTitle = el('div', 'xra-label', 'Debug log');
+    const debugSub = el('div', 'xra-sub', 'Enable the session, reproduce the problem, then export the JSON file.');
     const debugActions = el('div', 'xra-actions');
-    const exportDebug = button('Export debug log');
-    const clearDebug = button('Clear debug log');
+    const exportDebug = button('Export debug log', 'xra-action');
+    const clearDebug = button('Clear debug log', 'xra-action');
     exportDebug.onclick = async () => {
       exportDebug.disabled = true;
       try {
@@ -1082,9 +1104,8 @@
       refreshAll();
     };
     debugActions.append(exportDebug, clearDebug);
-    row(perfAdvanced.body, 'Debug log', debugActions, {
-      sub: 'Enable the session, reproduce the problem, then export the JSON file.'
-    });
+    debugWrap.append(debugTitle, debugSub, debugActions);
+    perfAdvanced.body.appendChild(debugWrap);
 
     const post = document.createElement('input');
     post.type = 'checkbox';
@@ -1193,10 +1214,15 @@
           dom.style.right = 'auto';
           dom.style.bottom = 'auto';
           dom.querySelector('.xra-native-fx-close')?.remove();
-          dom.querySelectorAll('button').forEach(btn => {
-            if (/hide controls/i.test(btn.textContent)) {
-              const row = btn.closest('.controller') || btn.parentElement;
-              if (row) row.style.display = 'none';
+          if (Array.isArray(gui.__controllers)) {
+            const ctrl = gui.__controllers.find(c => /hide controls/i.test(c.property));
+            if (ctrl) {
+              try { gui.remove(ctrl); } catch (e) { ctrl.__li?.remove(); }
+            }
+          }
+          dom.querySelectorAll('li.cr, .controller, .cr.function, .lil-gui-controller, .close-button, .close-top, .close-bottom, button').forEach(el => {
+            if (/hide controls/i.test(el.textContent) || el.classList.contains('close-button') || el.classList.contains('close-bottom') || el.classList.contains('close-top')) {
+              el.remove();
             }
           });
           fxStatus.remove();
@@ -1415,6 +1441,14 @@
 
     let panelBodyOpen = true;
 
+    function updatePanelState() {
+      const isClosed = !panelBodyOpen;
+      panel?.classList.toggle('panel-closed', isClosed);
+      if (body) body.hidden = isClosed || UI.hidden;
+      if (launcher) launcher.hidden = panelBodyOpen || UI.hidden;
+      updateMeterLoop();
+    }
+
     const launcher = button('📋 CONTROL PANEL', 'xra-right-launcher');
     launcher.hidden = true;
     launcher.dataset.xraRightLauncher = '1';
@@ -1425,9 +1459,7 @@
     });
     launcher.onclick = () => {
       panelBodyOpen = true;
-      body.hidden = false;
-      launcher.hidden = true;
-      updateMeterLoop();
+      updatePanelState();
     };
 
     body = el('div', 'xra-right-body');
@@ -1445,9 +1477,7 @@
     });
     menuClose.onclick = () => {
       panelBodyOpen = false;
-      body.hidden = true;
-      if (!UI.hidden) launcher.hidden = false;
-      updateMeterLoop();
+      updatePanelState();
     };
     menuTop.append(menuTitle, menuClose);
     body.appendChild(menuTop);
@@ -1473,20 +1503,13 @@
       refreshMicrophones();
       refreshAll();
     });
-    events.on('ui-hidden', hidden => {
-      if (hidden) {
-        body.hidden = true;
-        launcher.hidden = true;
-      } else {
-        body.hidden = !panelBodyOpen;
-        launcher.hidden = panelBodyOpen;
-      }
-      updateMeterLoop();
+    events.on('ui-hidden', () => {
+      updatePanelState();
     });
 
     refreshMicrophones();
     refreshAll();
-    updateMeterLoop();
+    updatePanelState();
     return panel;
   }
 
