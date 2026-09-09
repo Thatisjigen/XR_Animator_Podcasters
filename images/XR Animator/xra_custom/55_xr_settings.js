@@ -217,12 +217,6 @@
     return b;
   }
 
-  function applyLegacyToolbarVisibility() {
-    // V7.5: legacy toolbar is retired from the UI. Keep native DOM nodes alive
-    // for old XR Animator code, but remove them from layout/paint permanently.
-    document.body.classList.add('xra-hide-legacy-toolbar');
-  }
-
   function addAvatarApp(content) {
     const box = details(content, '👤 Avatar / app', { open: true });
     box.body.appendChild(el('div', 'xra-note', 'The selected VRM is saved in the app avatars/ folder. Use this button whenever you want to change avatar.'));
@@ -230,6 +224,11 @@
     commandButton(box.body, 'Load / change VRM…', async () => {
       await XRA.nativeBridge?.openVrmPicker?.();
     }, { sub: 'Opens the VRM model picker directly.' });
+
+    addRange(box.body, 'VRM joint stiffness',
+      () => Number(window.MMD_SA?.THREEX?.VRM?.joint_stiffness_percent || 0),
+      value => { if (window.MMD_SA?.THREEX?.VRM) MMD_SA.THREEX.VRM.joint_stiffness_percent = value; },
+      { min: 0, max: 200, step: 5 });
 
     const actions = el('div', 'xra-actions');
     const restart = button('↻ Restart XR Animator');
@@ -255,8 +254,6 @@
       isDefault: () => (config.ui?.language || 'auto') === (defaults.ui.language || 'auto'),
       sub: 'Auto follows the browser/system language. Unsupported strings fall back safely to English/source text.'
     });
-
-    applyLegacyToolbarVisibility();
 
     const note = el('div', 'xra-note',
       'Controls are available directly in this panel for a clean, immediate setup.');
@@ -704,16 +701,20 @@
 
     addToggle(box.body, 'Disable native hotkeys',
       () => !!window.System?._browser?.hotkeys?.disabled,
-      value => { if (window.System?._browser?.hotkeys) System._browser.hotkeys.disabled = value; });
+      value => { if (window.System?._browser?.hotkeys) System._browser.hotkeys.disabled = value; },
+      'Disattiva tutte le scorciatoie da tastiera dell’applicazione.');
 
     addToggle(box.body, 'Global hotkeys',
       () => !!window.System?._browser?.hotkeys?.is_global,
       value => {
         const h = window.System?._browser?.hotkeys;
         if (!h) return;
-        if (typeof h.register_global === 'function') h.register_global(value);
-        else h.is_global = value;
-      });
+        h.is_global = !!value;
+        if (typeof h.register_global === 'function') {
+          try { h.register_global(value); } catch (e) {}
+        }
+      },
+      'Scorciatoie di sistema registrate a livello di OS (funzionalità per app desktop).');
 
     addToggle(box.body, 'Gamepad enabled',
       () => !!window.MMD_SA_options?.gamepad?.enabled,
@@ -858,6 +859,33 @@
     addToggle(box.body, 'Constrain tracking region',
       () => !!hands()?.constrain_tracking_region,
       value => { const h = hands(); if (h) h.constrain_tracking_region = value; });
+
+    const handCameraButton = button('Toggle Hand Camera');
+    bindRefresh(() => {
+      const hc = window.MMD_SA_options?.Dungeon_options?.item_base?.hand_camera;
+      const side = hc?._hand_camera_side;
+      handCameraButton.textContent = !hc?._hand_camera_enabled
+        ? 'Hand Camera: OFF'
+        : `Hand Camera: ${side === '右' ? 'LEFT' : 'RIGHT'}`;
+    });
+    handCameraButton.onclick = async () => {
+      try {
+        await XRA.nativeBridge?.invokeItem?.('hand_camera');
+        await saveNative();
+        setTimeout(refreshAll, 0);
+        setTimeout(refreshAll, 120);
+      }
+      catch (e) {
+        console.warn(TAG, 'Hand Camera native action failed', e);
+        XRA.toast('Hand Camera not ready: ' + (e?.message || e), 'error');
+      }
+    };
+    box.body.appendChild(handCameraButton);
+
+    addNumber(box.body, 'Hand camera FOV',
+      () => window.MMD_SA_options?.Dungeon_options?.item_base?.hand_camera?.fov ?? 50,
+      value => { const hc = window.MMD_SA_options?.Dungeon_options?.item_base?.hand_camera; if (hc && value != null) hc.fov = value; },
+      { min: 10, max: 140, step: 1 });
   }
 
   function addFace(content) {
@@ -924,66 +952,9 @@
       () => XRA.nativeBridge?.getPreviewVisibility?.('wireframe') ?? !window.MMD_SA_options?.user_camera?.display?.wireframe?.hidden,
       value => XRA.nativeBridge?.setPreviewVisibility?.('wireframe', value));
 
-    addToggle(box.body, 'Show mocap debug display',
-      () => XRA.nativeBridge?.getPreviewVisibility?.('debug') ?? !window.MMD_SA_options?.user_camera?.ML_models?.debug_hidden,
-      value => XRA.nativeBridge?.setPreviewVisibility?.('debug', value),
-      'È il debug nativo che mostra/nasconde anche il testo Hand-FPS / Face-FPS in alto a sinistra.');
-
     addToggle(box.body, 'Portrait mode',
       () => !!window.MMD_SA_options?.user_camera?.portrait_mode,
       value => { if (window.MMD_SA_options?.user_camera) MMD_SA_options.user_camera.portrait_mode = value; });
-  }
-
-  function addCameraView(content) {
-    const box = details(content, '🎥 Camera / avatar view');
-
-    const handCameraButton = button('Toggle Hand Camera');
-    bindRefresh(() => {
-      const hc = window.MMD_SA_options?.Dungeon_options?.item_base?.hand_camera;
-      const side = hc?._hand_camera_side;
-      handCameraButton.textContent = !hc?._hand_camera_enabled
-        ? 'Hand Camera: OFF'
-        : `Hand Camera: ${side === '右' ? 'LEFT' : 'RIGHT'}`;
-    });
-    handCameraButton.onclick = async () => {
-      try {
-        await XRA.nativeBridge?.invokeItem?.('hand_camera');
-        await saveNative();
-        // Native action updates its state asynchronously in some builds.
-        setTimeout(refreshAll, 0);
-        setTimeout(refreshAll, 120);
-      }
-      catch (e) {
-        console.warn(TAG, 'Hand Camera native action failed', e);
-        XRA.toast('Hand Camera not ready: ' + (e?.message || e), 'error');
-      }
-    };
-    box.body.appendChild(handCameraButton);
-
-    box.body.appendChild(el('div', 'xra-note',
-      'La Hand Camera vincola l\'inquadratura alla mano tracciata. Tramite il pulsante sottostante è possibile alternare tra mano sinistra, destra e disattivata.'));
-
-    addNumber(box.body, 'Hand camera FOV',
-      () => window.MMD_SA_options?.Dungeon_options?.item_base?.hand_camera?.fov ?? 50,
-      value => { const hc = window.MMD_SA_options?.Dungeon_options?.item_base?.hand_camera; if (hc && value != null) hc.fov = value; },
-      { min: 10, max: 140, step: 1 });
-
-    addRange(box.body, 'VRM joint stiffness',
-      () => Number(window.MMD_SA?.THREEX?.VRM?.joint_stiffness_percent || 0),
-      value => { if (window.MMD_SA?.THREEX?.VRM) MMD_SA.THREEX.VRM.joint_stiffness_percent = value; },
-      { min: 0, max: 200, step: 5 });
-  }
-
-  function addVisual(content) {
-    const box = details(content, '✨ Visual effects');
-    box.body.appendChild(el('div', 'xra-note', 'Bloom, Occlusione Ambientale e Profondità di Campo sono regolabili nel pannello rapido a destra sotto Prestazioni → Avanzate.'));
-
-    addToggle(box.body, 'Audio visualizer',
-      () => !!window.MMD_SA_options?.use_CircularSpectrum,
-      value => { if (window.MMD_SA_options) MMD_SA_options.use_CircularSpectrum = value; });
-
-    box.body.appendChild(el('div', 'xra-note',
-      'Gli effetti visivi principali sono gestiti dal pannello rapido a destra. Ulteriori parametri della scena rimangono accessibili nell\'editor JSON avanzato.'));
   }
 
   function addCaptureVMC(content) {
@@ -1630,8 +1601,6 @@
     addHands(content);
     addFace(content);
     addDisplay(content);
-    addCameraView(content);
-    addVisual(content);
     addCaptureVMC(content);
     addMiscNative(content);
     addAdvanced(content);
@@ -1640,8 +1609,7 @@
     root.append(launcher, drawer);
     document.body.appendChild(root);
 
-    events.on('profile-loaded', () => { applyLegacyToolbarVisibility(); XRA.nativeBridge?.hideNativeShellChrome?.(); restorePersistedLeftState(); refreshNativeJSON(); });
-    applyLegacyToolbarVisibility();
+    events.on('profile-loaded', () => { XRA.nativeBridge?.hideNativeShellChrome?.(); restorePersistedLeftState(); refreshNativeJSON(); });
     XRA.nativeBridge?.hideNativeShellChrome?.();
     restorePersistedLeftState();
     refreshAll();
