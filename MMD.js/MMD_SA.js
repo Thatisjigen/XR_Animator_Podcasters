@@ -10672,16 +10672,18 @@ return dt;
       }
 
       const PPE = {
-        get enabled() { return PPE_options.enabled; },
+        get enabled() { return !!PPE_options?.enabled; },
         set enabled(v) {
-PPE_options.enabled = !!v;
-this.gui.controllers[0].updateDisplay();
-
-if (v && !PPE_list.some(n=>PPE[n].enabled)) {
-  PPE['UnrealBloom'].enabled = true;
+if (PPE_options) {
+  PPE_options.enabled = !!v;
+  this.gui?.controllers?.[0]?.updateDisplay?.();
 }
 
-PPE['UnrealBloom'].setup_rim_light();
+if (v && !PPE_list.some(n=>{ try { return PPE[n]?.enabled; } catch (e) { return false; } })) {
+  if (PPE['UnrealBloom']) PPE['UnrealBloom'].enabled = true;
+}
+
+PPE['UnrealBloom']?.setup_rim_light?.();
         },
 
         get initialized() { return PPE_initialized; },
@@ -11192,19 +11194,21 @@ return true;
               };
             })(),
 
-            get enabled() { return effectController.enabled },
+            get enabled() { return !!effectController?.enabled; },
             set enabled(v) {
-effectController.enabled = !!v;
-this.gui.controllers[0].updateDisplay();
+if (effectController) {
+  effectController.enabled = !!v;
+  this.gui?.controllers?.[0]?.updateDisplay?.();
+}
 
-this.pass.enabled = v;
+if (this.pass) this.pass.enabled = !!v;
 
 if (v) {
   if (!PPE.enabled)
     PPE.enabled = true;
 }
 else {
-  if (PPE_list.every(n=>!PPE[n].enabled))
+  if (PPE_list.every(n=>{ try { return !PPE[n]?.enabled; } catch (e) { return true; } }))
     PPE.enabled = false;
 }
             },
@@ -11362,19 +11366,21 @@ this.pass.configuration.gammaCorrection = false;//!(PPE.UnrealBloom.enabled || P
 return true;
             },
 
-            get enabled() { return effectController.enabled; },
+            get enabled() { return !!effectController?.enabled; },
             set enabled(v) {
-effectController.enabled = !!v;
-this.gui.controllers[0].updateDisplay();
+if (effectController) {
+  effectController.enabled = !!v;
+  this.gui?.controllers?.[0]?.updateDisplay?.();
+}
 
-this.pass.enabled = v;
+if (this.pass) this.pass.enabled = !!v;
 
 if (v) {
   if (!PPE.enabled)
     PPE.enabled = true;
 }
 else {
-  if (PPE_list.every(n=>!PPE[n].enabled))
+  if (PPE_list.every(n=>{ try { return !PPE[n]?.enabled; } catch (e) { return true; } }))
     PPE.enabled = false;
 }
             },
@@ -11694,23 +11700,25 @@ else {
 }
             },
 
-            get enabled() { return params.enabled; },
+            get enabled() { return !!params?.enabled; },
             set enabled(v) {
-params.enabled = !!v;
-this.gui.controllers[0].updateDisplay();
+if (params) {
+  params.enabled = !!v;
+  this.gui?.controllers?.[0]?.updateDisplay?.();
+}
 
-this.mix_pass.enabled = v;
+if (this.mix_pass) this.mix_pass.enabled = !!v;
 
 if (v) {
   if (!PPE.enabled)
     PPE.enabled = true;
 }
 else {
-  if (PPE_list.every(n=>!PPE[n].enabled))
+  if (PPE_list.every(n=>{ try { return !PPE[n]?.enabled; } catch (e) { return true; } }))
     PPE.enabled = false;
 }
 
-this.setup_rim_light();
+this.setup_rim_light?.();
             },
 
           };
