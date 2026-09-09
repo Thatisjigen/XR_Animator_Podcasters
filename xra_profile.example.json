@@ -21,7 +21,7 @@
     "performance": {
       "preset": "CUSTOM",
       "master_preset": "CUSTOM",
-      "tracking_pipeline": "SPLIT",
+      "tracking_pipeline": "FULL_BODY",
       "disable_postfx": false,
       "pose_fps": 30,
       "hand_fps": 20,

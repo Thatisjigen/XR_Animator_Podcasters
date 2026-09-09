@@ -25,13 +25,17 @@
     performance: {
       preset: 'CUSTOM',
       master_preset: 'CUSTOM',
-      tracking_pipeline: 'SPLIT',
+      tracking_pipeline: 'FULL_BODY',
       disable_postfx: false,
       pose_fps: 30,
       hand_fps: 20,
       auto_last_result: null,
       runtime_adaptive: false,
       diagnostics_hud: false
+    },
+    debug: {
+      session_enabled: false,
+      max_events: 12000
     },
     body: {
       anchor_strength: 0.80,
@@ -44,6 +48,7 @@
       hand_detection_sensitivity: 'high',
       native_smoothing: 0,
       body_bend_reduction: 0,
+      motion_hysteresis_enabled: false,
       upper_body_guard: false,
       upper_body_guard_strength: 0.0,
       guard_jump_deg: 42,
@@ -188,10 +193,8 @@
   config.body ||= {};
 
   // Unified body stabilization migration. Older profiles may store Body Stable,
-  // Torso Guard and Podcast/Desk as separate modes. The production UI exposes a
-  // single stabilization switch, so any previously enabled stabilization becomes
-  // the unified body-stabilization state. The old guard remains an internal
-  // anti-glitch layer and no longer adds a second visible neutral-pose strength.
+  // Torso Guard and Podcast/Desk as separate modes. Preserve their stabilization
+  // choice, then decouple the anti-jerk guard into its own explicit toggle.
   if (Number(boot?.version || 0) < 7.80) {
     const oldGuardMode = String(config.tracking.guard_mode || (config.tracking.upper_body_guard ? 'guard' : 'off')).toLowerCase();
     if (!config.body.stable && oldGuardMode !== 'off') {
@@ -200,8 +203,8 @@
       if (Number.isFinite(oldStrength)) config.body.anchor_strength = Math.max(0, Math.min(1, oldStrength));
     }
   }
-  config.tracking.guard_mode = config.body.stable ? 'guard' : 'off';
-  config.tracking.upper_body_guard = !!config.body.stable;
+  config.tracking.guard_mode = config.tracking.motion_hysteresis_enabled ? 'guard' : 'off';
+  config.tracking.upper_body_guard = !!config.tracking.motion_hysteresis_enabled;
   config.tracking.upper_body_guard_strength = 0;
 
   // V7.6.13: retire the experimental head-loss/avatar-loss guards. The
@@ -219,6 +222,10 @@
   delete config.performance.startup_mocap;
   delete config.performance.e2_master;
   delete config.ui.show_legacy_toolbar;
+  if (config.performance?.tracking_pipeline === 'HOLISTIC' || config.performance?.tracking_pipeline === 'SPLIT') {
+    config.performance.tracking_pipeline = 'FULL_BODY';
+  }
+  cleanRetiredSettings();
 
   // V7.6.2 migration: the safety raw-mic backup is now ON by default for old profiles.
   if (Number(boot?.version || 0) < 7.62 && boot?.custom?.recorder?.raw_audio_backup === false) {
@@ -245,9 +252,25 @@
     same(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
   };
 
-  // Feed native XR Animator settings before its own runtime finishes initialization.
-  if (profile.XR_Animator_settings && typeof window.MMD_SA_options !== 'undefined') {
-    MMD_SA_options._XRA_settings_imported = profile.XR_Animator_settings;
+  function nativeMocapType() {
+    const pipeline = String(config.performance?.tracking_pipeline || 'FULL_BODY').toUpperCase();
+    if (pipeline === 'FACE') return 'Face';
+    return 'Full Body';
+  }
+
+  // MediaPipe Vision full-body mocap engine is selected at startup for calibration,
+  // then restored to the user's saved pipeline after calibration completes.
+  const startupCalibration = XRA.startupCalibration ||= {
+    active: true,
+    completed: false,
+    native: 'Full Body'
+  };
+
+  function cleanRetiredSettings() {
+    config.left_settings ||= {};
+    for (const key of Object.keys(config.left_settings)) {
+      if (key.includes('Scene / 3D::')) delete config.left_settings[key];
+    }
   }
 
   function syncCustomIntoNativeProfile(nativeConfig) {
@@ -282,6 +305,10 @@
 
     nativeConfig.user_camera.streamer_mode ||= {};
     nativeConfig.user_camera.streamer_mode.camera_preference ||= {};
+    nativeConfig.user_camera.streamer_mode.mocap_type =
+      (startupCalibration.active && !startupCalibration.completed)
+        ? startupCalibration.native
+        : nativeMocapType();
     nativeConfig.user_camera.streamer_mode.camera_preference.label = config.devices?.camera_label || nativeConfig.user_camera.streamer_mode.camera_preference.label || '';
 
     return nativeConfig;
@@ -290,6 +317,75 @@
   if (profile.XR_Animator_settings) {
     syncCustomIntoNativeProfile(profile.XR_Animator_settings);
   }
+
+  function readNativeSettingsFallback() {
+    if (window.MMD_SA_options?._XRA_settings_imported) {
+      return MMD_SA_options._XRA_settings_imported;
+    }
+    try {
+      const saved = window.System?.Gadget?.Settings?.readString?.('LABEL_XRA_settings');
+      if (saved) return JSON.parse(decodeURIComponent(saved));
+    }
+    catch (e) { console.warn(TAG, 'native settings fallback read failed', e); }
+    try {
+      return window.MMD_SA_options?._XRA_settings_export?.() || null;
+    }
+    catch (e) { console.warn(TAG, 'native settings fallback export failed', e); }
+    return null;
+  }
+
+  function assertStartupNativeOptions(nativeConfig = null) {
+    if (!startupCalibration.active || startupCalibration.completed) return nativeConfig;
+
+    if (nativeConfig && typeof nativeConfig === 'object') {
+      nativeConfig.user_camera ||= {};
+      nativeConfig.user_camera.streamer_mode ||= {};
+      nativeConfig.user_camera.streamer_mode.mocap_type = startupCalibration.native;
+    }
+
+    const opts = window.MMD_SA_options?.user_camera;
+    if (opts) {
+      opts.streamer_mode ||= {};
+      opts.streamer_mode.mocap_type = startupCalibration.native;
+    }
+    return nativeConfig;
+  }
+
+  function installStartupNativeProfile(nativeConfig = profile.XR_Animator_settings) {
+    let source = nativeConfig || readNativeSettingsFallback();
+    let runtime = null;
+    if (source && typeof source === 'object') {
+      runtime = clone(source);
+      syncCustomIntoNativeProfile(runtime);
+      assertStartupNativeOptions(runtime);
+    }
+    else {
+      assertStartupNativeOptions();
+    }
+    if (runtime && typeof window.MMD_SA_options !== 'undefined') {
+      // Keep the saved profile untouched. Native import may run on load,
+      // jThree_ready and MMDStarted; all of those passes must see this clone.
+      MMD_SA_options._XRA_settings_imported = runtime;
+    }
+    return runtime;
+  }
+
+  function finishStartupNativeOverride() {
+    let saved = profile.XR_Animator_settings;
+    if (!saved) {
+      try { saved = clone(window.MMD_SA_options?._XRA_settings_export?.() || null); }
+      catch (e) { console.warn(TAG, 'native settings restore export failed', e); }
+    }
+    if (saved && typeof window.MMD_SA_options !== 'undefined') {
+      syncCustomIntoNativeProfile(saved);
+      profile.XR_Animator_settings ||= saved;
+      MMD_SA_options._XRA_settings_imported = saved;
+    }
+    return saved;
+  }
+
+  // Install before MMDStarted/streamer_mode.start(), not after the worker exists.
+  installStartupNativeProfile();
 
   let saveTimer = null;
   let savePromise = null;
@@ -362,16 +458,21 @@
 
       for (const key of Object.keys(config)) delete config[key];
       Object.assign(config, merged);
+      cleanRetiredSettings();
 
       profile.version = loaded.version || 7.80;
       profile.XR_Animator_settings = loaded.XR_Animator_settings || null;
+      syncCustomIntoNativeProfile(profile.XR_Animator_settings);
+      const runtimeNativeSettings = startupCalibration.active
+        ? installStartupNativeProfile(profile.XR_Animator_settings)
+        : profile.XR_Animator_settings;
 
       if (
-        profile.XR_Animator_settings &&
+        runtimeNativeSettings &&
         typeof MMD_SA_options?._XRA_settings_import === 'function'
       ) {
-        MMD_SA_options._XRA_settings_imported = profile.XR_Animator_settings;
-        await MMD_SA_options._XRA_settings_import(profile.XR_Animator_settings);
+        MMD_SA_options._XRA_settings_imported = runtimeNativeSettings;
+        await MMD_SA_options._XRA_settings_import(runtimeNativeSettings);
       }
 
       // E1 remains intentionally disabled: LOAD never calls init_mocap.
@@ -430,7 +531,10 @@
     isDefault,
     get: getPath,
     set: setPath,
-    syncCustomIntoNativeProfile
+    syncCustomIntoNativeProfile,
+    installStartupNativeProfile,
+    assertStartupNativeOptions,
+    finishStartupNativeOverride
   };
 
   // Native settings can fire several write events in quick succession; debounce them.
@@ -453,8 +557,26 @@
         resolve(ok);
       }
 
-      window.addEventListener('MMDStarted', onStart, { once: true });
+      function ensureGlobals() {
+        try {
+          window.System = window.System || {};
+          window.System._browser = window.System._browser || {};
+          window.System._browser.camera = window.System._browser.camera || {};
+          if (!window.System._browser.camera.bodyPix) window.System._browser.camera.bodyPix = { enabled: false };
+          if (!window.System._browser.camera.face_detection) window.System._browser.camera.face_detection = { enabled: false };
+          if (window.System._browser.video_capture && !window.System._browser.video_capture.FFmpeg) {
+            window.System._browser.video_capture.FFmpeg = { enabled: false };
+          }
+          window.MMD_SA = window.MMD_SA || {};
+          if (!window.MMD_SA.motion_player_control) {
+            window.MMD_SA.motion_player_control = { enabled: false, paused: false, pause() {}, play() {}, currentTime: 0, duration: 0 };
+          }
+        } catch (e) {}
+      }
+
+      window.addEventListener('MMDStarted', () => { ensureGlobals(); onStart(); }, { once: true });
       timer = setInterval(() => {
+        ensureGlobals();
         if (window.System?._browser?.camera && window.MMD_SA_options) finish(true);
         else if (performance.now() - started > timeout) finish(false);
       }, 120);
