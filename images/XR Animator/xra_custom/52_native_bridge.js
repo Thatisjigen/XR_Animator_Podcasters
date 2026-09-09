@@ -11,11 +11,43 @@
   let cameraChain = Promise.resolve();
   let cameraBusy = '';
   let cameraSoftStopped = false;
+  function cameraDebugState() {
+    const active = activeCamera();
+    const health = previewHealth();
+    return {
+      initialized:!!window.System?._browser?.camera?.initialized,
+      ready_state:active.readyState || '',
+      label:active.label || '',
+      healthy:!!health.healthy,
+      live:!!health.live,
+      muted:!!health.muted
+    };
+  }
+
   function runCameraOp(label, fn) {
     const task = cameraChain.catch(() => {}).then(async () => {
+      const started = performance.now();
       cameraBusy = label;
       events.emit('camera-operation', { busy: true, label });
-      try { return await fn(); }
+      XRA.debug?.record('camera.operation.started', { label, state:cameraDebugState() });
+      try {
+        const result = await fn();
+        XRA.debug?.record('camera.operation.succeeded', {
+          label,
+          elapsed_ms:Math.round((performance.now() - started) * 10) / 10,
+          state:cameraDebugState()
+        });
+        return result;
+      }
+      catch (error) {
+        XRA.debug?.record('camera.operation.failed', {
+          label,
+          elapsed_ms:Math.round((performance.now() - started) * 10) / 10,
+          error,
+          state:cameraDebugState()
+        });
+        throw error;
+      }
       finally {
         cameraBusy = '';
         events.emit('camera-operation', { busy: false, label });
@@ -442,9 +474,41 @@
     };
   }
 
+  let calibrationNoticeSuppressedUntil = 0;
+
+  function isCalibrationNotice(message) {
+    return /(calibrat|mocap\s+initializ|face\s+data|press\s+x\s+to\s+abort)/i.test(String(message || ''));
+  }
+
+  function dismissCalibrationNotices() {
+    // The native calibration uses bubbles 0 and 1. At 100% its final message
+    // can be queued after the completion event, so suppress only calibration
+    // text for a short grace period instead of hiding future generic notices.
+    calibrationNoticeSuppressedUntil = performance.now() + 3500;
+    const root = window.MMD_SA?.SpeechBubble;
+    const list = Array.isArray(root?.list) ? root.list : (root ? [root] : []);
+    list.forEach((bubble, index) => {
+      const content = speechBubbleContent(bubble);
+      if (index <= 1 || isCalibrationNotice(content.message)) {
+        hideSpeechBubbleMesh(bubble);
+        XRA.uiCore?.hideNativeNotice?.(`native-speech-${index}`);
+      }
+    });
+    // Also covers a stale DOM notice left behind after the native object was
+    // replaced and is no longer present in SpeechBubble.list.
+    XRA.uiCore?.hideNativeNotice?.('native-speech-0');
+    XRA.uiCore?.hideNativeNotice?.('native-speech-1');
+    return true;
+  }
+
   function syncSpeechBubbleNotice(bubble, index) {
     const id = `native-speech-${index}`;
     const content = speechBubbleContent(bubble);
+    if (performance.now() < calibrationNoticeSuppressedUntil && (index <= 1 || isCalibrationNotice(content.message))) {
+      hideSpeechBubbleMesh(bubble);
+      XRA.uiCore?.hideNativeNotice?.(id);
+      return;
+    }
     if (!bubble?.visible || (!content.message && !content.actions.length)) {
       XRA.uiCore?.hideNativeNotice?.(id);
       return;
@@ -996,6 +1060,29 @@
     return { ...last, healthy: false, health };
   }
 
+  async function startNativeUntilCameraReady(camera, timeout = 6500) {
+    const label = config.devices?.camera_label || '';
+    const healthPromise = waitForHealthyCamera(label, timeout);
+    const nativeOutcome = Promise.resolve()
+      .then(() => camera.streamer_mode.start())
+      .then(() => ({ kind:'native' }), error => ({ kind:'error', error }));
+    const first = await Promise.race([
+      nativeOutcome,
+      healthPromise.then(active => ({ kind:'camera', active }))
+    ]);
+    if (first.kind === 'error') throw first.error;
+
+    // Native start intentionally waits for the first face/body detections, not
+    // merely for the webcam. Let the UI continue as soon as the video track is
+    // healthy while mocap initialization finishes in the background.
+    const active = first.kind === 'camera' ? first.active : await healthPromise;
+    if (!active.healthy) throw new Error('Webcam did not start');
+    if (first.kind === 'camera') {
+      XRA.debug?.record('camera.native-start-pending-mocap', { state:cameraDebugState() });
+    }
+    return active;
+  }
+
   async function _stopNativeStreamer() {
     const c = window.System?._browser?.camera;
     if (!c?.streamer_mode) throw new Error('Native streamer mode not ready');
@@ -1043,6 +1130,7 @@
   async function _restartNativeStreamer({ recovery = false } = {}) {
     const c = window.System?._browser?.camera;
     if (!c?.streamer_mode) throw new Error('Native streamer mode not ready');
+    XRA.performance?.prepareStartupMocap?.('native-bridge-restart');
 
     if (window.MMD_SA_options?.Dungeon?.event_mode) {
       try { XRA.uiCore?.sendEscape?.(); } catch (e) {}
@@ -1069,12 +1157,11 @@
     let directError = null;
     if (typeof c.streamer_mode.start === 'function') {
       try {
-        await c.streamer_mode.start();
+        const active = await startNativeUntilCameraReady(c, recovery ? 5000 : 6500);
         // A native start can reuse the old live track; make sure it is enabled.
         for (const track of cameraVideoTracks()) {
           if (track?.readyState === 'live') { try { track.enabled = true; } catch (e) {} }
         }
-        const active = await waitForHealthyCamera(config.devices?.camera_label || '', recovery ? 5000 : 6500);
         if (active.healthy) {
           applyWebcamMirror();
           applyWebcamSelfie();
@@ -1121,6 +1208,9 @@
 
   async function _startNativeStreamer() {
     await XRA.whenNativeReady();
+    XRA.performance?.prepareStartupMocap?.('native-bridge-start');
+    XRA.performance?.installStartupMocapStartGuard?.();
+    XRA.performance?.ensureStartupCalibrationBoost?.();
 
     // Fast/reliable path after our Stop: revive the exact same native stream.
     const resumed = await resumeExistingCamera();
@@ -1143,12 +1233,10 @@
     // Cold start: use XR Animator's intended native entry point directly.
     const c = window.System?._browser?.camera;
     if (!c?.streamer_mode || typeof c.streamer_mode.start !== 'function') throw new Error('Native streamer start is not ready');
-    await c.streamer_mode.start();
+    const started = await startNativeUntilCameraReady(c, 6500);
     for (const track of cameraVideoTracks()) {
       if (track?.readyState === 'live') { try { track.enabled = true; } catch (e) {} }
     }
-    const started = await waitForHealthyCamera(config.devices?.camera_label || '', 6500);
-    if (!started.healthy) throw new Error('Webcam did not start');
     applyWebcamMirror();
     applyWebcamSelfie();
     schedulePreviewRestore();
@@ -1335,6 +1423,7 @@
     openVrmPicker,
     restoreSavedVrm,
     hideNativeShellChrome,
+    dismissCalibrationNotices,
     restartApp,
     showAbout
   };
@@ -1358,6 +1447,7 @@
   events.on('camera-started', () => {
     if (config.ui?.preview_video === true) setWebcamPreviewVisible(true);
   });
+  events.on('calibrated', dismissCalibrationNotices);
 
   events.on('profile-loaded', () => {
     setTimeout(() => { applyWebcamMirror(); applyWebcamSelfie(); }, 250);

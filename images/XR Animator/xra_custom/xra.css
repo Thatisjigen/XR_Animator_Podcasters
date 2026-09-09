@@ -46,6 +46,7 @@
   align-items: stretch;
   gap: 6px;
   width: 100%;
+  height: 36px;
   margin: 0 0 6px;
   padding: 0;
   background: transparent !important;
@@ -54,43 +55,142 @@
 }
 
 .xra-hands,
-.xra-hide {
-  min-height: 35px;
+.xra-hide,
+.xra-total-hide {
+  height: 36px;
+  min-height: 36px;
   border: 0;
   border-radius: 9px;
   color: #fff;
   font-weight: 800;
   cursor: pointer;
   box-shadow: 0 2px 5px rgba(0,0,0,.28);
+  transition: background .15s ease, opacity .15s ease;
 }
 
 .xra-hands {
   flex: 1 1 auto;
   min-width: 0;
   padding: 7px 10px;
+  font-size: 11px;
+  white-space: nowrap;
   background: rgba(20,130,70,.94);
 }
 .xra-hands.off { background: rgba(150,40,40,.94); }
 
 .xra-hide {
-  flex: 0 0 42px;
-  width: 42px;
+  flex: 0 0 38px;
+  width: 38px;
   padding: 0;
   background: rgba(55,55,58,.96);
   font-size: 16px;
 }
+.xra-hide:hover {
+  background: rgba(75,75,80,.98);
+}
+
+.xra-total-hide {
+  flex: 0 0 38px;
+  width: 38px;
+  padding: 0;
+  background: rgba(45,45,48,.96);
+  font-size: 16px;
+}
+.xra-total-hide:hover {
+  background: rgba(65,65,70,.98);
+}
+
+.xra-right-launcher {
+  position: fixed;
+  right: 0;
+  top: 52px;
+  width: auto;
+  min-height: 36px;
+  height: 36px;
+  padding: 7px 12px;
+  border: 1px solid var(--xra-panel-border);
+  border-right: 0;
+  border-radius: 9px 0 0 9px;
+  background: rgba(24,24,26,.94);
+  color: #fff;
+  cursor: pointer;
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  pointer-events: auto;
+  box-shadow: 0 5px 20px rgba(0,0,0,.30);
+  transition: background .15s ease, border-color .15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 999999;
+}
+.xra-right-launcher:hover {
+  background: var(--xra-bg-2);
+  border-color: rgba(255,255,255,.25);
+}
 
 .xra-right-body {
   max-height: min(82vh, 820px);
-  overflow-y: auto;
-  overflow-x: hidden;
-  scrollbar-gutter: stable;
-  padding: 7px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
   border: 1px solid var(--xra-panel-border);
   border-radius: var(--xra-radius);
   background: var(--xra-bg);
   box-shadow: 0 8px 30px rgba(0,0,0,.38);
   backdrop-filter: blur(7px);
+}
+
+.xra-menu-top {
+  flex: 0 0 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px;
+  margin: 0;
+  border-bottom: 1px solid var(--xra-row-border);
+  background: rgba(255,255,255,.035);
+}
+
+.xra-menu-title {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  color: var(--xra-muted);
+  text-transform: uppercase;
+}
+
+.xra-menu-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(255,255,255,.08);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease;
+}
+.xra-menu-close:hover {
+  background: rgba(255,255,255,.18);
+  color: #fff;
+}
+
+.xra-right-content {
+  max-height: min(calc(82vh - 40px), 780px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  padding: 7px;
 }
 
 /* ============================================================
@@ -246,7 +346,7 @@
 #XRA_NATIVE_SETTINGS.xra-native-root {
   position: fixed;
   left: 0;
-  top: 70px;
+  top: 52px;
   bottom: 12px;
   z-index: 999998;
   pointer-events: none;
@@ -258,9 +358,10 @@
   position: absolute;
   left: 0;
   top: 0;
-  width: 116px;
+  width: auto;
   min-height: 36px;
-  padding: 7px 10px;
+  height: 36px;
+  padding: 7px 12px;
   border: 1px solid var(--xra-panel-border);
   border-left: 0;
   border-radius: 0 9px 9px 0;
@@ -268,9 +369,19 @@
   color: #fff;
   cursor: pointer;
   font-weight: 800;
+  font-size: 11px;
+  letter-spacing: .05em;
+  text-transform: uppercase;
   pointer-events: auto;
   box-shadow: 0 5px 20px rgba(0,0,0,.30);
-  transition: transform .16s ease;
+  transition: transform .16s ease, background .15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.xra-native-launcher:hover {
+  background: var(--xra-bg-2);
+  border-color: rgba(255,255,255,.25);
 }
 
 .xra-native-drawer {
@@ -278,7 +389,7 @@
   top: 0;
   left: 0;
   width: min(var(--xra-left-width), calc(100vw - 20px));
-  max-height: calc(100vh - 82px);
+  max-height: calc(100vh - 64px);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -300,32 +411,46 @@
   pointer-events: auto;
 }
 .xra-native-root.open .xra-native-launcher {
-  transform: translateX(var(--xra-left-width));
-  width: 42px;
-  padding: 0;
+  display: none !important;
 }
 
 .xra-native-header {
-  flex: 0 0 auto;
+  flex: 0 0 40px;
+  height: 40px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 9px 10px;
+  padding: 0 10px;
+  margin: 0;
   border-bottom: 1px solid var(--xra-panel-border);
   background: rgba(255,255,255,.035);
 }
-.xra-native-title { font-weight: 900; letter-spacing: .015em; }
+.xra-native-title {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .05em;
+  color: var(--xra-muted);
+  text-transform: uppercase;
+}
 .xra-native-close {
-  width: 28px;
-  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
   padding: 0;
   border: 0;
   border-radius: 6px;
   background: rgba(255,255,255,.08);
   color: #fff;
+  font-size: 16px;
+  font-weight: 700;
   cursor: pointer;
-  font-size: 18px;
+  transition: background .15s ease;
+}
+.xra-native-close:hover {
+  background: rgba(255,255,255,.18);
 }
 
 .xra-native-search {
@@ -513,10 +638,27 @@ body.xra-native-ui-hidden #Ldungeon_inventory_backpack {
   pointer-events: none !important;
 }
 
+/* Total Clean Screen: hides all UI, headers, menus, launchers and overlays */
+body.xra-total-clean-screen #XRA_CUSTOM_PANEL,
+body.xra-total-clean-screen #XRA_NATIVE_SETTINGS,
+body.xra-total-clean-screen .xra-native-launcher,
+body.xra-total-clean-screen .xra-right-launcher,
+body.xra-total-clean-screen .xra-toast-host,
+body.xra-total-clean-screen .xra-native-notice-host,
+body.xra-total-clean-screen .xra-help-popup,
+body.xra-total-clean-screen #Ldungeon_UI,
+body.xra-total-clean-screen #Ldungeon_inventory,
+body.xra-total-clean-screen #Ldungeon_inventory_backpack {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
 @media (max-width: 760px) {
   :root { --xra-right-width: 270px; --xra-left-width: 330px; }
   #XRA_CUSTOM_PANEL.xra-right-panel { right: 6px; top: 6px; }
-  #XRA_NATIVE_SETTINGS.xra-native-root { top: 58px; }
+  #XRA_NATIVE_SETTINGS.xra-native-root { top: 48px; }
+  .xra-right-launcher { top: 48px; }
   .xra-native-root.open .xra-native-launcher { display: none; }
 }
 
@@ -527,7 +669,8 @@ body.xra-native-ui-hidden #Ldungeon_inventory_backpack {
     width: auto;
   }
   .xra-right-body { max-height: 72vh; }
-  #XRA_NATIVE_SETTINGS.xra-native-root { top: 54px; }
+  #XRA_NATIVE_SETTINGS.xra-native-root { top: 48px; }
+  .xra-right-launcher { top: 48px; }
   .xra-native-drawer { width: calc(100vw - 12px); }
   .xra-row,
   .xra-native-content .xra-row {

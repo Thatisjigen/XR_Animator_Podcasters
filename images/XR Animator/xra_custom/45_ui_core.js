@@ -164,6 +164,33 @@
     refreshAll();
   }
 
+  let totalHidden = false;
+
+  function setTotalHidden(active) {
+    active = !!active;
+    if (active === totalHidden) return;
+    totalHidden = active;
+
+    if (totalHidden) {
+      document.body.classList.add('xra-total-clean-screen');
+      XRA.help?.hide?.();
+    }
+    else {
+      document.body.classList.remove('xra-total-clean-screen');
+    }
+
+    events.emit('total-clean', totalHidden);
+    refreshAll();
+  }
+
+  window.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && totalHidden) {
+      event.preventDefault();
+      event.stopPropagation();
+      setTotalHidden(false);
+    }
+  }, true);
+
   function ensureToastHost() {
     if (toastHost?.isConnected) return toastHost;
     toastHost = el('div', 'xra-toast-host');
@@ -262,17 +289,21 @@
     stopInputPropagation,
     registerHideable,
     setHidden,
+    setTotalHidden,
     sendEscape,
     nativeUIVisible,
     showNativeNotice,
     hideNativeNotice,
-    get hidden() { return uiHidden; }
+    get hidden() { return uiHidden; },
+    get totalHidden() { return totalHidden; }
   };
 
   XRA.ui = Object.assign(XRA.ui || {}, {
     setHidden,
+    setTotalHidden,
     refresh: refreshAll,
-    get hidden() { return uiHidden; }
+    get hidden() { return uiHidden; },
+    get totalHidden() { return totalHidden; }
   });
 
 })();

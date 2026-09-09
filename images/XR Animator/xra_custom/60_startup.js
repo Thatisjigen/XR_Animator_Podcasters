@@ -251,7 +251,7 @@
     foot.append(show, start);
 
     let closing = false;
-    async function closeOverlay() {
+    async function closeOverlay(autoStartCamera = false) {
       if (closing) return;
       closing = true;
       document.removeEventListener('keydown', onKeyDown);
@@ -259,14 +259,18 @@
       try { await XRA.profileService.save(0); } catch (e) {}
       overlay.remove();
       XRA.ui?.refresh?.();
+      if (autoStartCamera && !XRA.nativeBridge?.cameraRunning?.()) {
+        try { await XRA.nativeBridge?.startNativeStreamer?.(); }
+        catch (e) { console.warn('Auto-starting camera on START failed', e); }
+      }
     }
     function onKeyDown(event) {
-      if (event.key === 'Escape') { event.preventDefault(); closeOverlay(); }
+      if (event.key === 'Escape') { event.preventDefault(); closeOverlay(false); }
     }
-    close.onclick = closeOverlay;
-    start.onclick = closeOverlay;
+    close.onclick = () => closeOverlay(false);
+    start.onclick = () => closeOverlay(true);
     overlay.addEventListener('pointerdown', event => {
-      if (event.target === overlay) closeOverlay();
+      if (event.target === overlay) closeOverlay(false);
     });
     document.addEventListener('keydown', onKeyDown);
 
