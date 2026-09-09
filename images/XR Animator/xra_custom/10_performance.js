@@ -8,13 +8,21 @@
   const PRESETS = {
     // ECO is the real low-end profile. MINIMAL remains as a legacy alias so old
     // profiles continue to load, but the UI now exposes ECO instead.
-    ECO:      { cam: [424, 240, 20], pose: 'Lite',   lip: [512, 20],  post: true,  native: 'Face+Body', rates: [15, 10] },
-    MINIMAL:  { cam: [424, 240, 20], pose: 'Lite',   lip: [512, 20],  post: true,  native: 'Face+Body', rates: [15, 10] },
-    LOW:      { cam: [640, 360, 24], pose: 'Lite',   lip: [512, 20],  post: true,  native: 'Face+Body', rates: [20, 12] },
-    BALANCED: { cam: [640, 480, 30], pose: 'Normal', lip: [512, 30],  post: false, native: 'Face+Body', rates: [30, 20] },
-    QUALITY:  { cam: [1280,720, 30], pose: 'Normal', lip: [1024, 30], post: false, native: 'Face+Body', rates: [30, 30] },
+    ECO:      { cam: [424, 240, 20], pose: 'Lite',   lip: [512, 20],  post: true,  native: 'Full Body', rates: [15, 10] },
+    MINIMAL:  { cam: [424, 240, 20], pose: 'Lite',   lip: [512, 20],  post: true,  native: 'Full Body', rates: [15, 10] },
+    LOW:      { cam: [640, 360, 24], pose: 'Lite',   lip: [512, 20],  post: true,  native: 'Full Body', rates: [20, 12] },
+    BALANCED: { cam: [640, 480, 30], pose: 'Normal', lip: [512, 30],  post: false, native: 'Full Body', rates: [30, 20] },
+    QUALITY:  { cam: [1280,720, 30], pose: 'Normal', lip: [1024, 30], post: false, native: 'Full Body', rates: [30, 30] },
     HIGH:     { cam: [1280,720, 30], pose: 'Best',   lip: [1024, 30], post: false, native: 'Full Body', rates: [60, 30] },
     MAX:      { cam: [1280,720, 60], pose: 'Best',   lip: [2048, 60], post: false, native: 'Full Body', rates: [60, 60] }
+  };
+
+  // MediaPipe Vision Full Body mocap engine is selected at startup for native calibration,
+  // then restored to the user's saved pipeline after calibration completes.
+  const startupCalibration = XRA.startupCalibration ||= {
+    active: true,
+    completed: false,
+    native: 'Full Body'
   };
 
   let postFXBaseline = null;
@@ -31,6 +39,13 @@
       opts.pixel_limit.disabled = false;
       opts.pixel_limit.current = [config.camera.width, config.camera.height];
       opts.fps = { ideal: config.camera.fps };
+    }
+    else {
+      const saved = XRA.profile?.XR_Animator_settings?.user_camera;
+      opts.pixel_limit ||= {};
+      opts.pixel_limit.disabled = saved?.pixel_limit?.disabled !== false;
+      opts.pixel_limit.current = saved?.pixel_limit?.current || null;
+      opts.fps = saved?.fps || null;
     }
 
     if (opts.ML_models?.pose) {
@@ -285,16 +300,233 @@
   }
 
   function pipelineNameFromNative(native) {
-    if (native === 'Face+Body') return 'SPLIT';
-    if (native === 'Full Body') return 'FULL_BODY';
-    if (native === 'Full Body Holistic') return 'HOLISTIC';
     if (native === 'Face') return 'FACE';
-    return String(native || 'SPLIT').toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+    return 'FULL_BODY';
   }
 
   function nativeFromPipeline(name) {
     name = String(name || '').toUpperCase();
-    return name === 'SPLIT' ? 'Face+Body' : 'Full Body';
+    if (name === 'FACE') return 'Face';
+    return 'Full Body';
+  }
+
+  let startupMocapTriggered = false;
+  let calibrationListenerAttached = false;
+  let startupSafetyTimer = 0;
+  let startupGuardedStreamer = null;
+  let startupMocapWatchTimer = 0;
+
+  function prepareStartupMocap(reason = 'startup') {
+    if (!startupCalibration.active || startupCalibration.completed) return false;
+    XRA.profileService?.assertStartupNativeOptions?.();
+    XRA.profileService?.assertStartupNativeOptions?.(window.MMD_SA_options?._XRA_settings_imported);
+    const mode = window.MMD_SA_options?.user_camera?.streamer_mode;
+    if (mode) mode.mocap_type = 'Full Body';
+    XRA.debug?.sample?.('startup.mocap-prepared', 'startup.mocap-prepared', {
+      reason,
+      native:'Full Body',
+      camera_initialized:!!window.System?._browser?.camera?.initialized,
+      streamer_running:!!window.System?._browser?.camera?.streamer_mode?.running
+    }, 1000);
+    return !!mode;
+  }
+
+  function installStartupMocapStartGuard() {
+    const sm = window.System?._browser?.camera?.streamer_mode;
+    if (!sm || typeof sm.start !== 'function') return false;
+    if (sm === startupGuardedStreamer) return true;
+
+    const originalStart = sm.start;
+    try {
+      sm.start = function (...args) {
+        prepareStartupMocap('before-native-start');
+        return originalStart.apply(this, args);
+      };
+      startupGuardedStreamer = sm;
+      return true;
+    }
+    catch (error) {
+      console.warn(TAG, 'Unable to guard native mocap start', error);
+      return false;
+    }
+  }
+
+  function dismissCalibrationNotices() {
+    // Native code can publish the final 100% line just after our listener.
+    // Repeating the idempotent dismissal covers that last queued update too.
+    for (const delay of [0, 120, 700, 2200]) {
+      setTimeout(() => XRA.nativeBridge?.dismissCalibrationNotices?.(), delay);
+    }
+  }
+
+  function installNeckCalibrationBridge() {
+    const camera = window.System?._browser?.camera;
+    const facemesh = camera?.facemesh;
+    if (!facemesh || facemesh._neck_bridge_installed) return !!facemesh?._neck_bridge_installed;
+
+    const origCalculateNeckData = facemesh.calculate_neck_data;
+    if (typeof origCalculateNeckData !== 'function') return false;
+
+    facemesh._neck_bridge_installed = true;
+    let lastPoseNeck = null;
+
+    facemesh.calculate_neck_data = function (t) {
+      if (!t) return false;
+      if (t.is_pose) lastPoseNeck = t;
+
+      // During calibration, ensure facemesh neck samples are always paired with pose data
+      // even when seated at a desk or when timestamps differ across workers.
+      if (!this.calibrated && t.is_face) {
+        const neckData = this._neck?.data;
+        if (Array.isArray(neckData)) {
+          const match = neckData.find(e => e.timestamp === t.timestamp);
+          if (!match) {
+            const faceWidth = (Number(t.face_width) > 0) ? Number(t.face_width) : 100;
+            const fallbackShoulder = (Array.isArray(t.f_axis) && t.f_axis.length >= 2 && Number.isFinite(t.f_axis[0]) && Number.isFinite(t.f_axis[1]))
+              ? [t.f_axis[0], t.f_axis[1] + faceWidth * 1.25, 0]
+              : [0, -faceWidth * 1.25, 0];
+            const shoulder = (Array.isArray(lastPoseNeck?.shoulder_center) && lastPoseNeck.shoulder_center.every(Number.isFinite))
+              ? lastPoseNeck.shoulder_center
+              : ((Array.isArray(this._neck?.shoulder_center) && this._neck.shoulder_center.every(Number.isFinite))
+                ? this._neck.shoulder_center
+                : fallbackShoulder);
+            const spine = (Array.isArray(lastPoseNeck?.spine_rot_absolute) && lastPoseNeck.spine_rot_absolute.every(Number.isFinite))
+              ? lastPoseNeck.spine_rot_absolute
+              : ((Array.isArray(this._neck?._spine_rot_absolute) && this._neck._spine_rot_absolute.every(Number.isFinite))
+                ? this._neck._spine_rot_absolute
+                : [0, 0, 0]);
+
+            neckData.unshift({
+              is_pose: true,
+              timestamp: t.timestamp,
+              shoulder_center: shoulder,
+              spine_rot_absolute: spine
+            });
+          }
+        }
+      }
+
+      return origCalculateNeckData.call(this, t);
+    };
+
+    console.log(TAG, 'Neck calibration bridge installed successfully');
+    return true;
+  }
+
+  function installStartupCalibrationListener() {
+    if (calibrationListenerAttached) return;
+    calibrationListenerAttached = true;
+
+    function onCalibrationEvent(e) {
+      if (!startupCalibration.active) {
+        window.removeEventListener('SA_camera_facemesh_calibrating', onCalibrationEvent);
+        calibrationListenerAttached = false;
+        return;
+      }
+
+      const percent = Math.round(Number(e.detail?.percent || 0));
+      if (percent >= 100) {
+        window.removeEventListener('SA_camera_facemesh_calibrating', onCalibrationEvent);
+        calibrationListenerAttached = false;
+        clearTimeout(startupSafetyTimer);
+        startupSafetyTimer = 0;
+        events.emit('calibrated', { percent });
+        dismissCalibrationNotices();
+        setTimeout(() => finishStartupCalibrationBoost(), 500);
+      }
+    }
+
+    window.addEventListener('SA_camera_facemesh_calibrating', onCalibrationEvent);
+  }
+
+  function selectStartupMocap() {
+    if (startupMocapTriggered || !startupCalibration.active || startupCalibration.completed) return false;
+
+    prepareStartupMocap('select');
+    installStartupMocapStartGuard();
+    const camera = window.System?._browser?.camera;
+    const sm = camera?.streamer_mode;
+    if (!camera?.initialized || !sm?.init_mocap || !camera?.facemesh) return false;
+
+    installNeckCalibrationBridge();
+    installStartupCalibrationListener();
+
+    // Diagnose a stalled calibration, but keep Full Body active until native
+    // calibration really completes as requested. A time limit must not silently
+    // restore the saved pipeline while the user is still calibrating.
+    if (!startupSafetyTimer) {
+      startupSafetyTimer = setTimeout(() => {
+        if (startupCalibration.active) {
+          console.warn(TAG, 'Startup calibration is still waiting after 60s; keeping Full Body active');
+          XRA.debug?.record('startup.calibration-waiting', { elapsed_ms:60000, native:'Full Body' });
+        }
+      }, 60000);
+    }
+
+    // Select the engine once even if the camera is already running. Merely
+    // changing mocap_type updates the menu but does not create the Full Body
+    // MediaPipe workers, which is why a manual selection + restart was needed.
+    try {
+      console.log(TAG, 'Selecting startup mocap engine: Full Body (MediaPipe Vision)...');
+      initNative('Full Body');
+      startupMocapTriggered = true;
+    }
+    catch (e) {
+      console.warn(TAG, 'initNative Full Body failed', e);
+      return false;
+    }
+
+    events.emit('startup-calibration-boost', { active: true, native: 'Full Body', running:!!sm.running });
+    return true;
+  }
+
+  function ensureStartupCalibrationBoost() {
+    return selectStartupMocap();
+  }
+
+  function finishStartupCalibrationBoost() {
+    dismissCalibrationNotices();
+    if (!startupCalibration.active) return false;
+    startupCalibration.active = false;
+    startupCalibration.completed = true;
+    clearTimeout(startupSafetyTimer);
+    startupSafetyTimer = 0;
+    clearInterval(startupMocapWatchTimer);
+    startupMocapWatchTimer = 0;
+
+    // Restore saved tracking pipeline exactly as when selected manually
+    const rawSaved = XRA.profile?.custom?.performance?.tracking_pipeline || config.performance?.tracking_pipeline || 'FULL_BODY';
+    const savedPipeline = rawSaved === 'SPLIT' || rawSaved === 'HOLISTIC' ? 'FULL_BODY' : rawSaved;
+    const savedNative = nativeFromPipeline(savedPipeline);
+    config.performance.tracking_pipeline = pipelineNameFromNative(savedNative);
+
+    console.log(TAG, `Startup calibration complete! Restoring saved mocap: ${savedNative} (${savedPipeline})`);
+
+    XRA.profileService?.finishStartupNativeOverride?.();
+    apply();
+
+    try {
+      if (savedNative && savedNative !== 'Full Body') {
+        initNative(savedNative);
+        if (window.MMD_SA?.MMD?.motionManager && !window.MMD_SA.MMD.motionManager.para_SA?.motion_tracking_enabled) {
+          window.MMD_SA_options?.Dungeon_options?.item_base?.pose?._change_motion_?.(0, true);
+        }
+      }
+      else if (window.MMD_SA_options?.user_camera?.streamer_mode) {
+        MMD_SA_options.user_camera.streamer_mode.mocap_type = savedNative;
+      }
+    }
+    catch (e) {
+      console.warn(TAG, 'saved mocap restore after calibration failed', e);
+      if (window.MMD_SA_options?.user_camera?.streamer_mode) {
+        MMD_SA_options.user_camera.streamer_mode.mocap_type = savedNative;
+      }
+    }
+
+    events.emit('pipeline', { native: savedNative, name: config.performance.tracking_pipeline });
+    events.emit('startup-calibration-boost', { active: false, native: savedNative });
+    XRA.ui?.refresh?.();
+    return true;
   }
 
   async function poseExists(quality) {
@@ -465,7 +697,8 @@
 
 
   async function setMocapMode(native) {
-    const allowed = new Set(['Face', 'Face+Body', 'Full Body', 'Full Body Holistic']);
+    if (native === 'Full Body Holistic' || native === 'Face+Body') native = 'Full Body';
+    const allowed = new Set(['Face', 'Full Body']);
     if (!allowed.has(native)) throw new Error('Unsupported mocap mode: ' + native);
     initNative(native);
     config.performance.tracking_pipeline = pipelineNameFromNative(native);
@@ -500,6 +733,12 @@
     setMocapMode,
     poseExists,
     ensurePoseQuality,
+    selectStartupMocap,
+    ensureStartupCalibrationBoost,
+    finishStartupCalibrationBoost,
+    prepareStartupMocap,
+    installStartupMocapStartGuard,
+    installNeckCalibrationBridge,
     applyPresetSafe,
     applyMasterPreset,
     benchmarkHardwareOnly,
@@ -529,18 +768,52 @@
     }
   };
 
+  function watchForStartupCamera() {
+    prepareStartupMocap('watch');
+    installStartupMocapStartGuard();
+    installNeckCalibrationBridge();
+    if (!startupCalibration.active || startupCalibration.completed) return;
+    selectStartupMocap();
+    if (startupMocapWatchTimer) return;
+
+    // Keep the override alive until calibration really completes. The old
+    // watcher stopped after 20 seconds, often before the user pressed START;
+    // a later native profile import could then restore the wrong engine.
+    startupMocapWatchTimer = setInterval(() => {
+      if (!startupCalibration.active || startupCalibration.completed) {
+        clearInterval(startupMocapWatchTimer);
+        startupMocapWatchTimer = 0;
+        return;
+      }
+      prepareStartupMocap('watch');
+      installStartupMocapStartGuard();
+      installNeckCalibrationBridge();
+      selectStartupMocap();
+    }, 250);
+  }
+
   events.on('profile-loaded', () => {
-    // Safe runtime restore only: no pipeline init.
     runtimePoseFps = runtimeHandFps = null;
     apply();
     ensureRuntimeMonitor();
+    installNeckCalibrationBridge();
+    watchForStartupCamera();
+  });
+
+  events.on('camera-started', () => {
+    installNeckCalibrationBridge();
+    selectStartupMocap();
   });
 
   window.addEventListener('MMDStarted', () => {
+    installNeckCalibrationBridge();
     setTimeout(() => apply(), 500);
     setTimeout(sendInferenceRates, 1200);
+    watchForStartupCamera();
   });
 
+  installNeckCalibrationBridge();
+  watchForStartupCamera();
   setTimeout(sendInferenceRates, 1500);
   setTimeout(ensureRuntimeMonitor, 1700);
 })();
