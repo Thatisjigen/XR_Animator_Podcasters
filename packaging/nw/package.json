@@ -2,7 +2,7 @@
   "name": "xr-animator-podcasters-bundled",
   "main": "launcher.js",
   "single-instance": true,
-  "chromium-args": "--enable-webaudio-input --ignore-gpu-blocklist --autoplay-policy=no-user-gesture-required --enable-features=WebRTCPipeWireCapturer --enable-gpu-rasterization --enable-zero-copy --disable-breakpad --disable-sync --disable-speech-api --disable-component-update",
+  "chromium-args": "--enable-webaudio-input --ignore-gpu-blocklist --autoplay-policy=no-user-gesture-required --enable-features=WebRTCPipeWireCapturer --enable-gpu-rasterization --enable-zero-copy --disable-breakpad --disable-sync --disable-speech-api --disable-component-update --use-fake-ui-for-media-stream",
   "window": {
     "show": false
   }
