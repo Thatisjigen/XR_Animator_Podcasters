@@ -1,4 +1,4 @@
-﻿
+
 _private/
 TEMP/_config_local/
 node_modules/OSC.js/
@@ -16,3 +16,21 @@ avatars/
 .xra_recording_sessions/
 __pycache__/
 *.py[cod]
+
+# Local build environments and generated desktop bundles
+/.venv/
+/build/
+/cache/
+/dist/
+/dist_nwjs/
+/release/
+/.build/
+/locales/
+/node_modules/*
+/icudtl.dat
+/v8_context_snapshot.bin
+/nw_bin
+/webview_app.py
+/webview_app.spec
+/root_test*.log
+/package-lock.json
