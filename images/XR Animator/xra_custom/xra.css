@@ -785,86 +785,265 @@ body.xra-hide-legacy-toolbar #Ldungeon_inventory_backpack {
   box-shadow: 0 4px 18px rgba(0,0,0,.38);
 }
 
-/* The native dat.GUI / lil-gui panel is embedded inline inside the right panel */
+/* ==========================================================================
+   Advanced Visual Effects (lil-gui / dat.gui) Embedded Theme
+   ========================================================================== */
 .xra-native-fx-mount {
   width: 100%;
-  margin-top: 6px;
-  overflow: hidden;
+  margin-top: 8px;
+  overflow: visible;
+  --background-color: transparent !important;
+  --text-color: var(--xra-text, #f5f5f6) !important;
+  --title-background-color: rgba(255, 255, 255, 0.025) !important;
+  --widget-color: var(--xra-control, #272729) !important;
+  --hover-color: rgba(255, 255, 255, 0.06) !important;
+  --focus-color: rgba(79, 168, 121, 0.3) !important;
+  --number-color: #6cab89 !important;
+  --string-color: #6cab89 !important;
+  --font-family: inherit !important;
+  --font-size: 11px !important;
+  --input-font-size: 11px !important;
+  --font-family-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+  --widget-height: 24px !important;
+  --title-height: auto !important;
+  --widget-border-radius: 6px !important;
+  --checkbox-size: 17px !important;
 }
 
-.xra-native-fx-mount .lil-gui,
-.xra-native-fx-mount .dg.main {
+.xra-native-fx-mount .lil-gui.root {
   width: 100% !important;
   max-width: 100% !important;
   position: static !important;
-  top: auto !important;
-  left: auto !important;
-  right: auto !important;
-  bottom: auto !important;
   transform: none !important;
-  border-radius: 8px !important;
-  background: rgba(18, 20, 26, 0.95) !important;
-  border: 1px solid rgba(255, 255, 255, 0.1) !important;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35) !important;
-  color: #e0e0e0 !important;
-  font-family: inherit !important;
-  z-index: auto !important;
-  overflow: visible !important;
-}
-
-.xra-native-fx-mount .lil-gui .title,
-.xra-native-fx-mount .dg .title {
-  background: rgba(28, 32, 42, 0.95) !important;
-  color: #f0f0f0 !important;
-  font-family: inherit !important;
-  font-size: 11px !important;
-  font-weight: 600 !important;
-  letter-spacing: 0.02em !important;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
-  padding: 6px 8px !important;
-  border-radius: 4px !important;
-}
-
-.xra-native-fx-mount .lil-gui .controller,
-.xra-native-fx-mount .dg .cr {
+  border-radius: var(--xra-radius, 8px) !important;
   background: transparent !important;
-  color: #d0d0d0 !important;
+  border: none !important;
+  box-shadow: none !important;
+  color: var(--xra-text, #f5f5f6) !important;
   font-family: inherit !important;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04) !important;
-  padding: 3px 6px !important;
-}
-
-.xra-native-fx-mount .lil-gui .controller > .name,
-.xra-native-fx-mount .dg .property-name {
-  color: #9aa0a6 !important;
   font-size: 11px !important;
+  padding: 0 !important;
+  margin: 0 !important;
 }
 
+/* Hide redundant root "Controls" title bar */
+.xra-native-fx-mount .lil-gui.root > .title {
+  display: none !important;
+}
+
+/* All folders (Light and camera, Post-Processing Effects, etc.) */
+.xra-native-fx-mount .lil-gui .lil-gui {
+  background: rgba(255, 255, 255, 0.02) !important;
+  border: 1px solid var(--xra-row-border, rgba(255, 255, 255, 0.08)) !important;
+  border-radius: 8px !important;
+  margin: 6px 0 !important;
+  overflow: hidden !important;
+}
+
+/* Nested subfolders (level 2+) */
+.xra-native-fx-mount .lil-gui .lil-gui .lil-gui {
+  background: rgba(0, 0, 0, 0.2) !important;
+  border: 1px solid rgba(255, 255, 255, 0.05) !important;
+  border-radius: 6px !important;
+  margin: 5px 0 !important;
+}
+
+/* Folder Titles: completely prevent text overlap with auto height, word-break, and native padding */
+.xra-native-fx-mount .lil-gui .title {
+  height: auto !important;
+  min-height: 28px !important;
+  line-height: 1.35 !important;
+  white-space: normal !important;
+  word-break: break-word !important;
+  overflow: visible !important;
+  padding: 7px 9px !important;
+  background: rgba(255, 255, 255, 0.025) !important;
+  color: var(--xra-text, #f5f5f6) !important;
+  font-family: inherit !important;
+  font-weight: 800 !important;
+  font-size: 11px !important;
+  border-bottom: 1px solid var(--xra-row-border, rgba(255, 255, 255, 0.08)) !important;
+  display: flex !important;
+  align-items: center !important;
+  cursor: pointer !important;
+  user-select: none !important;
+  transition: background 0.15s ease, color 0.15s ease !important;
+}
+
+.xra-native-fx-mount .lil-gui .title:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: #ffffff !important;
+}
+
+.xra-native-fx-mount .lil-gui.closed > .title {
+  border-bottom: none !important;
+}
+
+/* Folder Children indentation */
+.xra-native-fx-mount .lil-gui .lil-gui > .children {
+  border-left: 2px solid rgba(79, 168, 121, 0.35) !important;
+  margin-left: 6px !important;
+  padding: 4px 6px 6px 8px !important;
+}
+
+/* Controllers (Rows) */
+.xra-native-fx-mount .lil-gui .controller {
+  height: auto !important;
+  min-height: 28px !important;
+  margin: 3px 0 !important;
+  padding: 3px 4px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03) !important;
+  gap: 8px !important;
+}
+
+/* Controller Name (Labels) */
+.xra-native-fx-mount .lil-gui .controller > .name {
+  height: auto !important;
+  line-height: 1.3 !important;
+  white-space: normal !important;
+  word-break: break-word !important;
+  overflow: visible !important;
+  color: var(--xra-muted, rgba(255, 255, 255, 0.6)) !important;
+  font-family: inherit !important;
+  font-size: 11px !important;
+  min-width: 80px !important;
+  max-width: 120px !important;
+  flex: 0 0 auto !important;
+}
+
+/* Controller Widget Area */
+.xra-native-fx-mount .lil-gui .controller .widget {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+
+/* Number Sliders */
+.xra-native-fx-mount .lil-gui .controller.number .slider {
+  flex: 1 1 auto !important;
+  min-width: 45px !important;
+  height: 10px !important;
+  background: rgba(255, 255, 255, 0.12) !important;
+  border-radius: 5px !important;
+  cursor: ew-resize !important;
+  overflow: hidden !important;
+}
+
+.xra-native-fx-mount .lil-gui .controller.number .slider .fill {
+  background: #4fa879 !important;
+  border-radius: 5px !important;
+}
+
+.xra-native-fx-mount .lil-gui .controller.number .slider:hover .fill,
+.xra-native-fx-mount .lil-gui .controller.number .slider.active .fill {
+  background: #6cab89 !important;
+}
+
+/* Numeric & Text Inputs */
 .xra-native-fx-mount .lil-gui input[type="number"],
-.xra-native-fx-mount .lil-gui input[type="text"],
-.xra-native-fx-mount .dg input[type="text"] {
-  background: rgba(0, 0, 0, 0.4) !important;
-  border: 1px solid rgba(255, 255, 255, 0.14) !important;
-  border-radius: 4px !important;
-  color: #7cdda7 !important;
-  font-family: monospace !important;
+.xra-native-fx-mount .lil-gui input[type="text"] {
+  background: var(--xra-control, #272729) !important;
+  border: 1px solid var(--xra-control-border, rgba(255, 255, 255, 0.22)) !important;
+  border-radius: 6px !important;
+  color: #ffffff !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+  font-size: 11px !important;
+  height: 24px !important;
+  padding: 2px 5px !important;
+  text-align: right !important;
+  outline: none !important;
 }
 
-.xra-native-fx-mount .lil-gui .slider,
-.xra-native-fx-mount .dg .slider {
-  background: rgba(255, 255, 255, 0.1) !important;
-  border-radius: 4px !important;
+.xra-native-fx-mount .lil-gui input[type="number"]:focus,
+.xra-native-fx-mount .lil-gui input[type="text"]:focus {
+  border-color: #6cab89 !important;
+  background: #1c1c1e !important;
 }
 
-.xra-native-fx-mount .lil-gui .slider .fill,
-.xra-native-fx-mount .dg .slider-fg {
-  background: #38bdf8 !important;
+.xra-native-fx-mount .lil-gui .controller.number input {
+  width: 48px !important;
+  flex: 0 0 48px !important;
+}
+
+/* Color Controller */
+.xra-native-fx-mount .lil-gui .controller.color .widget {
+  justify-content: flex-end !important;
+  gap: 6px !important;
+}
+
+.xra-native-fx-mount .lil-gui .controller.color .display {
+  height: 24px !important;
+  width: 34px !important;
+  border-radius: 6px !important;
+  border: 1px solid var(--xra-control-border, rgba(255, 255, 255, 0.22)) !important;
+  flex-shrink: 0 !important;
+  cursor: pointer !important;
+}
+
+.xra-native-fx-mount .lil-gui .controller.color input[type="text"] {
+  width: 64px !important;
+  flex: 0 0 64px !important;
+  text-align: center !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+}
+
+/* Boolean / Checkboxes */
+.xra-native-fx-mount .lil-gui .controller.boolean .widget {
+  justify-content: flex-end !important;
 }
 
 .xra-native-fx-mount .lil-gui input[type="checkbox"] {
-  accent-color: #38bdf8 !important;
+  appearance: auto !important;
+  -webkit-appearance: auto !important;
+  width: 17px !important;
+  height: 17px !important;
+  cursor: pointer !important;
+  accent-color: #4fa879 !important;
+  margin: 0 !important;
 }
 
+/* Select / Dropdown */
+.xra-native-fx-mount .lil-gui select {
+  background: var(--xra-control, #272729) !important;
+  border: 1px solid var(--xra-control-border, rgba(255, 255, 255, 0.22)) !important;
+  border-radius: 6px !important;
+  color: #ffffff !important;
+  font-size: 11px !important;
+  height: 24px !important;
+  padding: 2px 4px !important;
+  outline: none !important;
+  width: 100% !important;
+}
+
+/* Buttons (Reset, actions, etc.) */
+.xra-native-fx-mount .lil-gui button {
+  width: 100% !important;
+  height: 26px !important;
+  line-height: 24px !important;
+  background: #3b3b3e !important;
+  border: 1px solid rgba(255, 255, 255, 0.18) !important;
+  border-radius: 6px !important;
+  color: #ffffff !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.02em !important;
+  text-transform: uppercase !important;
+  cursor: pointer !important;
+  transition: filter 0.15s ease, background 0.15s ease !important;
+  margin: 3px 0 !important;
+}
+
+.xra-native-fx-mount .lil-gui button:hover {
+  filter: brightness(1.15) !important;
+  background: #454549 !important;
+}
+
+/* Close & legacy overrides */
 .xra-native-fx-mount .xra-native-fx-close {
   display: none !important;
 }
