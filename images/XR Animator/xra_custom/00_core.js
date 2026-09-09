@@ -9,7 +9,8 @@
       optimized: true,
       width: 640,
       height: 480,
-      fps: 30
+      fps: 30,
+      mouse_locked: false
     },
     pose_model: 'Normal',
     lip: {
