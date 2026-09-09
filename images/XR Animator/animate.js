@@ -6223,16 +6223,8 @@ MMD_SA_options.Dungeon.utils.tooltip(
 );
       }
     }
-   ,{ key:6, branch_index:6,
-      onmouseover: function (e) {
-MMD_SA_options.Dungeon.utils.tooltip(
-  e.clientX, e.clientY,
-  System._browser.translation.get('XR_Animator.UI.motion_capture.ML_off.full_body_legacy_holistic.tooltip')
-);
-      }
-    }
-   ,{ key:7, branch_index:7 }
-   ,{ key:8, is_closing_event:true }
+   ,{ key:6, branch_index:7 }
+   ,{ key:7, is_closing_event:true }
 ];
   }
           }
@@ -6288,7 +6280,7 @@ System._browser.camera.streamer_mode.init_mocap('Full Body');
      ,[
         {
           func: function () {
-System._browser.camera.streamer_mode.init_mocap('Full Body Holistic');
+System._browser.camera.streamer_mode.init_mocap('Full Body');
           }
          ,ended: true
         }
