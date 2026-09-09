@@ -1672,7 +1672,7 @@
     'Hand camera FOV':'Campo visivo telecamera mani',
     'VRM joint stiffness':'Rigidità articolazioni avatar',
     '3D wallpaper':'Sfondo 3D con profondità',
-    'Global hotkeys':'Scorciatoie da tastiera',
+    'Global hotkeys':'Scorciatoie globali (OS)',
     'Disable native hotkeys':'Disabilita scorciatoie integrate',
     'Gamepad enabled':'Supporto controller / gamepad',
     'Reject jump above':'Soglia anti-scatto rotazione',

@@ -8,7 +8,6 @@
   const refreshers = new Set();
   const hideables = new Set();
   let uiHidden = false;
-  let nativeWasVisible = true;
   let toastHost = null;
   let nativeNoticeHost = null;
   const nativeNotices = new Map();
@@ -119,13 +118,6 @@
     return node;
   }
 
-  function nativeUIVisible() {
-    const target = document.querySelector('#Ldungeon_inventory, #Ldungeon_UI');
-    if (!target) return true;
-    const style = getComputedStyle(target);
-    return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) !== 0;
-  }
-
   function sendEscape() {
     try {
       document.dispatchEvent(new KeyboardEvent('keydown', {
@@ -147,17 +139,12 @@
     uiHidden = hidden;
 
     if (hidden) {
-      nativeWasVisible = nativeUIVisible();
-      if (nativeWasVisible) sendEscape();
       document.body.classList.add('xra-native-ui-hidden');
       for (const node of hideables) node.hidden = true;
     }
     else {
       document.body.classList.remove('xra-native-ui-hidden');
       for (const node of hideables) node.hidden = false;
-      requestAnimationFrame(() => {
-        if (nativeWasVisible && !nativeUIVisible()) sendEscape();
-      });
     }
 
     events.emit('ui-hidden', uiHidden);
@@ -291,7 +278,6 @@
     setHidden,
     setTotalHidden,
     sendEscape,
-    nativeUIVisible,
     showNativeNotice,
     hideNativeNotice,
     get hidden() { return uiHidden; },

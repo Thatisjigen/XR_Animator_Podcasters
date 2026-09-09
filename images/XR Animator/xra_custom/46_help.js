@@ -116,7 +116,7 @@
     '3D X offset': ['Spostamento orizzontale dello sfondo 3D.', 'none'],
     '3D Y offset': ['Spostamento verticale dello sfondo 3D.', 'none'],
     '3D Z offset': ['Spostamento in avanti o indietro dello sfondo 3D.', 'none'],
-    'Global hotkeys': ['Scorciatoie da tastiera rapide per controllare le funzioni principali.', 'tiny'],
+    'Global hotkeys': ['Attiva le scorciatoie di sistema anche quando l’app è in secondo piano (funzione per app desktop).', 'tiny'],
     'Disable native hotkeys': ['Disabilita le scorciatoie da tastiera integrate.', 'none'],
     'Gamepad enabled': ['Consente di muovere la telecamera o cambiare pose tramite gamepad o controller.', 'tiny'],
     'Pose': ['Applica una posa predefinita al modello.', 'none'],

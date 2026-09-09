@@ -1125,67 +1125,30 @@
     // Native visual-effect fine tuning belongs here because Performance already
     // owns the quick "Disable heavy post FX" shortcut. Keep one logical home.
     const fxAdvanced = details(perfAdvanced.body, 'Visual effects');
-    for (const [key, label] of [
-      ['UnrealBloom', 'Bloom'],
-      ['N8AO', 'Ambient occlusion'],
-      ['DOF', 'Depth of field']
-    ]) {
-      const input = document.createElement('input');
-      input.type = 'checkbox';
-      const safeGetFx = () => {
-        try {
-          const fx = window.MMD_SA?.THREEX?.PPE?.[key];
-          if (!fx) return false;
-          return !!fx.enabled;
-        } catch (e) {
-          return false;
-        }
-      };
-      const safeSetFx = val => {
-        try {
-          const fx = window.MMD_SA?.THREEX?.PPE?.[key];
-          if (fx) fx.enabled = !!val;
-        } catch (e) {}
-      };
-      let baselineCaptured = false;
-      let baseline = false;
-      const captureBaseline = () => {
-        if (!baselineCaptured) {
-          try {
-            const fx = window.MMD_SA?.THREEX?.PPE?.[key];
-            if (fx) {
-              baseline = safeGetFx();
-              baselineCaptured = true;
-            }
-          } catch (e) {}
-        }
-        return baseline;
-      };
-      bindRefresh(() => {
-        captureBaseline();
-        const saved = config.visual_effects?.[key];
-        input.checked = saved == null ? safeGetFx() : !!saved;
-        if (saved != null) safeSetFx(saved);
-      });
-      input.onchange = async () => {
-        config.visual_effects ||= {};
-        config.visual_effects[key] = !!input.checked;
-        safeSetFx(input.checked);
-        await XRA.profileService.save();
-      };
-      row(fxAdvanced.body, label, input, {
-        reset: async () => {
-          safeSetFx(captureBaseline());
-        },
-        isDefault: () => safeGetFx() === captureBaseline()
-      });
-    }
-    const fxParamsBox = details(fxAdvanced.body, 'Advanced effect parameters (Lights & Shaders)');
+
+    const audioViz = document.createElement('input');
+    audioViz.type = 'checkbox';
+    bindRefresh(() => {
+      audioViz.checked = !!window.MMD_SA_options?.use_CircularSpectrum;
+    });
+    audioViz.onchange = () => {
+      if (window.MMD_SA_options) {
+        MMD_SA_options.use_CircularSpectrum = !!audioViz.checked;
+      }
+    };
+    row(fxAdvanced.body, 'Audio visualizer', audioViz, {
+      reset: async () => {
+        if (window.MMD_SA_options) MMD_SA_options.use_CircularSpectrum = false;
+        audioViz.checked = false;
+      },
+      isDefault: () => !window.MMD_SA_options?.use_CircularSpectrum
+    });
+
     const fxMount = el('div', 'xra-native-fx-mount');
     const fxStatus = el('div', 'xra-note');
     fxStatus.textContent = 'Apri per caricare i parametri dettagliati (luci, bloom, DOF)...';
     fxMount.appendChild(fxStatus);
-    fxParamsBox.body.appendChild(fxMount);
+    fxAdvanced.body.appendChild(fxMount);
 
     const mountFxGui = async () => {
       try {
@@ -1239,19 +1202,19 @@
       }
     };
 
-    fxParamsBox.details.addEventListener('toggle', () => {
-      if (fxParamsBox.details.open) {
+    fxAdvanced.details.addEventListener('toggle', () => {
+      if (fxAdvanced.details.open) {
         mountFxGui();
       }
     });
 
     window.addEventListener('MMDStarted', () => {
-      if (fxParamsBox.details.open) {
+      if (fxAdvanced.details.open) {
         mountFxGui();
       }
     });
     window.addEventListener('jThree_ready', () => {
-      if (fxParamsBox.details.open) {
+      if (fxAdvanced.details.open) {
         mountFxGui();
       }
     });
@@ -1352,19 +1315,6 @@
   function installProfile(parent) {
     const box = details(parent, '💾 Profile');
 
-    const startup = document.createElement('input');
-    startup.type = 'checkbox';
-    bindRefresh(() => { startup.checked = !!config.ui.show_startup; });
-    startup.onchange = async () => {
-      config.ui.show_startup = startup.checked;
-      await XRA.profileService.save();
-      refreshAll();
-    };
-    row(box.body, 'Startup screen', startup, {
-      reset: async () => { config.ui.show_startup = defaults.ui.show_startup; },
-      isDefault: () => !!config.ui.show_startup === !!defaults.ui.show_startup
-    });
-
     const actions = el('div', 'xra-actions');
     const save = button('💾 SAVE');
     save.onclick = async () => XRA.toast(await XRA.profileService.save(0) ? 'Profile saved' : 'Save failed');
@@ -1411,8 +1361,69 @@
     box.body.appendChild(transfer);
   }
 
+  function installRecordingMicIndicator() {
+    const indicator = el('div', 'xra-rec-mic-indicator');
+    indicator.style.display = 'none';
+
+    const dot = el('span', 'xra-rec-mic-dot');
+    const text = el('span', 'xra-rec-mic-text');
+    text.textContent = 'REC · MIC LIVE';
+    indicator.append(dot, text);
+    document.body.appendChild(indicator);
+    UI.registerHideable?.(indicator);
+
+    let isRecording = false;
+    let isAudioActive = true;
+
+    function updateIndicator() {
+      if (!isRecording) {
+        indicator.style.display = 'none';
+        return;
+      }
+      indicator.style.display = 'flex';
+      const recCfg = config.recorder || {};
+      const noAudio = recCfg.mode === 'video';
+      if (noAudio) {
+        indicator.classList.remove('mic-open');
+        indicator.classList.add('mic-muted');
+        text.textContent = 'REC · NO AUDIO';
+      } else if (isAudioActive) {
+        indicator.classList.remove('mic-muted');
+        indicator.classList.add('mic-open');
+        text.textContent = 'REC · MIC LIVE';
+      } else {
+        indicator.classList.remove('mic-open');
+        indicator.classList.add('mic-muted');
+        text.textContent = 'REC · MIC MUTED';
+      }
+    }
+
+    events.on('recording-start', () => {
+      isRecording = true;
+      isAudioActive = true;
+      updateIndicator();
+    });
+
+    events.on('recording-stop', () => {
+      isRecording = false;
+      updateIndicator();
+    });
+
+    events.on('recording-gate', ({ open }) => {
+      isAudioActive = !!open;
+      if (isRecording) updateIndicator();
+    });
+
+    if (XRA.recorder?.status?.()?.active) {
+      isRecording = true;
+      updateIndicator();
+    }
+  }
+
   function create() {
     if (panel) return panel;
+
+    installRecordingMicIndicator();
 
     panel = el('div', 'xra-right-panel');
     panel.id = 'XRA_CUSTOM_PANEL';
@@ -1439,7 +1450,7 @@
 
     header.append(hands, hide, totalHide);
 
-    let panelBodyOpen = true;
+    let panelBodyOpen = false;
 
     function updatePanelState() {
       const isClosed = !panelBodyOpen;
@@ -1450,7 +1461,7 @@
     }
 
     const launcher = button('📋 CONTROL PANEL', 'xra-right-launcher');
-    launcher.hidden = true;
+    launcher.hidden = false;
     launcher.dataset.xraRightLauncher = '1';
     bindRefresh(() => {
       const title = XRA.i18n?.t?.('Control panel') || 'Control panel';
@@ -1479,7 +1490,7 @@
       panelBodyOpen = false;
       updatePanelState();
     };
-    menuTop.append(menuTitle, menuClose);
+    menuTop.append(menuClose, menuTitle);
     body.appendChild(menuTop);
 
     const content = el('div', 'xra-right-content');

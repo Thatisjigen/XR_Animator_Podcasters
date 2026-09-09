@@ -32,7 +32,7 @@
   }
 
   function createOverlay() {
-    if (!config.ui?.show_startup || document.querySelector('[data-xra-startup]')) return;
+    if (document.querySelector('[data-xra-startup]')) return;
 
     const tr = source => XRA.i18n?.t?.(source) || source;
 
@@ -136,19 +136,16 @@
     loadingOption.textContent = tr('Loading cameras…');
     cameraSelect.appendChild(loadingOption);
 
-    const cameraActions = document.createElement('div');
-    cameraActions.className = 'xra-start-camera-actions';
-    const cameraToggle = document.createElement('button');
-    cameraToggle.type = 'button';
-    cameraToggle.className = 'xra-action primary';
+    const cameraRow = document.createElement('div');
+    cameraRow.className = 'xra-start-camera-row';
     const cameraRefresh = document.createElement('button');
     cameraRefresh.type = 'button';
     cameraRefresh.className = 'xra-action';
     cameraRefresh.textContent = '↻';
     cameraRefresh.title = tr('Refresh cameras');
     cameraRefresh.setAttribute('aria-label', tr('Refresh cameras'));
-    cameraActions.append(cameraToggle, cameraRefresh);
-    camera.append(cameraHead, cameraSelect, cameraActions);
+    cameraRow.append(cameraSelect, cameraRefresh);
+    camera.append(cameraHead, cameraRow);
 
     function renderCameraState(message = '') {
       const active = XRA.nativeBridge?.activeCamera?.() || {};
@@ -157,9 +154,6 @@
       cameraState.textContent = message || (running
         ? `${tr('ON')} · ${active.label || tr('Default camera')}`
         : tr('OFF'));
-      cameraToggle.textContent = running ? tr('Disable camera') : tr('Enable camera');
-      cameraToggle.classList.toggle('primary', !running);
-      cameraToggle.classList.toggle('danger', running);
     }
 
     async function refreshCameras(requestPermission = false) {
@@ -204,43 +198,7 @@
       finally { cameraSelect.disabled = false; }
     };
 
-    cameraToggle.onclick = async () => {
-      cameraToggle.disabled = true;
-      cameraSelect.disabled = true;
-      try {
-        if (XRA.nativeBridge.cameraRunning()) {
-          renderCameraState(tr('Stopping…'));
-          await XRA.nativeBridge.stopNativeStreamer();
-        }
-        else {
-          const option = cameraSelect.selectedOptions[0];
-          if (option?.value) await XRA.nativeBridge.setCameraPreference({
-            deviceId: option.value,
-            label: option.dataset.label || option.textContent
-          });
-          renderCameraState(tr('Starting…'));
-          await XRA.nativeBridge.startNativeStreamer();
-        }
-      }
-      catch (e) { renderCameraState('Error · ' + e.message); }
-      finally {
-        cameraToggle.disabled = false;
-        cameraSelect.disabled = false;
-        await refreshCameras(false);
-      }
-    };
     cameraRefresh.onclick = () => refreshCameras(true);
-
-    const show = document.createElement('label');
-    const chk = document.createElement('input'); chk.type = 'checkbox'; chk.checked = !!config.ui.show_startup;
-    const showText = document.createElement('span');
-    showText.className = 'xra-sub';
-    showText.textContent = 'Show this screen on startup';
-    show.append(chk, showText);
-    chk.onchange = async () => {
-      config.ui.show_startup = chk.checked;
-      await XRA.profileService.save(0);
-    };
 
     const foot = document.createElement('div');
     foot.className = 'xra-start-foot';
@@ -248,14 +206,14 @@
     start.type = 'button';
     start.className = 'xra-action primary xra-start-confirm';
     start.textContent = 'START';
-    foot.append(show, start);
+    foot.append(start);
 
     let closing = false;
     async function closeOverlay(autoStartCamera = false) {
       if (closing) return;
       closing = true;
       document.removeEventListener('keydown', onKeyDown);
-      config.ui.show_startup = chk.checked;
+      config.ui.show_startup = true;
       try { await XRA.profileService.save(0); } catch (e) {}
       overlay.remove();
       XRA.ui?.refresh?.();
