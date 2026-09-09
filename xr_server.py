@@ -12,7 +12,11 @@ import subprocess
 import sys
 import os
 
-ROOT = Path(__file__).resolve().parent
+if getattr(sys, 'frozen', False):
+    ROOT = Path(sys.executable).resolve().parent
+else:
+    ROOT = Path(__file__).resolve().parent
+
 PROFILE_FILE = ROOT / "xra_profile.json"
 BACKUP_FILE = ROOT / "xra_profile.backup.json"
 LOCK = threading.Lock()
@@ -36,13 +40,15 @@ DEFAULT_CUSTOM = {
         "threshold": 0.018, "meter_visible": False, "response_gain": 1.0, "vowel_emphasis": 1.0,
     },
     "performance": {
-        "preset": "CUSTOM", "master_preset": "CUSTOM", "tracking_pipeline": "SPLIT",
+        "preset": "CUSTOM", "master_preset": "CUSTOM", "tracking_pipeline": "FULL_BODY",
         "disable_postfx": False, "pose_fps": 30, "hand_fps": 20, "auto_last_result": None,
         "runtime_adaptive": False, "diagnostics_hud": False,
     },
+    "debug": {"session_enabled": False, "max_events": 12000},
     "body": {"anchor_strength": 0.80, "transition_ms": 450, "stable": False},
     "tracking": {
         "hands_enabled": True, "hand_recovery_mode": "normal", "hand_detection_sensitivity": "high", "native_smoothing": 0, "body_bend_reduction": 0,
+        "motion_hysteresis_enabled": False,
         "upper_body_guard": False, "upper_body_guard_strength": 0.0,
         "guard_jump_deg": 42, "guard_hold_ms": 650, "guard_reacquire_deg": 60,
         "guard_mode": "off", "desk_torso_lock": 0.55, "desk_hips_lock": 0.92, "desk_legs_lock": 1.0,
@@ -114,8 +120,7 @@ def read_profile_file(path):
     if str(rec.get("capture_source") or "") in {"browser_visible", "native_visible", "native_xr", ""}:
         rec["capture_source"] = "classic_v74"
     # Unify the old Body Stable / Torso Guard / Podcast-Desk states into one
-    # body-stabilization switch. Guard remains an internal anti-glitch safety
-    # layer while Anchor strength is the only user-facing stabilization amount.
+    # body-stabilization switch, then keep anti-jerk hysteresis independent.
     body = profile.setdefault("custom", {}).setdefault("body", {})
     tracking = profile.setdefault("custom", {}).setdefault("tracking", {})
     if old_version < 7.80:
@@ -126,8 +131,8 @@ def read_profile_file(path):
                 body["anchor_strength"] = max(0.0, min(1.0, float(tracking.get("upper_body_guard_strength", 0.80))))
             except Exception:
                 body["anchor_strength"] = 0.80
-    tracking["guard_mode"] = "guard" if body.get("stable") else "off"
-    tracking["upper_body_guard"] = bool(body.get("stable"))
+    tracking["guard_mode"] = "guard" if tracking.get("motion_hysteresis_enabled") else "off"
+    tracking["upper_body_guard"] = bool(tracking.get("motion_hysteresis_enabled"))
     tracking["upper_body_guard_strength"] = 0.0
     # The removed camera-lock experiment used this section exclusively.
     profile.setdefault("custom", {}).pop("view", None)
@@ -137,6 +142,10 @@ def read_profile_file(path):
     performance.pop("startup_mocap", None)
     performance.pop("e2_master", None)
     profile.setdefault("custom", {}).setdefault("ui", {}).pop("show_legacy_toolbar", None)
+    left_settings = profile.setdefault("custom", {}).setdefault("left_settings", {})
+    for key in list(left_settings):
+        if "Scene / 3D::" in key:
+            left_settings.pop(key, None)
 
     # Remove retired tracking-loss fields from imported profiles.
     tracking = profile.setdefault("custom", {}).setdefault("tracking", {})
@@ -538,6 +547,180 @@ $form.Close()
     raise RuntimeError("Native folder picker unavailable. " + hint + " Details: " + " | ".join(e for e in errors if e)[-1500:])
 
 
+def _safe_debug_log_name(value):
+    name = Path(str(value or "xra-debug.json")).name
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._") or "xra-debug"
+    if not name.lower().endswith(".json"):
+        name += ".json"
+    return name[:180]
+
+
+def _debug_save_target(value, suggested_name):
+    if not value:
+        return None
+    target = Path(os.path.expandvars(os.path.expanduser(str(value))))
+    if not target.is_absolute():
+        raise ValueError("Debug log save path must be absolute")
+    if target.suffix.lower() != ".json":
+        target = target.with_name(target.name + ".json")
+    target = target.resolve()
+    if not target.parent.is_dir():
+        raise ValueError(f"Destination folder does not exist: {target.parent}")
+    return target
+
+
+def choose_debug_log_file_native(suggested_name="xra-debug.json"):
+    """Open a native Save As dialog and return the selected JSON path."""
+    suggested_name = _safe_debug_log_name(suggested_name)
+    downloads = Path.home() / "Downloads"
+    initial_dir = downloads if downloads.is_dir() else Path.home()
+    initial_path = str((initial_dir / suggested_name).resolve())
+    errors = []
+
+    if sys.platform.startswith("win"):
+        escaped_path = initial_path.replace("'", "''")
+        ps = rf'''
+Add-Type -AssemblyName System.Windows.Forms
+$form = New-Object System.Windows.Forms.Form
+$form.TopMost = $true
+$form.ShowInTaskbar = $false
+$form.Opacity = 0
+$form.StartPosition = 'CenterScreen'
+$form.Width = 1; $form.Height = 1
+$form.Show()
+$dlg = New-Object System.Windows.Forms.SaveFileDialog
+$dlg.Title = 'Save XR Animator debug log'
+$dlg.Filter = 'JSON files (*.json)|*.json'
+$dlg.FileName = '{escaped_path}'
+$dlg.OverwritePrompt = $true
+$result = $dlg.ShowDialog($form)
+if ($result -eq [System.Windows.Forms.DialogResult]::OK) {{ Write-Output $dlg.FileName }}
+$form.Close()
+'''
+        try:
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-Command", ps],
+                capture_output=True, text=True, timeout=180,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            picked = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+            if picked:
+                return _debug_save_target(picked[-1], suggested_name)
+            if result.returncode:
+                errors.append((result.stderr or "PowerShell picker failed").strip())
+            else:
+                return None
+        except Exception as exc:
+            errors.append(str(exc))
+
+    if sys.platform == "darwin":
+        safe_name = suggested_name.replace('"', '\\"')
+        try:
+            script = f'POSIX path of (choose file name with prompt "Save XR Animator debug log" default name "{safe_name}")'
+            result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=180)
+            if result.returncode == 0 and result.stdout.strip():
+                return _debug_save_target(result.stdout.strip(), suggested_name)
+            if "User canceled" in (result.stderr or ""):
+                return None
+            errors.append((result.stderr or "osascript picker failed").strip())
+        except Exception as exc:
+            errors.append(str(exc))
+
+    if not sys.platform.startswith("win") and sys.platform != "darwin":
+        gui_env = _linux_gui_env()
+        desktop = (gui_env.get("XDG_CURRENT_DESKTOP") or gui_env.get("DESKTOP_SESSION") or "").lower()
+        helpers = []
+        if "kde" in desktop or "plasma" in desktop:
+            helpers.append(("kdialog", ["kdialog", "--getsavefilename", initial_path, "JSON files (*.json)", "--title", "Save XR Animator debug log"]))
+        helpers += [
+            ("zenity", ["zenity", "--file-selection", "--save", "--confirm-overwrite", "--modal", "--title=Save XR Animator debug log", f"--filename={initial_path}", "--file-filter=JSON files | *.json"]),
+            ("yad", ["yad", "--file", "--save", "--confirm-overwrite", "--on-top", "--center", "--title=Save XR Animator debug log", f"--filename={initial_path}", "--file-filter=JSON files | *.json"]),
+            ("qarma", ["qarma", "--file-selection", "--save", "--confirm-overwrite", "--modal", "--title=Save XR Animator debug log", f"--filename={initial_path}", "--file-filter=JSON files | *.json"]),
+        ]
+        if not ("kde" in desktop or "plasma" in desktop):
+            helpers.append(("kdialog", ["kdialog", "--getsavefilename", initial_path, "JSON files (*.json)", "--title", "Save XR Animator debug log"]))
+
+        attempted = set()
+        for name, command in helpers:
+            if name in attempted or not shutil.which(name):
+                continue
+            attempted.add(name)
+            try:
+                result = subprocess.run(command, capture_output=True, text=True, timeout=180, env=gui_env)
+                picked = (result.stdout or "").strip()
+                if result.returncode == 0 and picked:
+                    return _debug_save_target(picked, suggested_name)
+                if result.returncode == 1:
+                    return None
+                errors.append(f"{name}: " + ((result.stderr or result.stdout or "picker failed").strip()))
+            except Exception as exc:
+                errors.append(f"{name}: {exc}")
+
+        try:
+            import gi
+            gi.require_version("Gtk", "3.0")
+            from gi.repository import Gtk
+            dialog = Gtk.FileChooserDialog(
+                title="Save XR Animator debug log",
+                action=Gtk.FileChooserAction.SAVE,
+            )
+            dialog.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_SAVE, Gtk.ResponseType.OK)
+            dialog.set_do_overwrite_confirmation(True)
+            dialog.set_current_folder(str(initial_dir))
+            dialog.set_current_name(suggested_name)
+            json_filter = Gtk.FileFilter(); json_filter.set_name("JSON files"); json_filter.add_pattern("*.json")
+            dialog.add_filter(json_filter)
+            response = dialog.run()
+            picked = dialog.get_filename() if response == Gtk.ResponseType.OK else ""
+            dialog.destroy()
+            while Gtk.events_pending():
+                Gtk.main_iteration_do(False)
+            return _debug_save_target(picked, suggested_name)
+        except Exception as exc:
+            errors.append(f"GTK: {exc}")
+
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk(); root.withdraw()
+        try:
+            root.attributes('-topmost', True); root.update()
+        except Exception:
+            pass
+        picked = filedialog.asksaveasfilename(
+            initialdir=str(initial_dir), initialfile=suggested_name,
+            title='Save XR Animator debug log', defaultextension='.json',
+            filetypes=[('JSON files', '*.json')], confirmoverwrite=True,
+        )
+        root.destroy()
+        return _debug_save_target(picked, suggested_name)
+    except Exception as exc:
+        errors.append(f"tkinter: {exc}")
+
+    display_hint = ""
+    if sys.platform.startswith("linux"):
+        env = _linux_gui_env()
+        if not (env.get("DISPLAY") or env.get("WAYLAND_DISPLAY")):
+            display_hint = " No DISPLAY/WAYLAND_DISPLAY was visible to xr_server.py."
+    raise RuntimeError("Native Save As dialog unavailable." + display_hint + " Details: " + " | ".join(e for e in errors if e)[-1500:])
+
+
+def save_debug_log_native(suggested_name, content):
+    payload = json.loads(content)
+    if not isinstance(payload, dict) or payload.get("schema") != "xra-debug-session/v1":
+        raise ValueError("Invalid XR Animator debug log")
+    target = choose_debug_log_file_native(suggested_name)
+    if target is None:
+        return None
+    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return target
+
+
 
 def find_ffmpeg():
     """Resolve FFmpeg robustly for Linux desktop launches with a restricted PATH."""
@@ -569,7 +752,12 @@ def find_ffmpeg():
             pass
     return None
 
+_cached_encoders = None
+
 def ffmpeg_encoders():
+    global _cached_encoders
+    if _cached_encoders is not None:
+        return _cached_encoders
     ffmpeg = find_ffmpeg()
     result = {"ffmpeg": bool(ffmpeg), "ffmpeg_path": ffmpeg or "", "h264": [], "recommended": "libx264"}
     if not ffmpeg:
@@ -577,14 +765,30 @@ def ffmpeg_encoders():
     try:
         proc = subprocess.run([ffmpeg, "-hide_banner", "-encoders"], capture_output=True, text=True, timeout=12)
         text = (proc.stdout or "") + "\n" + (proc.stderr or "")
-        for enc in ["h264_nvenc", "h264_qsv", "h264_amf", "h264_videotoolbox", "libx264"]:
-            if re.search(rf"\b{re.escape(enc)}\b", text):
-                result["h264"].append(enc)
+        candidates = ["h264_nvenc", "h264_qsv", "h264_amf", "h264_videotoolbox", "libx264"]
+        compiled = [enc for enc in candidates if re.search(rf"\b{re.escape(enc)}\b", text)]
+        working = []
+        for enc in compiled:
+            if enc == "libx264":
+                working.append(enc)
+                continue
+            try:
+                test_proc = subprocess.run(
+                    [ffmpeg, "-hide_banner", "-loglevel", "quiet", "-f", "lavfi", "-i", "nullsrc=s=1280x720:d=0.04", "-c:v", enc, "-f", "null", "-"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if test_proc.returncode == 0:
+                    working.append(enc)
+            except Exception:
+                pass
+        result["h264"] = working
         for enc in ["h264_nvenc", "h264_qsv", "h264_amf", "h264_videotoolbox", "libx264"]:
             if enc in result["h264"]:
-                result["recommended"] = enc; break
+                result["recommended"] = enc
+                break
     except Exception:
         pass
+    _cached_encoders = result
     return result
 
 
@@ -785,6 +989,7 @@ class Handler(SimpleHTTPRequestHandler):
             else:
                 # Code stays easy to iterate on: browser may cache but must revalidate.
                 self.send_header("Cache-Control", "no-cache")
+        self.send_header("Permissions-Policy", "unload=*")
         super().end_headers()
 
     def send_json(self, obj, status=200):
@@ -822,6 +1027,20 @@ class Handler(SimpleHTTPRequestHandler):
                     shutil.copyfileobj(handle, self.wfile, length=1024 * 1024)
             except (BrokenPipeError, ConnectionResetError):
                 pass
+            return
+
+        if path == "/favicon.ico":
+            ico = ROOT / "icon_SA.ico"
+            if ico.exists():
+                data = ico.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/x-icon")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            else:
+                self.send_response(204)
+                self.end_headers()
             return
 
         if path == "/__xra_boot_profile.js":
@@ -868,6 +1087,18 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path
+
+        if path == "/__xra_debug/save":
+            try:
+                obj = self.read_json_body(64 * 1024 * 1024)
+                content = obj.get("content")
+                if not isinstance(content, str) or not content:
+                    raise ValueError("Missing debug log content")
+                saved = save_debug_log_native(obj.get("suggested_name"), content)
+                self.send_json({"ok": True, "path": str(saved) if saved else "", "cancelled": saved is None})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
 
         if path == "/__xra_avatar":
             try:
@@ -1055,10 +1286,28 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    server = ThreadingHTTPServer(("127.0.0.1", 8000), Handler)
+    import socket
+    port = 8000
+    server = None
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    except OSError:
+        for p in range(8001, 8050):
+            try:
+                server = ThreadingHTTPServer(("127.0.0.1", p), Handler)
+                port = p
+                break
+            except OSError:
+                continue
+        if not server:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("127.0.0.1", 0))
+                port = s.getsockname()[1]
+            server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+
     server.daemon_threads = True
     print("XR Animator · XRA server")
-    print("http://127.0.0.1:8000/XR_Animator.html")
+    print(f"http://127.0.0.1:{port}/XR_Animator.html")
     print(f"Profile: {PROFILE_FILE}")
     print(f"Backup:  {BACKUP_FILE}")
     print(f"Avatars: {AVATAR_DIR}")
