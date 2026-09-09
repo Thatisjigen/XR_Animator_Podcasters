@@ -785,17 +785,88 @@ body.xra-hide-legacy-toolbar #Ldungeon_inventory_backpack {
   box-shadow: 0 4px 18px rgba(0,0,0,.38);
 }
 
-/* The native dat.GUI panel is retained as an advanced fallback, but opened
-   in a predictable centered position instead of wherever legacy code left it. */
-.xra-native-fx-centered {
-  position: fixed !important;
-  top: 50% !important;
-  left: 50% !important;
+/* The native dat.GUI / lil-gui panel is embedded inline inside the right panel */
+.xra-native-fx-mount {
+  width: 100%;
+  margin-top: 6px;
+  overflow: hidden;
+}
+
+.xra-native-fx-mount .lil-gui,
+.xra-native-fx-mount .dg.main {
+  width: 100% !important;
+  max-width: 100% !important;
+  position: static !important;
+  top: auto !important;
+  left: auto !important;
   right: auto !important;
   bottom: auto !important;
-  transform: translate(-50%, -50%) !important;
-  z-index: 1000004 !important;
-  max-height: 86vh !important;
+  transform: none !important;
+  border-radius: 8px !important;
+  background: rgba(18, 20, 26, 0.95) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35) !important;
+  color: #e0e0e0 !important;
+  font-family: inherit !important;
+  z-index: auto !important;
+  overflow: visible !important;
+}
+
+.xra-native-fx-mount .lil-gui .title,
+.xra-native-fx-mount .dg .title {
+  background: rgba(28, 32, 42, 0.95) !important;
+  color: #f0f0f0 !important;
+  font-family: inherit !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.02em !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+  padding: 6px 8px !important;
+  border-radius: 4px !important;
+}
+
+.xra-native-fx-mount .lil-gui .controller,
+.xra-native-fx-mount .dg .cr {
+  background: transparent !important;
+  color: #d0d0d0 !important;
+  font-family: inherit !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04) !important;
+  padding: 3px 6px !important;
+}
+
+.xra-native-fx-mount .lil-gui .controller > .name,
+.xra-native-fx-mount .dg .property-name {
+  color: #9aa0a6 !important;
+  font-size: 11px !important;
+}
+
+.xra-native-fx-mount .lil-gui input[type="number"],
+.xra-native-fx-mount .lil-gui input[type="text"],
+.xra-native-fx-mount .dg input[type="text"] {
+  background: rgba(0, 0, 0, 0.4) !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  border-radius: 4px !important;
+  color: #7cdda7 !important;
+  font-family: monospace !important;
+}
+
+.xra-native-fx-mount .lil-gui .slider,
+.xra-native-fx-mount .dg .slider {
+  background: rgba(255, 255, 255, 0.1) !important;
+  border-radius: 4px !important;
+}
+
+.xra-native-fx-mount .lil-gui .slider .fill,
+.xra-native-fx-mount .dg .slider-fg {
+  background: #38bdf8 !important;
+}
+
+.xra-native-fx-mount .lil-gui input[type="checkbox"] {
+  accent-color: #38bdf8 !important;
+}
+
+.xra-native-fx-mount .xra-native-fx-close {
+  display: none !important;
 }
 
 @media (max-width: 520px) {
