@@ -5,7 +5,7 @@
   const TAG = '[XRA TRACK]';
   const { config, events, util } = XRA;
 
-  const STARTUP_LOCK_DELAY_MS = 5000;
+  const STARTUP_LOCK_DELAY_MS = 1000;
   let startupLocksPending = true;
   let startupLocksTimer = 0;
   let startupCalibrationPoll = 0;
@@ -26,6 +26,7 @@
       if (data.type === 'tracking_state_request') broadcastTrackingState();
       if (data.type === 'face_tracking_state') acceptFaceSignal(data);
       if (data.type === 'pose_tracking_state') acceptPoseSignal(data);
+      if (data.type === 'hands_tracking_state') acceptHandsSignal(data);
     };
   }
   catch (e) {
@@ -45,9 +46,12 @@
   function broadcastTrackingState() {
     controlChannel?.postMessage({
       type: 'body_stabilization',
-      // The explicit loss-protection switch also needs the worker-side gate.
-      // This keeps the safety available even when positional anchoring is OFF.
-      value: !!(bodyStable || (!startupLocksPending && config.body?.stable) || config.tracking?.freeze_head_on_face_loss)
+      value: !!(bodyStable || (!startupLocksPending && config.body?.stable)),
+      recovery_ms: Math.max(0, Number(config.tracking?.freeze_recovery_ms ?? 350))
+    });
+    controlChannel?.postMessage({
+      type: 'motion_hysteresis',
+      value: !!(!startupLocksPending && config.tracking?.motion_hysteresis_enabled)
     });
   }
 
@@ -101,7 +105,7 @@
   })();
 
   const MMD_BODY_BONES = [
-    'センター', 'グルーブ', '腰', '下半身',
+    '全ての親', 'センター', 'グルーブ', '腰', '下半身',
     '上半身', '上半身2', '上半身3',
     '左足', '右足', '左ひざ', '右ひざ',
     '左足首', '右足首'
@@ -113,21 +117,65 @@
     'leftLowerLeg', 'rightLowerLeg',
     'leftFoot', 'rightFoot'
   ];
+  const MMD_BODY_TRANSLATION_ROOTS = new Set(['全ての親', 'センター', 'グルーブ', '腰', '下半身']);
+  const VRM_BODY_TRANSLATION_ROOTS = new Set(['hips']);
 
   const frozenMMDBones = new Map();
   const frozenVRMBones = new Map();
   const anchoredMMDBones = new Map();
   const anchoredVRMBones = new Map();
+  // Full-body mocap normally writes the center/hips bone, but VRM adapters and
+  // some motions can transfer that offset to a model/scene root afterwards.
+  // Keep those roots in the same captured reference so stabilization really
+  // means no world translation on every avatar backend.
+  const anchoredAvatarRoots = new Map();
   const guardMMDBones = new Map();
   const guardVRMBones = new Map();
   const guardLastMMD = new Map();
   const guardLastVRM = new Map();
+  const guardRawMMD = new Map();
+  const guardRawVRM = new Map();
+  const guardMotionWindow = [];
   let guardHoldUntil = 0;
   let guardInvalidSince = 0;
+  let guardRecoveryFrames = 0;
   let guardLastRejected = 0;
   let guardRelease = null;
   const guardReleaseMMD = new Map();
   const guardReleaseVRM = new Map();
+  let guardTransition = null;
+  const guardTransitionMMD = new Map();
+  const guardTransitionVRM = new Map();
+  let guardReacquireTransition = null;
+  const guardReacquireMMD = new Map();
+  const guardReacquireVRM = new Map();
+
+  const MMD_LEFT_ARM = [
+    '左肩', '左肩P', '左腕', '左腕捩', '左ひじ', '左手捩', '左手首',
+    '左親指０', '左親指１', '左親指２',
+    '左人指１', '左人指２', '左人指３',
+    '左中指１', '左中指２', '左中指３',
+    '左薬指１', '左薬指２', '左薬指３',
+    '左小指１', '左小指２', '左小指３'
+  ];
+  const MMD_RIGHT_ARM = [
+    '右肩', '右肩P', '右腕', '右腕捩', '右ひじ', '右手捩', '右手首',
+    '右親指０', '右親指１', '右親指２',
+    '右人指１', '右人指２', '右人指３',
+    '右中指１', '右中指２', '右中指３',
+    '右薬指１', '右薬指２', '右薬指３',
+    '右小指１', '右小指２', '右小指３'
+  ];
+  let leftHandVisible = false;
+  let rightHandVisible = false;
+  let leftHandLastSeen = 0;
+  let rightHandLastSeen = 0;
+  const neutralLeftArmMMD = new Map();
+  const neutralRightArmMMD = new Map();
+  let leftArmTransition = null;
+  let rightArmTransition = null;
+  const leftArmTransitionFrom = new Map();
+  const rightArmTransitionFrom = new Map();
 
   const MMD_HEAD_BONES = ['首', '頭'];
   const VRM_HEAD_BONES = ['neck', 'head'];
@@ -141,6 +189,7 @@
   const faceLossPoseVRM = new Map();
   let headLost = false;
   let headRecoveryStarted = 0;
+  let faceLossFreezeStarted = 0;
 
   // Face tracking is the authoritative signal for head-loss handling when
   // facemesh is enabled. Pose models often hallucinate plausible nose/shoulder
@@ -267,6 +316,7 @@
       return technicalMeshSample;
     }
 
+    let bestReadable = null;
     for (const candidate of candidates) {
       const source = candidate.node;
       const requiredPixels = candidate.shared ? 36 : 6;
@@ -276,9 +326,11 @@
         const data = technicalMeshCtx.getImageData(0, 0, 96, 54).data;
         let meshPixels = 0;
         let opaquePixels = 0;
+        let coloredPixels = 0;
         for (let i = 0; i < data.length; i += 4) {
           const r = data[i], g = data[i+1], b = data[i+2], a = data[i+3];
           if (a > 16) opaquePixels++;
+          if (a > 16 && Math.max(r,g,b) >= 35 && Math.max(r,g,b) - Math.min(r,g,b) >= 22) coloredPixels++;
           // XR Animator's technical facemesh uses cyan/teal mesh lines and
           // red landmark markers on a green/transparent background. Sampling
           // both signatures makes this tolerant of theme/renderer variations.
@@ -289,27 +341,34 @@
             if (meshPixels >= requiredPixels) break;
           }
         }
-        // Dedicated facemesh canvases may use theme-dependent colors.
-        // On those canvases any small amount of drawn/opaque content is enough
-        // evidence that the technical mesh is actually present. Shared
-        // wireframe canvases still use the stricter color/density signature so
-        // body/hand lines cannot masquerade as a face.
-        const present = meshPixels >= requiredPixels || (!candidate.shared && opaquePixels >= 6);
-        technicalMeshSample = {
+        // A dedicated facemesh canvas is black/opaque even when no face exists,
+        // so alpha alone is not evidence. Saturated non-background pixels cover
+        // theme variants while shared wireframes retain the stricter signature.
+        const present = meshPixels >= requiredPixels || (!candidate.shared && coloredPixels >= 12);
+        const sample = {
           available:true,
           present,
           source:'technical-face-mesh',
           meshPixels,
-          opaquePixels
+          opaquePixels,
+          coloredPixels
         };
-        return technicalMeshSample;
+        if (present) {
+          technicalMeshSample = sample;
+          return technicalMeshSample;
+        }
+        // Do not stop at an empty internal facemesh canvas: the actual visible
+        // mesh may live on the following shared wireframe canvas.
+        if (!bestReadable || meshPixels > bestReadable.meshPixels || coloredPixels > bestReadable.coloredPixels) {
+          bestReadable = sample;
+        }
       } catch (e) {
         // Try another face-specific canvas. Some OffscreenCanvas/WebGL paths
         // cannot be sampled after ownership is transferred.
       }
     }
 
-    technicalMeshSample = { available:false, present:false, source:'face-canvas-unreadable' };
+    technicalMeshSample = bestReadable || { available:false, present:false, source:'face-canvas-unreadable' };
     return technicalMeshSample;
   }
 
@@ -366,6 +425,28 @@
     bone.matrixWorldNeedsUpdate = true;
   }
 
+  function blendInterpolateTransform(bone, from, target, mix) {
+    if (!bone || !target) return;
+    const k = util.clamp(mix, 0, 1);
+    if (from?.position && target.position && bone.position) {
+      bone.position.copy(from.position).lerp(target.position, k);
+    } else if (target.position && bone.position) {
+      bone.position.lerp(target.position, k);
+    }
+    if (from?.quaternion && target.quaternion && bone.quaternion) {
+      bone.quaternion.copy(from.quaternion).slerp(target.quaternion, k);
+    } else if (target.quaternion && bone.quaternion) {
+      bone.quaternion.slerp(target.quaternion, k);
+    }
+    if (from?.scale && target.scale && bone.scale) {
+      bone.scale.copy(from.scale).lerp(target.scale, k);
+    } else if (target.scale && bone.scale) {
+      bone.scale.lerp(target.scale, k);
+    }
+    bone.updateMatrix?.();
+    bone.matrixWorldNeedsUpdate = true;
+  }
+
   // Torso Guard is a rotation safety/stability layer, not a body-position
   // anchor. Keeping translation untouched allows a seated user to move
   // left/right/forward/backward while Guard remains enabled.
@@ -378,6 +459,15 @@
       bone.rotation.y += angleNormalize(target.rotation.y - bone.rotation.y) * k;
       bone.rotation.z += angleNormalize(target.rotation.z - bone.rotation.z) * k;
     }
+    bone.updateMatrix?.();
+    bone.matrixWorldNeedsUpdate = true;
+  }
+
+  function blendBodyAnchorTransform(bone, transform, rotationStrength, positionStrength) {
+    if (!bone || !transform) return;
+    if (transform.position && bone.position) bone.position.lerp(transform.position, util.clamp(positionStrength, 0, 1));
+    if (transform.quaternion && bone.quaternion) bone.quaternion.slerp(transform.quaternion, util.clamp(rotationStrength, 0, 1));
+    if (transform.scale && bone.scale) bone.scale.lerp(transform.scale, util.clamp(rotationStrength, 0, 1));
     bone.updateMatrix?.();
     bone.matrixWorldNeedsUpdate = true;
   }
@@ -395,6 +485,37 @@
     const threex = window.MMD_SA?.THREEX;
     try { return threex?.get_model?.(0) || threex?.models?.[0] || null; }
     catch (e) { return threex?.models?.[0] || null; }
+  }
+
+  function avatarRootNodes() {
+    const roots = [];
+    const seen = new Set();
+    const add = node => {
+      if (!node?.position || seen.has(node)) return;
+      seen.add(node);
+      roots.push(node);
+    };
+    const mesh = getMMDMesh();
+    if (mesh) add(mesh);
+    const modelX = getVRMModelX();
+    const topNode = modelX?.scene || modelX?.model || modelX?.mesh;
+    if (topNode && topNode !== mesh) add(topNode);
+    return roots;
+  }
+
+  function captureAvatarRoots() {
+    anchoredAvatarRoots.clear();
+    for (const root of avatarRootNodes()) anchoredAvatarRoots.set(root, cloneTransform(root));
+  }
+
+  function blendAvatarRootPositions(strength) {
+    const k = util.clamp(strength, 0, 1);
+    for (const [root, transform] of anchoredAvatarRoots) {
+      if (!root?.position || !transform?.position) continue;
+      root.position.lerp(transform.position, k);
+      root.updateMatrix?.();
+      root.matrixWorldNeedsUpdate = true;
+    }
   }
 
   function captureBones(names, mmdMap, vrmNames, vrmMap) {
@@ -475,13 +596,70 @@
     return handsEnabled;
   }
 
+  let poseSuspensionActive = false;
+  let poseSuspensionTimer = null;
+
+  function suspendForPoseChange() {
+    if (!bodyStable) return;
+    poseSuspensionActive = true;
+    XRA.debug?.record('tracking.pose-suspension.started', { body_stable:bodyStable });
+    if (poseSuspensionTimer) clearTimeout(poseSuspensionTimer);
+    poseSuspensionTimer = setTimeout(() => {
+      resumeAfterPoseChange();
+    }, 2500);
+  }
+
+  function resumeAfterPoseChange() {
+    if (poseSuspensionTimer) {
+      clearTimeout(poseSuspensionTimer);
+      poseSuspensionTimer = null;
+    }
+    if (!poseSuspensionActive && !bodyStable) return;
+    setTimeout(() => {
+      if (bodyStable) {
+        captureBodyPose();
+        startBodyTransition(1);
+      }
+      poseSuspensionActive = false;
+      XRA.debug?.record('tracking.pose-suspension.ended', {
+        body_stable:bodyStable,
+        anchor_mix:bodyAnchorMix
+      });
+    }, 150);
+  }
+
+  function sanitizeUprightQuaternion(q) {
+    if (!q) return;
+    const x = Number(q.x || 0), y = Number(q.y || 0), z = Number(q.z || 0), w = Number(q.w ?? 1);
+    const vy = 1 - 2 * (x * x + z * z);
+    if (vy < 0.82) {
+      const yaw = 2 * Math.atan2(y, w);
+      const halfYaw = yaw / 2;
+      q.x = 0;
+      q.y = Math.sin(halfYaw);
+      q.z = 0;
+      q.w = Math.cos(halfYaw);
+    }
+  }
+
   function captureBodyPose() {
+    lastAnchorTracePosition = null;
     captureBones(MMD_BODY_BONES, anchoredMMDBones, VRM_BODY_BONES, anchoredVRMBones);
+    for (const name of ['腰', '下半身', '上半身', '上半身2']) {
+      const t = anchoredMMDBones.get(name);
+      if (t?.quaternion) sanitizeUprightQuaternion(t.quaternion);
+    }
+    for (const name of ['hips', 'spine', 'chest']) {
+      const t = anchoredVRMBones.get(name);
+      if (t?.quaternion) sanitizeUprightQuaternion(t.quaternion);
+    }
+    captureAvatarRoots();
     events.emit('body-captured', {
       mmd: anchoredMMDBones.size,
-      vrm: anchoredVRMBones.size
+      vrm: anchoredVRMBones.size,
+      roots: anchoredAvatarRoots.size
     });
-    return anchoredMMDBones.size + anchoredVRMBones.size;
+    return anchoredMMDBones.size + anchoredVRMBones.size + anchoredAvatarRoots.size;
   }
 
   function smoothStep01(t) {
@@ -512,28 +690,97 @@
       if (endedAt <= 0.0001 && !bodyStable) {
         anchoredMMDBones.clear();
         anchoredVRMBones.clear();
+        anchoredAvatarRoots.clear();
       }
       events.emit('body-transition-end', bodyAnchorMix);
     }
   }
 
-  function applyBodyAnchor() {
-    updateBodyTransition();
-    if (bodyAnchorMix <= 0.0001) return;
-    if (!anchoredMMDBones.size && !anchoredVRMBones.size) captureBodyPose();
+  function tracePosition(node) {
+    const p = node?.position;
+    if (!p) return null;
+    return ['x', 'y', 'z'].map(axis => Math.round(Number(p[axis] || 0) * 100000) / 100000);
+  }
 
-    const strength = util.clamp(config.body?.anchor_strength ?? 0.80, 0, 1) * bodyAnchorMix;
+  function bodyAnchorTrace() {
+    const mmd = {};
     const bones = getMMDMesh()?.bones_by_name;
     if (bones) {
-      for (const [name, transform] of anchoredMMDBones) blendTransform(bones[name], transform, strength);
+      for (const name of MMD_BODY_TRANSLATION_ROOTS) {
+        const position = tracePosition(bones[name]);
+        if (position) mmd[name] = position;
+      }
+    }
+    const modelX = getVRMModelX();
+    let vrmHips = null;
+    try { vrmHips = tracePosition(modelX?.getBoneNode?.('hips')); }
+    catch (e) {}
+    return {
+      mmd,
+      vrm_hips:vrmHips,
+      avatar_roots:avatarRootNodes().map(tracePosition).filter(Boolean)
+    };
+  }
+
+  let lastAnchorTracePosition = null;
+
+  function applyBodyAnchor(stage = 'runtime') {
+    if (poseSuspensionActive) return;
+    updateBodyTransition();
+    if (bodyAnchorMix <= 0.0001) return;
+    if (!anchoredMMDBones.size && !anchoredVRMBones.size && !anchoredAvatarRoots.size) captureBodyPose();
+
+    // One coefficient owns both rotation and translation. In particular, 100%
+    // becomes an exact copy of the captured roots after the short ON transition.
+    const selectedStrength = util.clamp(Number(config.body?.anchor_strength ?? 0.80), 0, 1);
+    const strength = selectedStrength * bodyAnchorMix;
+    const translationStrength = strength;
+    const shouldTrace = !!XRA.debug?.enabled && stage === 'before-render';
+    const before = shouldTrace ? bodyAnchorTrace() : null;
+
+    blendAvatarRootPositions(translationStrength);
+    const bones = getMMDMesh()?.bones_by_name;
+    if (bones) {
+      for (const [name, transform] of anchoredMMDBones) {
+        blendBodyAnchorTransform(
+          bones[name], transform, strength,
+          MMD_BODY_TRANSLATION_ROOTS.has(name) ? translationStrength : 0
+        );
+      }
     }
 
+    // XR Animator's VRM path uses a dummy MMD skeleton and a VRM humanoid at the
+    // same time. Apply both snapshots: treating them as alternatives left the
+    // final VRM hips free to translate even while the MMD center was anchored.
     const modelX = getVRMModelX();
     if (modelX?.getBoneNode) {
       for (const [name, transform] of anchoredVRMBones) {
-        try { blendTransform(modelX.getBoneNode(name), transform, strength); }
+        try {
+          blendBodyAnchorTransform(
+            modelX.getBoneNode(name), transform, strength,
+            VRM_BODY_TRANSLATION_ROOTS.has(name) ? translationStrength : 0
+          );
+        }
         catch (e) {}
       }
+    }
+
+    if (shouldTrace) {
+      const after = bodyAnchorTrace();
+      const primary = after.vrm_hips || after.mmd['センター'] || after.avatar_roots[0] || null;
+      const frameDelta = primary && lastAnchorTracePosition
+        ? Math.hypot(...primary.map((value, index) => value - lastAnchorTracePosition[index]))
+        : null;
+      XRA.debug.record('anchor.frame', {
+        stage,
+        selected_strength:selectedStrength,
+        effective_strength:strength,
+        transition_mix:bodyAnchorMix,
+        before,
+        after,
+        final_frame_delta:frameDelta
+      });
+      lastAnchorTracePosition = primary ? primary.slice() : null;
     }
   }
 
@@ -543,12 +790,13 @@
     config.body.stable = enabled;
 
     if (enabled) {
-      if (recapture || (!anchoredMMDBones.size && !anchoredVRMBones.size)) captureBodyPose();
+      if (recapture || (!anchoredMMDBones.size && !anchoredVRMBones.size && !anchoredAvatarRoots.size)) captureBodyPose();
       bodyStable = true;
       startBodyTransition(1);
     }
     else {
       bodyStable = false;
+      lastAnchorTracePosition = null;
       startBodyTransition(0);
     }
 
@@ -563,45 +811,172 @@
     config.body ||= {};
     config.tracking ||= {};
 
-    // One user-facing stabilization mode: the body anchor provides the visible
-    // strength, while the torso guard runs internally at 0% neutral pull only
-    // to reject implausible jumps. The body transition handles smooth ON/OFF, so
-    // the guard's separate release lock is bypassed here.
-    config.tracking.upper_body_guard_strength = 0;
-    guardRelease = null;
-    guardReleaseMMD.clear();
-    guardReleaseVRM.clear();
-
-    if (enabled) {
-      config.tracking.guard_mode = 'guard';
-      config.tracking.upper_body_guard = true;
-      if (recapture || (!guardMMDBones.size && !guardVRMBones.size)) captureGuardPose();
-      events.emit('upper-body-guard', true);
-      events.emit('guard-mode', 'guard');
-      return setBodyStable(true, recapture);
-    }
-
-    config.tracking.guard_mode = 'off';
-    config.tracking.upper_body_guard = false;
-    clearGuardState();
-    if (!config.tracking.freeze_head_on_face_loss) {
+    // Body stabilization owns only the captured body/root anchor. Abrupt-motion
+    // rejection is intentionally controlled by the separate hysteresis toggle.
+    if (!enabled && !config.tracking.freeze_head_on_face_loss) {
       resetFaceLossState(true);
       faceLossPoseMMD.clear();
       faceLossPoseVRM.clear();
     }
-    events.emit('upper-body-guard', false);
-    events.emit('guard-mode', 'off');
-    return setBodyStable(false, false);
+    return setBodyStable(enabled, enabled ? recapture : false);
   }
 
-  function applyPoseLocks() {
+  function captureNeutralArms() {
+    const bones = getMMDMesh()?.bones_by_name;
+    if (!bones) return;
+    for (const name of MMD_LEFT_ARM) {
+      if (bones[name]) neutralLeftArmMMD.set(name, cloneTransform(bones[name]));
+    }
+    for (const name of MMD_RIGHT_ARM) {
+      if (bones[name]) neutralRightArmMMD.set(name, cloneTransform(bones[name]));
+    }
+  }
+
+  function onHandStatusChange(side, isEntering) {
+    const bones = getMMDMesh()?.bones_by_name;
+    if (!bones) return;
+    const now = performance.now();
+    const armList = side === 'Left' ? MMD_LEFT_ARM : MMD_RIGHT_ARM;
+    const transFrom = side === 'Left' ? leftArmTransitionFrom : rightArmTransitionFrom;
+
+    transFrom.clear();
+    for (const name of armList) {
+      const bone = bones[name];
+      if (bone) transFrom.set(name, cloneTransform(bone));
+    }
+
+    const duration = 280;
+    const transObj = { start: now, duration, type: isEntering ? 'enter' : 'exit' };
+    if (side === 'Left') leftArmTransition = transObj;
+    else rightArmTransition = transObj;
+  }
+
+  function acceptHandsSignal(data) {
+    const now = performance.now();
+    if (data.left != null) {
+      if (data.left) {
+        leftHandLastSeen = now;
+        if (!leftHandVisible) {
+          leftHandVisible = true;
+          onHandStatusChange('Left', true);
+        }
+      } else if (leftHandVisible && (now - leftHandLastSeen > 200)) {
+        leftHandVisible = false;
+        onHandStatusChange('Left', false);
+      }
+    }
+
+    if (data.right != null) {
+      if (data.right) {
+        rightHandLastSeen = now;
+        if (!rightHandVisible) {
+          rightHandVisible = true;
+          onHandStatusChange('Right', true);
+        }
+      } else if (rightHandVisible && (now - rightHandLastSeen > 200)) {
+        rightHandVisible = false;
+        onHandStatusChange('Right', false);
+      }
+    }
+  }
+
+  function checkHandRuntimeEvidence(now) {
+    try {
+      const hp = window.System?._browser?.camera?.handpose || window.MMD_SA?.WebXR?.user_camera?.handpose;
+      if (hp && Array.isArray(hp.last_results || hp.data)) {
+        const list = hp.last_results || hp.data;
+        const hasLeft = list.some(h => (h.label || h.categoryName) === 'Left');
+        const hasRight = list.some(h => (h.label || h.categoryName) === 'Right');
+        acceptHandsSignal({ left: hasLeft, right: hasRight });
+      }
+    } catch (e) {}
+  }
+
+  function applyHandTransitions() {
+    if (!handsEnabled) return;
+    const now = performance.now();
+    const bones = getMMDMesh()?.bones_by_name;
+    if (!bones) return;
+
+    if (!neutralLeftArmMMD.size) captureNeutralArms();
+
+    checkHandRuntimeEvidence(now);
+
+    if (leftHandVisible && (now - leftHandLastSeen > 300)) {
+      leftHandVisible = false;
+      onHandStatusChange('Left', false);
+    }
+    if (rightHandVisible && (now - rightHandLastSeen > 300)) {
+      rightHandVisible = false;
+      onHandStatusChange('Right', false);
+    }
+
+    if (leftArmTransition) {
+      const t = util.clamp((now - leftArmTransition.start) / leftArmTransition.duration, 0, 1);
+      const k = smoothStep01(t);
+      if (leftArmTransition.type === 'enter') {
+        const blendMix = 1 - k;
+        if (t >= 1) {
+          leftArmTransition = null;
+        } else {
+          for (const [name, transform] of leftArmTransitionFrom) {
+            const bone = bones[name];
+            if (bone) blendTransform(bone, transform, blendMix);
+          }
+        }
+      } else {
+        const targetMap = neutralLeftArmMMD;
+        if (t >= 1) {
+          leftArmTransition = null;
+        } else {
+          for (const name of MMD_LEFT_ARM) {
+            const bone = bones[name];
+            const from = leftArmTransitionFrom.get(name);
+            const to = targetMap.get(name);
+            if (bone && from && to) blendInterpolateTransform(bone, from, to, k);
+          }
+        }
+      }
+    }
+
+    if (rightArmTransition) {
+      const t = util.clamp((now - rightArmTransition.start) / rightArmTransition.duration, 0, 1);
+      const k = smoothStep01(t);
+      if (rightArmTransition.type === 'enter') {
+        const blendMix = 1 - k;
+        if (t >= 1) {
+          rightArmTransition = null;
+        } else {
+          for (const [name, transform] of rightArmTransitionFrom) {
+            const bone = bones[name];
+            if (bone) blendTransform(bone, transform, blendMix);
+          }
+        }
+      } else {
+        const targetMap = neutralRightArmMMD;
+        if (t >= 1) {
+          rightArmTransition = null;
+        } else {
+          for (const name of MMD_RIGHT_ARM) {
+            const bone = bones[name];
+            const from = rightArmTransitionFrom.get(name);
+            const to = targetMap.get(name);
+            if (bone && from && to) blendInterpolateTransform(bone, from, to, k);
+          }
+        }
+      }
+    }
+  }
+
+  function applyPoseLocks(stage = 'runtime') {
     // Do not deduplicate these two lifecycle hooks. XR Animator can update bones
     // again between pose-processing completion and the final render pass.
     // Applying the locks at both points is what made BODY STABLE reliably hold
     // torso/hips/legs in the known-good stable build.
     applyUpperBodyGuard();
-    applyBodyAnchor();
+    applyBodyAnchor(stage);
     hardLockArms();
+    applyHandTransitions();
   }
 
   function quaternionAngleDeg(a, b) {
@@ -615,17 +990,17 @@
     return 2 * Math.acos(Math.min(1, Math.abs(dot))) * 180 / Math.PI;
   }
 
-  // Keep a complete last-known-good pose. Normal stabilization still affects
-  // only the body, but an invalid detector frame must not leave arms/head free
-  // to consume hallucinated landmarks.
-  const MMD_GUARD_BONES = MMD_FACE_LOSS_FREEZE_BONES;
-  const VRM_GUARD_BONES = VRM_FACE_LOSS_FREEZE_BONES;
+  // Motion Hysteresis stabilizes the core torso/head and rejects abrupt body jumps.
+  // Arms and hands are intentionally excluded so users can move their hands freely
+  // and have them exit/enter the camera without triggering whole-body freezes.
+  const MMD_GUARD_BONES = [...new Set([...MMD_BODY_BONES, ...MMD_HEAD_BONES])];
+  const VRM_GUARD_BONES = [...new Set([...VRM_BODY_BONES, ...VRM_HEAD_BONES])];
   const MMD_GUARD_CHECK = ['下半身', '上半身', '上半身2', '上半身3'];
   const VRM_GUARD_CHECK = ['hips', 'spine', 'chest', 'upperChest'];
   const MMD_GUARD_CHECK_SET = new Set(MMD_GUARD_CHECK);
   const VRM_GUARD_CHECK_SET = new Set(VRM_GUARD_CHECK);
-  const MMD_GUARD_JUMP_CHECK = [...MMD_GUARD_CHECK, '首', '頭', '左肩', '右肩', '左腕', '右腕', '左ひじ', '右ひじ'];
-  const VRM_GUARD_JUMP_CHECK = [...VRM_GUARD_CHECK, 'neck', 'head', 'leftShoulder', 'rightShoulder', 'leftUpperArm', 'rightUpperArm', 'leftLowerArm', 'rightLowerArm'];
+  const MMD_GUARD_JUMP_CHECK = [...MMD_GUARD_CHECK, '首', '頭', '左肩', '右肩'];
+  const VRM_GUARD_JUMP_CHECK = [...VRM_GUARD_CHECK, 'neck', 'head', 'leftShoulder', 'rightShoulder'];
   const MMD_DESK_TORSO = new Set(['上半身', '上半身2', '上半身3']);
   const MMD_DESK_HIPS = new Set(['センター', 'グルーブ', '腰', '下半身']);
   const MMD_DESK_LEGS = new Set(['左足', '右足', '左ひざ', '右ひざ', '左足首', '右足首']);
@@ -685,9 +1060,66 @@
     }
     guardLastMMD.clear(); guardLastVRM.clear();
     snapshotGuardLast();
-    guardInvalidSince = 0; guardHoldUntil = 0; guardLastRejected = 0; guardLastJump = 0;
+    guardRawMMD.clear(); guardRawVRM.clear();
+    if (bones) snapshotMap(MMD_GUARD_BONES, name => bones[name], guardRawMMD);
+    if (modelX?.getBoneNode) snapshotMap(VRM_GUARD_BONES, name => modelX.getBoneNode(name), guardRawVRM);
+    guardMotionWindow.length = 0;
+    guardInvalidSince = 0; guardHoldUntil = 0; guardRecoveryFrames = 0; guardLastRejected = 0; guardLastJump = 0;
     events.emit('upper-body-guard-captured', { mmd: guardMMDBones.size, vrm: guardVRMBones.size });
     return guardMMDBones.size + guardVRMBones.size;
+  }
+
+  function captureGuardTransitionPose(check) {
+    guardTransitionMMD.clear();
+    guardTransitionVRM.clear();
+    const bones = getMMDMesh()?.bones_by_name;
+    if (bones) {
+      for (const name of MMD_GUARD_BONES) {
+        const bone = bones[name];
+        if (!bone) continue;
+        const prev = guardLastMMD.get(name);
+        const raw = guardRawMMD.get(name);
+        const source = raw || prev;
+        if (source) {
+          const t = cloneTransform(source);
+          if (bone.quaternion && source.quaternion) {
+            const angle = quaternionAngleDeg(bone.quaternion, source.quaternion);
+            if (angle > 0.1 && angle < 45) {
+              const maxAngle = Math.min(angle, 12);
+              t.quaternion.copy(source.quaternion).slerp(bone.quaternion, maxAngle / angle);
+            }
+          }
+          guardTransitionMMD.set(name, t);
+        } else {
+          guardTransitionMMD.set(name, makeGuardTransform(bone));
+        }
+      }
+    }
+    const modelX = getVRMModelX();
+    if (modelX?.getBoneNode) {
+      for (const name of VRM_GUARD_BONES) {
+        try {
+          const bone = modelX.getBoneNode(name);
+          if (!bone) continue;
+          const prev = guardLastVRM.get(name);
+          const raw = guardRawVRM.get(name);
+          const source = raw || prev;
+          if (source) {
+            const t = cloneTransform(source);
+            if (bone.quaternion && source.quaternion) {
+              const angle = quaternionAngleDeg(bone.quaternion, source.quaternion);
+              if (angle > 0.1 && angle < 45) {
+                const maxAngle = Math.min(angle, 12);
+                t.quaternion.copy(source.quaternion).slerp(bone.quaternion, maxAngle / angle);
+              }
+            }
+            guardTransitionVRM.set(name, t);
+          } else {
+            guardTransitionVRM.set(name, makeGuardTransform(bone));
+          }
+        } catch (e) {}
+      }
+    }
   }
 
   function poseConfidenceFromRuntime() {
@@ -725,6 +1157,8 @@
     const jumpLimit = Math.max(10, Number(config.tracking?.guard_jump_deg ?? 42));
     let maxJump = 0;
     let maxLimbJump = 0;
+    let rawMaxJump = 0;
+    let rawMaxLimbJump = 0;
     let neutralJump = 0;
     const bones = getMMDMesh()?.bones_by_name;
     if (bones) {
@@ -734,6 +1168,12 @@
           const jump = quaternionAngleDeg(bone.quaternion, prev.quaternion);
           if (MMD_GUARD_CHECK_SET.has(name)) maxJump = Math.max(maxJump, jump);
           else maxLimbJump = Math.max(maxLimbJump, jump);
+        }
+        const rawPrev = guardRawMMD.get(name);
+        if (bone?.quaternion && rawPrev?.quaternion) {
+          const jump = quaternionAngleDeg(bone.quaternion, rawPrev.quaternion);
+          if (MMD_GUARD_CHECK_SET.has(name)) rawMaxJump = Math.max(rawMaxJump, jump);
+          else rawMaxLimbJump = Math.max(rawMaxLimbJump, jump);
         }
         if (MMD_GUARD_CHECK_SET.has(name) && bone?.quaternion && neutral?.quaternion) {
           neutralJump = Math.max(neutralJump, quaternionAngleDeg(bone.quaternion, neutral.quaternion));
@@ -750,6 +1190,12 @@
             if (VRM_GUARD_CHECK_SET.has(name)) maxJump = Math.max(maxJump, jump);
             else maxLimbJump = Math.max(maxLimbJump, jump);
           }
+          const rawPrev = guardRawVRM.get(name);
+          if (bone?.quaternion && rawPrev?.quaternion) {
+            const jump = quaternionAngleDeg(bone.quaternion, rawPrev.quaternion);
+            if (VRM_GUARD_CHECK_SET.has(name)) rawMaxJump = Math.max(rawMaxJump, jump);
+            else rawMaxLimbJump = Math.max(rawMaxLimbJump, jump);
+          }
           if (VRM_GUARD_CHECK_SET.has(name) && bone?.quaternion && neutral?.quaternion) {
             neutralJump = Math.max(neutralJump, quaternionAngleDeg(bone.quaternion, neutral.quaternion));
           }
@@ -762,21 +1208,44 @@
     guardConfidence = guardMeasuredConfidence == null ? motionConfidence : Math.min(guardMeasuredConfidence, Math.max(.15, motionConfidence));
     guardLastJump = Math.max(maxJump, maxLimbJump);
     const minConfidence = util.clamp(config.tracking?.guard_confidence_min ?? .35, .05, .95);
-    const detectorEvidence = bodyTrackingEvidence();
-    const detectorLost = detectorEvidence.available && !detectorEvidence.present;
     // During recovery the full-pose loss guard is already blending from the
     // frozen pose. Comparing the returning live pose against that old pose here
     // would reject it forever and prevent a clean re-acquisition.
-    const lossGuardRecovering = faceLossState === 'recovering' && !detectorLost;
+    const lossGuardRecovering = faceLossState === 'recovering';
+    const rawJump = Math.max(rawMaxJump, rawMaxLimbJump);
+    const lowConfidence = guardMeasuredConfidence != null && guardMeasuredConfidence < minConfidence;
+    // Preserve the raw live pose before a possible last-good overwrite below.
+    if (bones) snapshotMap(MMD_GUARD_BONES, name => bones[name], guardRawMMD);
+    if (modelX?.getBoneNode) snapshotMap(VRM_GUARD_BONES, name => modelX.getBoneNode(name), guardRawVRM);
     return {
-      invalid: detectorLost || (!lossGuardRecovering && (
-        maxJump > jumpLimit || maxLimbJump > jumpLimit * 1.8 ||
-        (guardMeasuredConfidence != null && guardMeasuredConfidence < minConfidence)
-      )),
+      // Tracking loss is handled by applyHeadLossGuard. This independent guard
+      // rejects only abrupt/low-confidence motion, so turning on hysteresis does
+      // not implicitly turn on the face-loss protection.
+      invalid: !lossGuardRecovering && (
+        rawMaxJump > jumpLimit * .55 || rawMaxLimbJump > jumpLimit || lowConfidence
+      ),
       maxJump: Math.max(maxJump, maxLimbJump),
+      rawJump,
+      jumpLimit,
+      lowConfidence: !lossGuardRecovering && lowConfidence,
       neutralJump,
       confidence: guardConfidence
     };
+  }
+
+  function guardRapidSequence(check, now) {
+    guardMotionWindow.push({
+      at: now,
+      suspicious: !!check.invalid,
+      lowConfidence: !!check.lowConfidence,
+      jump: Number(check.rawJump || 0)
+    });
+    while (guardMotionWindow.length && now - guardMotionWindow[0].at > 240) guardMotionWindow.shift();
+    if (guardMotionWindow.length < 3) return false;
+    const suspicious = guardMotionWindow.filter(sample => sample.suspicious).length;
+    const lowConfidence = guardMotionWindow.filter(sample => sample.lowConfidence).length;
+    const angularPath = guardMotionWindow.reduce((sum, sample) => sum + sample.jump, 0);
+    return lowConfidence >= 2 || (suspicious >= 2 && angularPath >= check.jumpLimit * 1.15);
   }
 
   function snapshotMap(names, getter, map) {
@@ -905,22 +1374,47 @@
       return;
     }
     const holdMs = Math.max(100, Number(config.tracking?.guard_hold_ms ?? 650));
-    const reacquireDeg = Math.max(25, Number(config.tracking?.guard_reacquire_deg ?? 60));
     const previousMMD = guardLastMMD, previousVRM = guardLastVRM;
     const check = guardLooksInvalid();
-    let invalid = check.invalid;
+    const rapidSequence = guardRapidSequence(check, now);
+    let invalid = !!guardInvalidSince || rapidSequence;
 
     if (invalid) {
-      if (!guardInvalidSince) guardInvalidSince = now;
+      if (!guardInvalidSince) {
+        guardInvalidSince = now;
+        guardRecoveryFrames = 0;
+        guardTransition = {
+          start: now,
+          duration: Math.max(100, Number(config.tracking?.guard_transition_ms ?? 220))
+        };
+        captureGuardTransitionPose(check);
+      }
       guardHoldUntil = guardInvalidSince + holdMs;
       guardLastRejected = check.maxJump;
 
-      if (now - guardInvalidSince > holdMs + 800 && check.neutralJump <= reacquireDeg && check.confidence >= .25) {
+      if (!rapidSequence && !check.invalid && check.confidence >= .25) guardRecoveryFrames++;
+      else guardRecoveryFrames = 0;
+
+      if (now >= guardHoldUntil && guardRecoveryFrames >= 4) {
         invalid = false;
         guardInvalidSince = 0;
         guardHoldUntil = 0;
+        guardRecoveryFrames = 0;
+        guardTransition = null;
+        guardTransitionMMD.clear(); guardTransitionVRM.clear();
+        guardMotionWindow.length = 0;
+
+        guardReacquireTransition = {
+          start: now,
+          duration: Math.max(150, Number(config.tracking?.guard_reacquisition_ms ?? 300))
+        };
+        guardReacquireMMD.clear();
+        guardReacquireVRM.clear();
+        for (const [name, t] of guardLastMMD) guardReacquireMMD.set(name, cloneTransform(t));
+        for (const [name, t] of guardLastVRM) guardReacquireVRM.set(name, cloneTransform(t));
+
         snapshotGuardLast();
-        events.emit('upper-body-guard-reacquired', { neutralDegrees: check.neutralJump, confidence: check.confidence });
+        events.emit('upper-body-guard-reacquired', { coherentFrames:4, confidence:check.confidence });
       }
       else {
         events.emit('upper-body-guard-reject', { degrees: check.maxJump, confidence: check.confidence, until: guardHoldUntil });
@@ -929,21 +1423,80 @@
     else {
       guardInvalidSince = 0;
       guardHoldUntil = 0;
+      guardRecoveryFrames = 0;
+      guardTransition = null;
+      guardTransitionMMD.clear(); guardTransitionVRM.clear();
       adaptiveSmoothCurrent(previousMMD, previousVRM, check);
       snapshotGuardLast();
+
+      if (guardReacquireTransition) {
+        const t = util.clamp((now - guardReacquireTransition.start) / guardReacquireTransition.duration, 0, 1);
+        const easeMix = 1 - smoothStep01(t);
+        if (t >= 1 || easeMix <= 0.0001) {
+          guardReacquireTransition = null;
+          guardReacquireMMD.clear();
+          guardReacquireVRM.clear();
+        } else {
+          const bones = getMMDMesh()?.bones_by_name;
+          if (bones) {
+            for (const [name, transform] of guardReacquireMMD) {
+              const bone = bones[name];
+              if (bone) blendTransform(bone, transform, easeMix);
+            }
+          }
+          const modelX = getVRMModelX();
+          if (modelX?.getBoneNode) {
+            for (const [name, transform] of guardReacquireVRM) {
+              try {
+                const bone = modelX.getBoneNode(name);
+                if (bone) blendTransform(bone, transform, easeMix);
+              } catch (e) {}
+            }
+          }
+        }
+      }
     }
 
     if (invalid) {
       // Hold the most recent accepted pose until tracking is trustworthy again.
-      // Falling back to the old calibration pose after a timer caused a second,
-      // delayed snap while the camera was still covered.
+      // Transition gradually towards the held pose to prevent an abrupt 1-frame snap.
       const mmdTarget = guardLastMMD;
       const vrmTarget = guardLastVRM;
+      let easeMix = 1;
+      if (guardTransition) {
+        const t = util.clamp((now - guardTransition.start) / guardTransition.duration, 0, 1);
+        easeMix = smoothStep01(t);
+        if (t >= 1) {
+          guardTransition = null;
+          guardTransitionMMD.clear();
+          guardTransitionVRM.clear();
+        }
+      }
       const bones = getMMDMesh()?.bones_by_name;
-      if (bones) for (const [name, transform] of mmdTarget) blendTransform(bones[name], transform, 1);
+      if (bones) {
+        for (const [name, transform] of mmdTarget) {
+          const bone = bones[name];
+          if (!bone) continue;
+          if (easeMix >= 1 || !guardTransitionMMD.has(name)) {
+            blendTransform(bone, transform, 1);
+          } else {
+            blendInterpolateTransform(bone, guardTransitionMMD.get(name), transform, easeMix);
+          }
+        }
+      }
       const modelX = getVRMModelX();
-      if (modelX?.getBoneNode) for (const [name, transform] of vrmTarget) {
-        try { blendTransform(modelX.getBoneNode(name), transform, 1); } catch (e) {}
+      if (modelX?.getBoneNode) {
+        for (const [name, transform] of vrmTarget) {
+          try {
+            const bone = modelX.getBoneNode(name);
+            if (!bone) continue;
+            if (easeMix >= 1 || !guardTransitionVRM.has(name)) {
+              blendTransform(bone, transform, 1);
+            } else {
+              blendInterpolateTransform(bone, guardTransitionVRM.get(name), transform, easeMix);
+            }
+          } catch (e) {}
+        }
       }
       return;
     }
@@ -970,8 +1523,11 @@
   }
 
   function clearGuardState() {
-    guardMMDBones.clear(); guardVRMBones.clear(); guardLastMMD.clear(); guardLastVRM.clear();
-    guardHoldUntil = 0; guardInvalidSince = 0; guardLastRejected = 0; guardLastJump = 0; guardConfidence = 1; guardMeasuredConfidence = null;
+    guardMMDBones.clear(); guardVRMBones.clear(); guardLastMMD.clear(); guardLastVRM.clear(); guardRawMMD.clear(); guardRawVRM.clear();
+    guardTransitionMMD.clear(); guardTransitionVRM.clear(); guardTransition = null;
+    guardReacquireMMD.clear(); guardReacquireVRM.clear(); guardReacquireTransition = null;
+    guardMotionWindow.length = 0;
+    guardHoldUntil = 0; guardInvalidSince = 0; guardRecoveryFrames = 0; guardLastRejected = 0; guardLastJump = 0; guardConfidence = 1; guardMeasuredConfidence = null;
   }
 
   function captureGuardReleasePose() {
@@ -1015,7 +1571,20 @@
   }
 
   function setUpperBodyGuard(enabled, recapture = true) {
-    return setGuardMode(enabled ? 'guard' : 'off', recapture) !== 'off';
+    return setMotionHysteresis(enabled, recapture);
+  }
+
+  function setMotionHysteresis(enabled, recapture = true) {
+    enabled = !!enabled;
+    config.tracking ||= {};
+    config.tracking.motion_hysteresis_enabled = enabled;
+    // Hysteresis follows the last accepted live pose; it must never pull toward
+    // the calibration pose while tracking is valid.
+    config.tracking.upper_body_guard_strength = 0;
+    const active = setGuardMode(enabled ? 'guard' : 'off', recapture) !== 'off';
+    broadcastTrackingState();
+    events.emit('motion-hysteresis', active);
+    return active;
   }
 
   function setUpperBodyGuardStrength(value) {
@@ -1295,14 +1864,9 @@
   }
 
   function headTrackingEvidence() {
-    // Prefer the runtime flag actually consumed by XR Animator. Canvas pixel
-    // sampling remains useful only on builds that do not expose that flag.
     const face = runtimeFaceTrackingEvidence();
-    if (face.available) return face;
-
     const technical = technicalFaceMeshEvidence();
-    if (technical.available) {
-      return {
+    const technicalEvidence = technical.available ? {
         available:true,
         present:technical.present,
         strong:technical.present,
@@ -1312,24 +1876,18 @@
         stale:false,
         reason:technical.present ? 'technical-mesh-visible' : 'technical-mesh-missing',
         source:'technical-preview'
-      };
-    }
+      } : null;
+
+    // Positive evidence wins across sources. XR Animator can clear its numeric
+    // data_detected counter before our render hook even though the current
+    // technical mesh is visible; treating that transient zero as authoritative
+    // caused the false FROZEN state shown in podcast framing.
+    if (technicalEvidence?.present) return technicalEvidence;
+    if (face.available && face.present) return face;
+    if (face.available) return face;
+    if (technicalEvidence) return technicalEvidence;
 
     const pose = poseHeadTrackingEvidence();
-
-    // Facemesh is authoritative when it gives us an actual present/missing
-    // decision. Pose is only a sanity/fallback source.
-    if (face.available) {
-      // A stale native mesh plus a pose head that has clearly collapsed is a
-      // common failure mode after covering/leaving the camera.
-      const poseContradictsStaleFace = !!face.present && !!face.stale && !!pose?.hardLost;
-      return {
-        ...face,
-        strong: face.strong && !poseContradictsStaleFace,
-        hardLost: face.hardLost || poseContradictsStaleFace,
-        reason: poseContradictsStaleFace ? 'stale-face+pose-loss' : face.reason
-      };
-    }
     // With facemesh enabled but no authoritative face result exposed, do not
     // interpret ordinary confidence dips / geometry wobble as face loss. Those
     // false positives are exactly what can make a hand/finger in front of the
@@ -1574,13 +2132,13 @@
   function trackingLossEvidence() {
     const body = bodyTrackingEvidence();
     const face = headTrackingEvidence();
-    // A face loss vetoes a still-positive body result. Pose estimators commonly
-    // hallucinate shoulders/hips from a hand or a dark frame, while facemesh has
-    // already correctly declared the subject missing.
+    // With facemesh active, it is the loss authority in both directions: a
+    // visible face keeps tracking live even when hips are outside a podcast crop,
+    // and a missing face vetoes a hallucinated positive body pose.
+    if (facemeshEnabled() && face.available) {
+      return { ...face, at:faceSignal.lastUpdateAt || technicalMeshSampleAt || performance.now() };
+    }
     if (body.available) {
-      if (face.available && face.hardLost) {
-        return { ...face, at:faceSignal.lastUpdateAt || technicalMeshSampleAt || performance.now() };
-      }
       return body;
     }
     return { ...face, at:faceSignal.lastUpdateAt || technicalMeshSampleAt || performance.now() };
@@ -1602,6 +2160,7 @@
     faceLossLastEvent = '';
     headLost = false;
     headRecoveryStarted = 0;
+    faceLossFreezeStarted = 0;
     if (clearHistory) {
       while (faceLossPoseHistory.length) faceLossPosePool.push(faceLossPoseHistory.pop());
     }
@@ -1681,12 +2240,16 @@
       faceLossState = 'suspect';
       headLost = true;
       headRecoveryStarted = 0;
+      faceLossFreezeStarted = now;
     }
     if (faceLossMissingSamples >= 2) faceLossState = 'frozen';
 
     if (!faceLossPoseMMD.size && !faceLossPoseVRM.size) return;
-    blendFaceLossPose(1);
-    emitFaceLossState(faceLossState, { active:true, fullPose:true, mix:1, evidence:evidence.reason });
+    const freezeDuration = Math.max(100, Number(config.tracking?.guard_transition_ms ?? 220));
+    const freezeT = util.clamp((now - faceLossFreezeStarted) / freezeDuration, 0, 1);
+    const freezeMix = smoothStep01(freezeT);
+    blendFaceLossPose(freezeMix);
+    emitFaceLossState(faceLossState, { active:true, fullPose:true, mix:freezeMix, evidence:evidence.reason });
   }
 
   function setFreezeHeadOnFaceLoss(enabled) {
@@ -1811,23 +2374,30 @@
       bodyTransition = null;
       anchoredMMDBones.clear();
       anchoredVRMBones.clear();
+      anchoredAvatarRoots.clear();
       clearGuardState();
     }
     else {
       handsEnabled = config.tracking.hands_enabled !== false;
-      config.tracking.guard_mode = config.body.stable ? 'guard' : 'off';
-      config.tracking.upper_body_guard = !!config.body.stable;
+      const hysteresis = !!config.tracking.motion_hysteresis_enabled;
+      config.tracking.guard_mode = hysteresis ? 'guard' : 'off';
+      config.tracking.upper_body_guard = hysteresis;
     }
 
     if (!startupLocksPending && config.body.stable) {
       bodyStable = true;
       captureBodyPose();
       bodyAnchorMix = 1;
-      setTimeout(() => captureGuardPose(), 120);
     }
     else if (!startupLocksPending) {
       bodyStable = false;
       bodyAnchorMix = 0;
+      anchoredAvatarRoots.clear();
+    }
+    if (!startupLocksPending && config.tracking.motion_hysteresis_enabled) {
+      setTimeout(() => captureGuardPose(), 120);
+    }
+    else if (!startupLocksPending) {
       clearGuardState();
     }
     guardRelease = null;
@@ -1845,7 +2415,8 @@
   function savedStartupLocks() {
     return {
       hands: config.tracking?.hands_enabled === false,
-      body: !!config.body?.stable
+      body: !!config.body?.stable,
+      hysteresis: !!config.tracking?.motion_hysteresis_enabled
     };
   }
 
@@ -1856,11 +2427,13 @@
     clearInterval(startupCalibrationPoll);
     startupLocksTimer = startupCalibrationPoll = 0;
     const desired = savedStartupLocks();
+    XRA.performance?.finishStartupCalibrationBoost?.();
     restoreRuntime();
     events.emit('hands', handsEnabled);
     events.emit('body-stable', bodyStable);
+    events.emit('motion-hysteresis', !!config.tracking?.motion_hysteresis_enabled);
     events.emit('startup-locks-activated', desired);
-    return desired.hands || desired.body;
+    return desired.hands || desired.body || desired.hysteresis;
   }
 
   function scheduleSavedStartupLocks() {
@@ -1873,13 +2446,10 @@
   }
 
   function nativeCalibrationComplete() {
-    if (startupCalibrationInProgress) return false;
     const camera = window.System?._browser?.camera;
     if (!camera?.initialized && !camera?.video_track && !camera?.video?.srcObject) return false;
     const facemesh = camera.facemesh;
-    // Pipelines without facemesh have no face-calibration phase; camera-ready
-    // is therefore their equivalent completion point.
-    if (!facemesh || facemesh.enabled === false) return true;
+    if (!facemesh || facemesh.enabled === false) return false;
     return !!facemesh.calibrated;
   }
 
@@ -1893,17 +2463,17 @@
   }
 
   window.addEventListener('SA_camera_facemesh_calibrating', event => {
+    XRA.performance?.installNeckCalibrationBridge?.();
     if (!startupLocksPending) return;
     const percent = Number(event.detail?.percent);
     if (!Number.isFinite(percent)) return;
     if (percent >= 100) {
       startupCalibrationInProgress = false;
+      XRA.nativeBridge?.dismissCalibrationNotices?.();
       scheduleSavedStartupLocks();
       return;
     }
     startupCalibrationInProgress = true;
-    // If an imported/previous calibration briefly reported ready before the
-    // new startup calibration began, restart the countdown from the real 100%.
     if (startupLocksTimer) {
       clearTimeout(startupLocksTimer);
       startupLocksTimer = 0;
@@ -1911,13 +2481,13 @@
     }
   });
 
-  window.addEventListener('SA_camera_poseNet_process_bones_onended', applyPoseLocks);
+  window.addEventListener('SA_camera_poseNet_process_bones_onended', () => applyPoseLocks('pose-ended'));
   // Run the loss lock in the same native lifecycle event, after XR Animator has
   // applied the current detector result. This guarantees that an invalid frame
   // is overwritten before it can reach the VRM, including builds where
   // SA_MMD_before_render is not emitted for the active avatar renderer.
   window.addEventListener('SA_camera_poseNet_process_bones_onended', applyHeadLossGuard);
-  window.addEventListener('SA_MMD_before_render', applyPoseLocks);
+  window.addEventListener('SA_MMD_before_render', () => applyPoseLocks('before-render'));
   // The final-render lock covers the full skeletal pose. It does not touch
   // morph targets, so microphone lip-sync remains live while tracking is held.
   window.addEventListener('SA_MMD_before_render', applyHeadLossGuard);
@@ -1939,12 +2509,51 @@
   events.on('avatar-changed', () => {
     clearGuardState();
     faceLossPoseMMD.clear(); faceLossPoseVRM.clear(); resetFaceLossState(true);
+    neutralLeftArmMMD.clear(); neutralRightArmMMD.clear();
+    leftArmTransition = null; rightArmTransition = null;
+    leftArmTransitionFrom.clear(); rightArmTransitionFrom.clear();
     setTimeout(restoreRuntime, 450);
     setTimeout(restoreRuntime, 1200);
+  });
+  function nativeMotionIdentity(manager) {
+    if (!manager) return '';
+    const filename = String(manager.filename || '');
+    const upperBody = !!manager.para_SA?.motion_tracking_upper_body_only;
+    return `${filename}::${upperBody ? 'upper' : 'full'}`;
+  }
+
+  // XR Animator also emits this event when a short looping motion wraps back
+  // to frame zero. That is not a pose change: suspending stabilization on each
+  // loop used to release and recapture the body anchor roughly once a second.
+  let lastNativeMotionIdentity = nativeMotionIdentity(window.MMD_SA?.MMD?.motionManager);
+  window.addEventListener('SA_MMD_model0_onmotionchange', event => {
+    const manager = event.detail?.motion_new || window.MMD_SA?.MMD?.motionManager;
+    const identity = nativeMotionIdentity(manager);
+    const previousIdentity = lastNativeMotionIdentity || nativeMotionIdentity(event.detail?.motion_old);
+    const logicalChange = !!identity && identity !== previousIdentity;
+    if (identity) lastNativeMotionIdentity = identity;
+    XRA.debug?.record('tracking.native-motion-change', {
+      motion:manager?.filename || null,
+      identity:identity || null,
+      previous_identity:previousIdentity || null,
+      logical_change:logicalChange,
+      body_stable:bodyStable
+    });
+    if (bodyStable && logicalChange) {
+      suspendForPoseChange();
+      setTimeout(() => {
+        resumeAfterPoseChange();
+      }, 350);
+    }
   });
   events.on('pipeline', () => {
     setTimeout(broadcastHands, 300);
     setTimeout(syncSplitHandLandmarker, 650);
+  });
+  events.on('startup-calibration-boost', payload => {
+    if (!payload?.active && startupLocksPending) {
+      activateSavedStartupLocks();
+    }
   });
 
   // Worker may be created after this module.
@@ -1954,8 +2563,8 @@
 
   function faceTrackingState() {
     if (!facemeshEnabled()) return { enabled:false, available:false, present:false, source:'facemesh-disabled' };
-    const runtime = runtimeFaceTrackingEvidence();
-    if (runtime.available) return { enabled:true, ...runtime, frozen:!!headLost };
+    const evidence = headTrackingEvidence();
+    if (evidence.available) return { enabled:true, ...evidence, frozen:!!headLost };
     // Do not mark a visibly working face tracker as degraded just because the
     // technical preview canvas is not inspectable on this XR Animator build.
     return { enabled:true, available:false, present:true, source:'enabled-unknown', frozen:!!headLost };
@@ -1970,11 +2579,13 @@
   XRA.tracking = {
     setHands,
     broadcastHands,
+    broadcastTrackingState,
     captureFrozenArms,
     captureBodyPose,
     setBodyStable,
     setBodyStabilization,
     setUpperBodyGuard,
+    setMotionHysteresis,
     setGuardMode,
     setUpperBodyGuardStrength,
     captureGuardPose,
@@ -1986,12 +2597,15 @@
     bodyCollider,
     COLLIDER_PRESETS,
     restoreRuntime,
+    suspendForPoseChange,
+    resumeAfterPoseChange,
     get handsEnabled() { return handsEnabled; },
     get bodyStable() { return bodyStable; },
     get bodyTransitioning() { return !!bodyTransition; },
     get bodyAnchorMix() { return bodyAnchorMix; },
     get startupLocksPending() { return startupLocksPending; },
     get upperBodyGuard() { return guardMode() !== 'off'; },
+    get motionHysteresis() { return !!(!startupLocksPending && config.tracking?.motion_hysteresis_enabled); },
     get guardMode() { return guardMode(); },
     get guardHoldActive() { return !!guardInvalidSince; },
     get guardLastRejectedDegrees() { return guardLastRejected; },

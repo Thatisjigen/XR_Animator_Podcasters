@@ -14,9 +14,22 @@ let XRA_hand_detection_sensitivity = 'high';
 // fail-safe even before/without the UI BroadcastChannel handshake; the control
 // message can still explicitly disable it for legacy behavior.
 let XRA_body_stabilization_enabled = true;
+let XRA_motion_hysteresis_enabled = false;
+let XRA_debug_trace_enabled = false;
+let XRA_pose_recovery_ms = 350;
 let XRA_last_hands_seen_ms = 0;
 let XRA_last_hand_recovery_scan_ms = 0;
 let XRA_control_channel = null;
+
+function XRA_debug_event(name, data) {
+  if (!XRA_debug_trace_enabled || !XRA_control_channel) return;
+  try {
+    XRA_control_channel.postMessage({
+      type:"xra_debug_event", source:"mocap-worker", name,
+      at_ms:performance.now(), data:data || {}
+    });
+  } catch (e) {}
+}
 
 function XRA_hand_recovery_interval() {
   if (XRA_hand_recovery_mode === 'aggressive') return 80;
@@ -56,11 +69,19 @@ try {
       }
       else if (d.type === "body_stabilization") {
         XRA_body_stabilization_enabled = !!d.value;
+        if (Number.isFinite(Number(d.recovery_ms))) XRA_pose_recovery_ms = Math.max(0, Math.min(2000, Number(d.recovery_ms)));
+      }
+      else if (d.type === "motion_hysteresis") {
+        XRA_motion_hysteresis_enabled = !!d.value;
+      }
+      else if (d.type === "debug_trace") {
+        XRA_debug_trace_enabled = !!d.value;
       }
     };
     XRA_control_channel.postMessage({ type:"hands_state_request" });
     XRA_control_channel.postMessage({ type:"mocap_rates_request" });
     XRA_control_channel.postMessage({ type:"tracking_state_request" });
+    XRA_control_channel.postMessage({ type:"debug_state_request" });
   }
 }
 catch (e) {
@@ -828,11 +849,16 @@ var XRA_last_stable_hands = null;
 var XRA_pose_loss_active = false;
 var XRA_pose_reacquire_count = 0;
 var XRA_pose_reacquire_state = null;
+var XRA_pose_recovery = null;
+var XRA_pose_filter_state = 'live';
 const XRA_STABLE_HISTORY_SIZE = 10;
 const XRA_STABLE_LOOKBACK_MS = 120;
+const XRA_MOTION_WINDOW_MS = 240;
+const XRA_MOTION_MIN_SAMPLES = 3;
 var XRA_stable_tracking_history = new Array(XRA_STABLE_HISTORY_SIZE);
 var XRA_stable_tracking_write = 0;
 var XRA_stable_tracking_count = 0;
+var XRA_motion_tracking_window = [];
 
 function XRA_hand_due(now) {
   if (!XRA_hands_enabled) return false;
@@ -923,21 +949,28 @@ function XRA_pose_tracking_state(pose, width, height, enabled) {
   const hipsMid = midpoint(hipPoints);
   const shoulderSpan = shoulderPoints.length >= 2 ? distance(shoulderPoints[0], shoulderPoints[1]) : 0;
   const hipSpan = hipPoints.length >= 2 ? distance(hipPoints[0], hipPoints[1]) : 0;
-  const torsoSpan = distance(shouldersMid, hipsMid);
-  const geometryValid = shoulderSpan >= .035 && shoulderSpan <= .85 &&
-    hipSpan >= .025 && hipSpan <= .75 && torsoSpan >= .035 && torsoSpan <= .90;
+  const torsoSpan = shouldersMid && hipsMid ? distance(shouldersMid, hipsMid) : 0;
+
+  const hasHips = hipPoints.length >= 2 && visibleHips >= 2 && insideHips >= 2;
+  const shoulderValid = shoulderSpan >= .035 && shoulderSpan <= .85 && visibleShoulders >= 2 && insideShoulders >= 2;
+  const hipTorsoValid = !hasHips || (hipSpan >= .025 && hipSpan <= .75 && torsoSpan >= .035 && torsoSpan <= .90);
+  const geometryValid = shoulderValid && hipTorsoValid;
+
+  const requiredCore = hasHips ? 4 : 2;
   const present = points.length > 0 && core.length > 0 &&
-    visibleCore >= 4 && insideCore >= 4 &&
-    visibleShoulders >= 2 && visibleHips >= 2 &&
-    insideShoulders >= 2 && insideHips >= 2 &&
+    visibleCore >= requiredCore && insideCore >= requiredCore &&
+    visibleShoulders >= 2 && insideShoulders >= 2 &&
     confidence >= 0.25 && geometryValid;
+
+  const centerX = shouldersMid && hipsMid ? (shouldersMid[0] + hipsMid[0]) / 2 : (shouldersMid ? shouldersMid[0] : null);
+  const centerY = shouldersMid && hipsMid ? (shouldersMid[1] + hipsMid[1]) / 2 : (shouldersMid ? shouldersMid[1] : null);
 
   return {
     type:'pose_tracking_state', available:true, present, confidence,
     core_points:core.length, visible_core:visibleCore, inside_core:insideCore,
     visible_shoulders:visibleShoulders, visible_hips:visibleHips,
-    center_x:shouldersMid && hipsMid ? (shouldersMid[0] + hipsMid[0]) / 2 : null,
-    center_y:shouldersMid && hipsMid ? (shouldersMid[1] + hipsMid[1]) / 2 : null,
+    center_x:centerX,
+    center_y:centerY,
     shoulder_span:shoulderSpan, hip_span:hipSpan, torso_span:torsoSpan,
     geometry_valid:geometryValid,
     signature:signature.join('|'), source:'mocap-worker'
@@ -972,33 +1005,168 @@ function XRA_trusted_tracking() {
     const sample = XRA_stable_tracking_history[index];
     if (!sample) continue;
     fallback ||= sample;
-    if (sample.at <= target) return sample;
+    if (sample.at <= target) return { pose:sample.pose, hands:sample.hands };
   }
-  return fallback || { pose:XRA_last_stable_pose, hands:XRA_last_stable_hands };
+  return { pose:fallback?.pose || XRA_last_stable_pose, hands:fallback?.hands || XRA_last_stable_hands };
+}
+
+function XRA_tracking_debug_summary(state) {
+  return {
+    present:!!state?.present,
+    confidence:state?.confidence != null ? Number(state.confidence.toFixed(3)) : null,
+    reason:state?.reason || (state?.present ? 'present' : 'missing'),
+    visible_core:state?.visible_core,
+    geometry_valid:state?.geometry_valid,
+    shoulder_span:state?.shoulder_span != null ? Number(state.shoulder_span.toFixed(3)) : null,
+    hip_span:state?.hip_span != null ? Number(state.hip_span.toFixed(3)) : null,
+    torso_span:state?.torso_span != null ? Number(state.torso_span.toFixed(3)) : null
+  };
+}
+
+function XRA_set_pose_filter_state(next, data) {
+  if (XRA_pose_filter_state === next) return;
+  const previous = XRA_pose_filter_state;
+  XRA_pose_filter_state = next;
+  XRA_debug_event('pose-filter-state', Object.assign({ previous, next }, data || {}));
+}
+
+function XRA_clone_pose_point(point) {
+  if (!point || typeof point !== 'object') return point;
+  const clone = Object.assign({}, point);
+  if (point.position && typeof point.position === 'object') clone.position = Object.assign({}, point.position);
+  return clone;
+}
+
+function XRA_clone_pose(pose) {
+  if (!pose || typeof pose !== 'object') return pose;
+  const clone = Object.assign({}, pose);
+  for (const key of ['keypoints', 'keypoints3D', 'keypoints3D_raw']) {
+    if (Array.isArray(pose[key])) clone[key] = pose[key].map(XRA_clone_pose_point);
+  }
+  return clone;
+}
+
+function XRA_lerp_number(from, to, mix) {
+  from = Number(from); to = Number(to);
+  return Number.isFinite(from) && Number.isFinite(to) ? from + (to - from) * mix : to;
+}
+
+function XRA_blend_pose_point(from, to, mix) {
+  if (!to || typeof to !== 'object') return to;
+  if (!from || typeof from !== 'object') return XRA_clone_pose_point(to);
+  const out = Object.assign({}, to);
+  for (const axis of ['x', 'y', 'z']) {
+    if (axis in to) out[axis] = XRA_lerp_number(from[axis], to[axis], mix);
+  }
+  if (to.position && typeof to.position === 'object') {
+    out.position = Object.assign({}, to.position);
+    for (const axis of ['x', 'y', 'z']) {
+      if (axis in to.position) out.position[axis] = XRA_lerp_number(from.position?.[axis], to.position[axis], mix);
+    }
+  }
+  return out;
+}
+
+function XRA_blend_pose(from, to, mix) {
+  if (!from || !to || typeof to !== 'object') return to;
+  const out = Object.assign({}, to);
+  for (const key of ['keypoints', 'keypoints3D', 'keypoints3D_raw']) {
+    const targetPoints = to[key];
+    const sourcePoints = from[key];
+    if (!Array.isArray(targetPoints)) continue;
+    out[key] = targetPoints.map((point, index) => XRA_blend_pose_point(sourcePoints?.[index], point, mix));
+  }
+  return out;
+}
+
+function XRA_recovery_mix(elapsed, duration) {
+  if (!(duration > 0)) return 1;
+  const t = Math.max(0, Math.min(1, elapsed / duration));
+  return t * t * (3 - 2 * t);
+}
+
+function XRA_reset_pose_recovery() {
+  XRA_pose_recovery = null;
 }
 
 function XRA_tracking_states_discontinuous(state, previous, centerLimit = .24) {
   if (!previous?.present) return false;
+  const currentCenterX = Number(state.center_x);
+  const previousCenterX = Number(previous.center_x);
+  const currentCenterY = Number(state.center_y);
+  const previousCenterY = Number(previous.center_y);
+  if (!Number.isFinite(currentCenterX) || !Number.isFinite(previousCenterX) ||
+      !Number.isFinite(currentCenterY) || !Number.isFinite(previousCenterY)) return false;
   const centerJump = Math.hypot(
-    Number(state.center_x) - Number(previous.center_x),
-    Number(state.center_y) - Number(previous.center_y)
+    currentCenterX - previousCenterX,
+    currentCenterY - previousCenterY
   );
   const ratioOutside = (current, old, low, high) => {
     current = Number(current); old = Number(old);
-    if (!(current > 0) || !(old > 0)) return true;
+    if (!(current > 0) || !(old > 0)) return false;
     const ratio = current / old;
     return ratio < low || ratio > high;
   };
-  return !Number.isFinite(centerJump) || centerJump > centerLimit ||
+  return centerJump > centerLimit ||
     ratioOutside(state.shoulder_span, previous.shoulder_span, .48, 2.1) ||
     ratioOutside(state.hip_span, previous.hip_span, .42, 2.3) ||
     ratioOutside(state.torso_span, previous.torso_span, .42, 2.3);
 }
 
-function XRA_pose_discontinuous(state) {
-  if (!state?.present || !XRA_stable_tracking_count) return false;
-  const previousIndex = (XRA_stable_tracking_write - 1 + XRA_STABLE_HISTORY_SIZE) % XRA_STABLE_HISTORY_SIZE;
-  return XRA_tracking_states_discontinuous(state, XRA_stable_tracking_history[previousIndex]?.state);
+function XRA_motion_state_sample(state, at) {
+  return {
+    at,
+    center_x:Number(state.center_x), center_y:Number(state.center_y),
+    shoulder_span:Number(state.shoulder_span), hip_span:Number(state.hip_span),
+    torso_span:Number(state.torso_span)
+  };
+}
+
+function XRA_motion_transition(a, b) {
+  const dt = Math.max(1, b.at - a.at) / 1000;
+  const dx = b.center_x - a.center_x;
+  const dy = b.center_y - a.center_y;
+  const centerDistance = Number.isFinite(dx) && Number.isFinite(dy) ? Math.hypot(dx, dy) : 0;
+  let scaleLogDistance = 0;
+  for (const key of ['shoulder_span','hip_span','torso_span']) {
+    if (!(a[key] > 0) || !(b[key] > 0)) continue;
+    scaleLogDistance = Math.max(scaleLogDistance, Math.abs(Math.log(b[key] / a[key])));
+  }
+  return {
+    centerDistance,
+    scaleLogDistance,
+    fast: centerDistance / dt > .90 || scaleLogDistance / dt > 2.4
+  };
+}
+
+// Detect a burst, not an isolated packet. The window catches rapid motion made
+// of several individually plausible steps (the old last-frame comparison did
+// not) and requires at least two fast transitions before rejecting anything.
+function XRA_pose_rapid_motion(state, now = performance.now()) {
+  if (!state?.present) {
+    XRA_motion_tracking_window.length = 0;
+    return false;
+  }
+
+  XRA_motion_tracking_window.push(XRA_motion_state_sample(state, now));
+  while (XRA_motion_tracking_window.length && now - XRA_motion_tracking_window[0].at > XRA_MOTION_WINDOW_MS) {
+    XRA_motion_tracking_window.shift();
+  }
+  if (XRA_motion_tracking_window.length < XRA_MOTION_MIN_SAMPLES) return false;
+
+  let centerPath = 0;
+  let scalePath = 0;
+  let fastTransitions = 0;
+  for (let i = 1; i < XRA_motion_tracking_window.length; i++) {
+    const delta = XRA_motion_transition(XRA_motion_tracking_window[i - 1], XRA_motion_tracking_window[i]);
+    centerPath += delta.centerDistance;
+    scalePath += delta.scaleLogDistance;
+    if (delta.fast) fastTransitions++;
+  }
+  const elapsed = Math.max(1, now - XRA_motion_tracking_window[0].at) / 1000;
+  const rapidCenter = centerPath >= .14 && centerPath / elapsed > .85;
+  const rapidScale = scalePath >= .30 && scalePath / elapsed > 1.8;
+  return fastTransitions >= 2 && (rapidCenter || rapidScale);
 }
 
 // Stop invalid landmarks before they reach IK/bone solving. Keeping this in the
@@ -1008,28 +1176,54 @@ function XRA_hold_invalid_tracking(pose, hands, state) {
     XRA_pose_loss_active = false;
     XRA_pose_reacquire_count = 0;
     XRA_pose_reacquire_state = null;
+    XRA_reset_pose_recovery();
+    XRA_motion_tracking_window.length = 0;
+    XRA_set_pose_filter_state('live', { reason:'tracking-unavailable' });
     return { pose, hands };
   }
 
-  if (!XRA_body_stabilization_enabled) {
+  if (!XRA_body_stabilization_enabled && !XRA_motion_hysteresis_enabled) {
     XRA_pose_loss_active = false;
     XRA_pose_reacquire_count = 0;
     XRA_pose_reacquire_state = null;
+    XRA_reset_pose_recovery();
+    XRA_motion_tracking_window.length = 0;
+    XRA_set_pose_filter_state('live', { reason:'filter-disabled' });
     if (state.present && pose?.keypoints?.length) XRA_remember_stable_tracking(pose, hands, state);
     return { pose, hands };
   }
 
-  if (!XRA_pose_loss_active && state.present && XRA_pose_discontinuous(state)) {
+  const rapidMotion = state.present && XRA_motion_hysteresis_enabled
+    ? XRA_pose_rapid_motion(state)
+    : false;
+  const discontinuous = !XRA_pose_loss_active && rapidMotion;
+  if (discontinuous) {
     state.present = false;
-    state.reason = 'pose-discontinuity';
+    state.reason = 'rapid-pose-sequence';
   }
 
   if (!state.present) {
+    // Hysteresis is not another tracking-loss toggle. With body stabilization
+    // off, ordinary missing detections pass through; only a discontinuity that
+    // this filter itself rejected starts/continues a short last-good hold.
+    if (!XRA_body_stabilization_enabled && !discontinuous && !XRA_pose_loss_active) {
+      XRA_pose_reacquire_count = 0;
+      XRA_pose_reacquire_state = null;
+      XRA_reset_pose_recovery();
+      XRA_motion_tracking_window.length = 0;
+      XRA_set_pose_filter_state('live', { reason:'missing-passthrough' });
+      return { pose, hands };
+    }
     XRA_pose_loss_active = true;
     XRA_pose_reacquire_count = 0;
     XRA_pose_reacquire_state = null;
+    XRA_reset_pose_recovery();
+    XRA_set_pose_filter_state('holding', XRA_tracking_debug_summary(state));
     const trusted = XRA_trusted_tracking();
-    return { pose:trusted.pose || pose, hands:trusted.hands || XRA_last_stable_hands || hands };
+    const returnHands = (XRA_body_stabilization_enabled && !XRA_motion_hysteresis_enabled && hands && hands.length)
+      ? (trusted.hands || XRA_last_stable_hands || hands)
+      : hands;
+    return { pose: trusted.pose || pose, hands: returnHands };
   }
 
   // A single plausible frame is not enough after an occlusion. Four consecutive
@@ -1037,20 +1231,48 @@ function XRA_hold_invalid_tracking(pose, hands, state) {
   if (XRA_pose_loss_active) {
     if (XRA_pose_reacquire_state && XRA_tracking_states_discontinuous(state, XRA_pose_reacquire_state, .10)) {
       XRA_pose_reacquire_count = 1;
+      XRA_reset_pose_recovery();
+      XRA_set_pose_filter_state('validating', Object.assign({ reset:true, count:1 }, XRA_tracking_debug_summary(state)));
     }
     else {
       XRA_pose_reacquire_count += 1;
     }
     XRA_pose_reacquire_state = state;
     if (XRA_pose_reacquire_count < 4) {
+      XRA_set_pose_filter_state('validating', Object.assign({ count:XRA_pose_reacquire_count }, XRA_tracking_debug_summary(state)));
       const trusted = XRA_trusted_tracking();
-      return { pose:trusted.pose || pose, hands:trusted.hands || XRA_last_stable_hands || hands };
+      const returnHands = (XRA_body_stabilization_enabled && !XRA_motion_hysteresis_enabled && hands && hands.length)
+        ? (trusted.hands || XRA_last_stable_hands || hands)
+        : hands;
+      return { pose: trusted.pose || pose, hands: returnHands };
+    }
+
+    const now = performance.now();
+    if (!XRA_pose_recovery) {
+      const trusted = XRA_trusted_tracking();
+      XRA_pose_recovery = {
+        started_at:now,
+        from_pose:XRA_clone_pose(trusted.pose || pose)
+      };
+      XRA_set_pose_filter_state('recovering', Object.assign({
+        count:XRA_pose_reacquire_count,
+        duration_ms:XRA_pose_recovery_ms
+      }, XRA_tracking_debug_summary(state)));
+    }
+
+    const elapsed = now - XRA_pose_recovery.started_at;
+    if (XRA_pose_recovery_ms > 0 && elapsed < XRA_pose_recovery_ms) {
+      const mix = XRA_recovery_mix(elapsed, XRA_pose_recovery_ms);
+      return { pose:XRA_blend_pose(XRA_pose_recovery.from_pose, pose, mix), hands };
     }
   }
 
   XRA_pose_loss_active = false;
   XRA_pose_reacquire_count = 0;
   XRA_pose_reacquire_state = null;
+  XRA_reset_pose_recovery();
+  XRA_motion_tracking_window.length = 0;
+  XRA_set_pose_filter_state('live', { reason:'recovery-complete' });
   if (pose?.keypoints?.length) XRA_remember_stable_tracking(pose, hands, state);
   return { pose, hands };
 }
@@ -2143,12 +2365,24 @@ else {
   if (XRA_fresh_hands_this_frame) XRA_last_hands_seen_ms = performance.now();
 
   // Standalone Split mode: when hand inference is intentionally throttled, keep
-  // the latest valid hand pose rather than clearing/flickering between samples.
+  // the latest valid hand pose briefly (up to ~140ms / during countdown) rather
+  // than clearing/flickering between samples. Once hands leave camera, clear promptly.
   if (!options.use_holistic_landmarker && XRA_hands_enabled) {
-    if (hands && Array.isArray(hands) && hands.length) XRA_last_hands_result = hands;
-    else if (XRA_last_hands_result) hands = XRA_last_hands_result;
+    if (XRA_fresh_hands_this_frame) {
+      XRA_last_hands_result = hands;
+    }
+    else if (XRA_last_hands_result && no_hand_countdown > 0 && (performance.now() - XRA_last_hands_seen_ms) < 140) {
+      hands = XRA_last_hands_result;
+    }
+    else {
+      XRA_last_hands_result = null;
+      hands = [];
+    }
   }
-  if (!XRA_hands_enabled) XRA_last_hands_result = null;
+  if (!XRA_hands_enabled) {
+    XRA_last_hands_result = null;
+    hands = [];
+  }
 
   _t = performance.now() - _t +(options._t||0);
 
@@ -2201,12 +2435,13 @@ else {
   }
 
   // A parallel hand worker may finish after the body hold was selected above.
-  // Re-assert the cached hands so that late results cannot bypass loss freeze.
-  if (XRA_body_stabilization_enabled && XRA_pose_loss_active && XRA_last_stable_hands) {
+  // Re-assert cached hands only if body stabilization is on and hands were active.
+  // Motion hysteresis ignores hands so they can enter/exit freely without freeze.
+  if (XRA_body_stabilization_enabled && !XRA_motion_hysteresis_enabled && XRA_pose_loss_active && XRA_last_stable_hands && XRA_last_hands_result) {
     hands = XRA_last_stable_hands;
   }
  
-  if (XRA_hands_enabled && hands && Array.isArray(hands) && hands.length) {
+  if (XRA_hands_enabled && XRA_fresh_hands_this_frame) {
     XRA_last_hands_result = hands;
   }
 
@@ -2215,7 +2450,7 @@ else {
     facemesh.fps = fps
   }
 
-  if (!XRA_hands_enabled) hands = [];
+  if (!XRA_hands_enabled || !hands) hands = [];
 
   XRA_send_pose_tracking_state(XRA_pose_state);
 
@@ -2232,6 +2467,17 @@ else {
       confidence: Number.isFinite(c) ? Math.max(0, Math.min(1, c)) : null,
       source: 'mocap-worker',
       signature: present ? String(faces[0]?.scaledMesh?.length || faces[0]?.mesh?.length || 1) : '0'
+    });
+  }
+
+  if (XRA_control_channel) {
+    const leftHandDetected = Array.isArray(hands) && hands.some(h => (h.label || h.categoryName) === 'Left');
+    const rightHandDetected = Array.isArray(hands) && hands.some(h => (h.label || h.categoryName) === 'Right');
+    XRA_control_channel.postMessage({
+      type: 'hands_tracking_state',
+      left: leftHandDetected,
+      right: rightHandDetected,
+      timestamp: performance.now()
     });
   }
 
