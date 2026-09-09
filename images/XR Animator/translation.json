@@ -550,9 +550,9 @@
 				},
 				"ML_off": {
 					"_translation_": {
-						"_default_": "Enable motion capture?\n1. Face only\n2. Body only\n3. Body + Hands\n4. Face + Body\n5. Full body (MediaPipe Vision)\n6. Full body (Legacy Holistic)\n7. Mocap options\n8. Cancel",
-						"ja": "モーションキャプチャを有効にしますか?\n1. 顔だけ\n2. 体だけ\n3. 体と手\n4. 顔と体\n5. 全身 (MediaPipe Vision)\n6. 全身 (レガシー Holistic)\n7. モーションキャプチャ設定\n8. キャンセル",
-						"zh": "啟動動作捕捉?\n1. 面部\n2. 身體\n3. 身體 + 手部\n4. 面部 + 身體\n5. 全身 (MediaPipe Vision)\n6. 全身 (Legacy Holistic)\n7. 動作捕捉設定\n8. 取消"
+						"_default_": "Enable motion capture?\n1. Face only\n2. Body only\n3. Body + Hands\n4. Face + Body\n5. Full body (MediaPipe Vision)\n6. Mocap options\n7. Cancel",
+						"ja": "モーションキャプチャを有効にしますか?\n1. 顔だけ\n2. 体だけ\n3. 体と手\n4. 顔と体\n5. 全身 (MediaPipe Vision)\n6. モーションキャプチャ設定\n7. キャンセル",
+						"zh": "啟動動作捕捉?\n1. 面部\n2. 身體\n3. 身體 + 手部\n4. 面部 + 身體\n5. 全身 (MediaPipe Vision)\n6. 動作捕捉設定\n7. 取消"
 					},
 					"full_body_mediapipe_vision": {
 						"tooltip": {
@@ -560,15 +560,6 @@
 								"_default_": "Full body (MediaPipe Vision):\nMediaPipe Vision is the latest mocap AI suite from Google MediaPipe. This version of full body tracking uses face, body and hand tracking models at the same time.",
 								"ja": "全身 (MediaPipe Vision):\nMediaPipe Vision は、Google MediaPipe の最新のモーションキャプチャ AI スイートです。 このバージョンの全身追跡では、顔、体、手の追跡モデルを同時に使用します。",
 								"zh": "全身 (MediaPipe Vision):\nMediaPipe Vision 是 Google MediaPipe 最新版的動作捕捉 AI 組合。 此功能將同時使用臉、手和身體的動作捕捉模型。"
-							}
-						}
-					},
-					"full_body_legacy_holistic": {
-						"tooltip": {
-							"_translation_": {
-								"_default_": "Full body (Legacy Holistic):\nThis version of full body tracking uses the legacy MediaPipe Holistic AI model, which combines face, body and hand tracking into one model. This requires less system resource and makes it faster in some cases, but loses some mocap accuracy and features from the latest MediaPipe Vision.",
-								"ja": "全身 (Legacy Holistic):\nこのバージョンの全身追跡では、顔、体、手の追跡を 1 つのモデルに組み合わせた古い MediaPipe Holistic AI モデルを使用します。 これにより、必要なシステム リソースが減り、場合によっては高速になりますが、最新の MediaPipe Vision の一部のモーキャプの精度と機能が失われます。",
-								"zh": "全身 (Legacy Holistic):\n此乃舊版的 MediaPipe Holistic AI 模型, 將臉、手和身體的動作捕捉模型合而為一。 此版本系統要求比較低，一般而言速度亦較快，但缺少了最新版 MediaPipe Vision 的一些功能和精確度。"
 							}
 						}
 					}
