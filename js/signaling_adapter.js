@@ -1,0 +1,659 @@
+(() => {
+  'use strict';
+
+  // ============================================================
+  // SignalingCrypto: AES-256-GCM + Base64URL
+  // ============================================================
+  const SignalingCrypto = {
+    bytesToBase64Url(bytes) {
+      let binary = '';
+      const len = bytes.byteLength;
+      for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    },
+
+    base64UrlToBytes(str) {
+      let base64 = String(str || '').replace(/-/g, '+').replace(/_/g, '/');
+      while (base64.length % 4 !== 0) {
+        base64 += '=';
+      }
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return bytes;
+    },
+
+    generateRandomBytes(length = 32) {
+      return crypto.getRandomValues(new Uint8Array(length));
+    },
+
+    async generateAesKey() {
+      const raw = this.generateRandomBytes(32);
+      const key = await crypto.subtle.importKey(
+        'raw',
+        raw,
+        { name: 'AES-GCM', length: 256 },
+        true,
+        ['encrypt', 'decrypt']
+      );
+      return { raw, key };
+    },
+
+    async importAesKey(rawBytes) {
+      return crypto.subtle.importKey(
+        'raw',
+        rawBytes,
+        { name: 'AES-GCM', length: 256 },
+        false,
+        ['encrypt', 'decrypt']
+      );
+    },
+
+    async encrypt(aesKey, payload) {
+      const iv = this.generateRandomBytes(12);
+      const encoded = new TextEncoder().encode(JSON.stringify(payload));
+      const ciphertext = await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv },
+        aesKey,
+        encoded
+      );
+      return this.bytesToBase64Url(iv) + '.' + this.bytesToBase64Url(new Uint8Array(ciphertext));
+    },
+
+    async decrypt(aesKey, cipherStr) {
+      const [ivPart, dataPart] = String(cipherStr || '').split('.');
+      if (!ivPart || !dataPart) throw new Error('Cifratura non valida: formato non conforme.');
+      const iv = this.base64UrlToBytes(ivPart);
+      const ciphertext = this.base64UrlToBytes(dataPart);
+      const decrypted = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv },
+        aesKey,
+        ciphertext
+      );
+      return JSON.parse(new TextDecoder().decode(decrypted));
+    },
+
+    encodeToken(desc) {
+      const json = JSON.stringify(desc);
+      return 'xra1_' + this.bytesToBase64Url(new TextEncoder().encode(json));
+    },
+
+    decodeToken(tokenStr) {
+      const clean = String(tokenStr || '').trim().replace(/^xra1_/, '').replace(/^xra_/, '');
+      const bytes = this.base64UrlToBytes(clean);
+      const json = new TextDecoder().decode(bytes);
+      const obj = JSON.parse(json);
+      if (!obj || !obj.r || !obj.d || !obj.k) {
+        throw new Error('Token Nostr non valido o corrotto.');
+      }
+      return obj;
+    }
+  };
+
+  // ============================================================
+  // Default Configs
+  // ============================================================
+  const DEFAULT_STUN_SERVERS = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' }
+  ];
+
+  const NOSTR_RELAYS = [
+    'wss://nos.lol',
+    'wss://relay.damus.io',
+    'wss://relay.primal.net',
+    'wss://nostr.mom',
+    'wss://relay.snort.social'
+  ];
+
+  const getNostrTools = () => {
+    if (typeof window !== 'undefined' && window.NostrTools) return window.NostrTools;
+    if (typeof NostrTools !== 'undefined') return NostrTools;
+    if (typeof globalThis !== 'undefined' && globalThis.NostrTools) return globalThis.NostrTools;
+    return undefined;
+  };
+
+  // ============================================================
+  // NostrSignalingAdapter
+  // ============================================================
+  class NostrSignalingAdapter {
+    constructor(callbacks = {}) {
+      this.callbacks = callbacks;
+      this.pc = null;
+      this.dataChannel = null;
+      this.relay = null;
+      this.sub = null;
+      this.aesKey = null;
+      this.rawKey = null;
+      this.roomId = '';
+      this.relayUrl = '';
+      this.mySk = null;
+      this.myPk = '';
+      this.remotePk = '';
+      this.isHost = false;
+      this.earlyCandidates = [];
+      this.localAudio = null;
+      this.localScreen = null;
+      this.token = '';
+      this.isClosed = false;
+      this._joinTimer = null;
+      this._offerTimer = null;
+      this._hostHeartbeat = null;
+      this._connectionLossTimer = null;
+      this._hasOffer = false;
+      this._hasAnswer = false;
+      this._didNotifyClose = false;
+      this._remoteStreams = { audio: null, video: null };
+    }
+
+    _clearTimers() {
+      if (this._joinTimer) { clearInterval(this._joinTimer); this._joinTimer = null; }
+      if (this._offerTimer) { clearInterval(this._offerTimer); this._offerTimer = null; }
+      if (this._hostHeartbeat) { clearInterval(this._hostHeartbeat); this._hostHeartbeat = null; }
+      if (this._connectionLossTimer) { clearTimeout(this._connectionLossTimer); this._connectionLossTimer = null; }
+    }
+
+    _notifyClose(reason) {
+      if (this.isClosed || this._didNotifyClose) return;
+      this._didNotifyClose = true;
+      this.callbacks.onClose?.(reason || 'closed');
+    }
+
+    async _connectRelayWithFallback(chosenUrl, allowFallback = true) {
+      const Nostr = getNostrTools();
+      if (!Nostr) throw new Error('Libreria NostrTools non trovata.');
+      const candidates = chosenUrl && allowFallback
+        ? [chosenUrl, ...NOSTR_RELAYS.filter(r => r !== chosenUrl)]
+        : (chosenUrl ? [chosenUrl] : NOSTR_RELAYS);
+
+      let lastErr = null;
+      for (const url of candidates) {
+        try {
+          const domain = url.replace(/^wss?:\/\//, '');
+          this.callbacks.onStatus?.(`Connessione al relay Nostr (${domain})…`);
+          const relay = await Nostr.Relay.connect(url);
+          this.relayUrl = url;
+          return relay;
+        } catch (err) {
+          lastErr = err;
+          console.warn(`[NostrSignalingAdapter] Relay ${url} unreachable, fallback...`, err);
+        }
+      }
+      throw lastErr || new Error('Tutti i relay Nostr sono risultati irraggiungibili.');
+    }
+
+    _subscribeToRoom() {
+      if (!this.relay || !this.roomId) return;
+      if (this.sub) {
+        try { this.sub.close(); } catch (_) {}
+        this.sub = null;
+      }
+      // Note: No "since" parameter is used here to avoid any clock skew differences between peers.
+      // Ephemeral events (kind 20000) are never stored on relays anyway.
+      this.sub = this.relay.subscribe([
+        { kinds: [20000], '#d': [this.roomId] }
+      ], {
+        onevent: event => this._handleRelayEvent(event)
+      });
+    }
+
+    async initHost(relayChoice) {
+      const Nostr = getNostrTools();
+      if (!Nostr) {
+        throw new Error('Libreria NostrTools non trovata.');
+      }
+      this.isHost = true;
+      this.roomId = 'xra-' + SignalingCrypto.bytesToBase64Url(SignalingCrypto.generateRandomBytes(9));
+      
+      const { raw, key } = await SignalingCrypto.generateAesKey();
+      this.rawKey = raw;
+      this.aesKey = key;
+
+      this.mySk = Nostr.generateSecretKey();
+      this.myPk = Nostr.getPublicKey(this.mySk);
+
+      this.relay = await this._connectRelayWithFallback(relayChoice || NOSTR_RELAYS[0]);
+      if (this.isClosed) {
+        try { this.relay.close(); } catch (_) {}
+        this.relay = null;
+        throw new Error('Connessione Nostr annullata.');
+      }
+      this._subscribeToRoom();
+
+      const desc = {
+        v: 1,
+        r: this.relayUrl,
+        d: this.roomId,
+        k: SignalingCrypto.bytesToBase64Url(this.rawKey),
+        hpk: this.myPk
+      };
+      this.token = SignalingCrypto.encodeToken(desc);
+
+      // Keepalive: periodically ensure the WebSocket connection to the relay is healthy while host waits
+      this._hostHeartbeat = setInterval(async () => {
+        if (this.isClosed || !this.isHost || (this.pc && this.pc.connectionState === 'connected')) {
+          clearInterval(this._hostHeartbeat);
+          return;
+        }
+        if (!this.relay || !this.relay.connected) {
+          console.warn('[NostrSignalingAdapter] Host relay connection dropped, reconnecting…');
+          try {
+            // The token names one exact relay. Switching relay after publishing
+            // the token would strand the guest in a different room.
+            this.relay = await this._connectRelayWithFallback(this.relayUrl, false);
+            this._subscribeToRoom();
+          } catch (_) {}
+        }
+      }, 7000);
+
+      this.callbacks.onStatus?.('Pronto su relay Nostr (in attesa del peer)');
+      return this.token;
+    }
+
+    async connectWithToken(tokenStr) {
+      const Nostr = getNostrTools();
+      if (!Nostr) {
+        throw new Error('Libreria NostrTools non trovata.');
+      }
+      this.isHost = false;
+      const desc = SignalingCrypto.decodeToken(tokenStr);
+      this.relayUrl = desc.r;
+      this.roomId = desc.d;
+      this.remotePk = desc.hpk || '';
+      this.rawKey = SignalingCrypto.base64UrlToBytes(desc.k);
+      this.aesKey = await SignalingCrypto.importAesKey(this.rawKey);
+
+      this.mySk = Nostr.generateSecretKey();
+      this.myPk = Nostr.getPublicKey(this.mySk);
+
+      // Both peers must meet on the relay encoded in the token. The fallback
+      // list is used by the host before token creation, not by the guest after.
+      this.relay = await this._connectRelayWithFallback(this.relayUrl, false);
+      if (this.isClosed) {
+        try { this.relay.close(); } catch (_) {}
+        this.relay = null;
+        throw new Error('Connessione Nostr annullata.');
+      }
+      this._subscribeToRoom();
+
+      // Retry loop for join: re-send join announcement every 1.5s until host responds with offer or timeout
+      this._hasOffer = false;
+      let joinCount = 0;
+      const maxJoinAttempts = 15; // 15 attempts * 1.5s = 22.5s timeout
+
+      const doJoin = async () => {
+        if (this._hasOffer || this.isClosed || (this.pc && this.pc.connectionState === 'connected')) {
+          if (this._joinTimer) clearInterval(this._joinTimer);
+          return;
+        }
+        joinCount++;
+        if (joinCount > maxJoinAttempts) {
+          if (this._joinTimer) clearInterval(this._joinTimer);
+          const timeoutErr = new Error("Nessuna risposta dal peer. Verifica che l'host abbia lo studio aperto in modalità Nostr e riprova.");
+          this.callbacks.onError?.(timeoutErr);
+          this.callbacks.onStatus?.('Connessione non riuscita (timeout host).');
+          return;
+        }
+
+        const domain = this.relayUrl.replace(/^wss?:\/\//, '');
+        this.callbacks.onStatus?.(`Invio richiesta di handshake WebRTC… (${joinCount}/${maxJoinAttempts})`);
+        await this._sendSignalingMessage({
+          type: 'join',
+          sender: this.myPk,
+          target: this.remotePk
+        });
+      };
+
+      await doJoin();
+      this._joinTimer = setInterval(doJoin, 1500);
+    }
+
+    async _sendSignalingMessage(payload) {
+      if (!this.relay || !this.relay.connected || !this.aesKey) return;
+      const Nostr = getNostrTools();
+      if (!Nostr) return;
+      try {
+        const encrypted = await SignalingCrypto.encrypt(this.aesKey, payload);
+        const event = Nostr.finalizeEvent({
+          kind: 20000,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [['d', this.roomId]],
+          content: encrypted
+        }, this.mySk);
+        await this.relay.publish(event);
+      } catch (err) {
+        console.error('[NostrAdapter] publish error', err);
+      }
+    }
+
+    async _handleRelayEvent(event) {
+      if (!event || event.pubkey === this.myPk) return;
+      let msg = null;
+      try {
+        msg = await SignalingCrypto.decrypt(this.aesKey, event.content);
+      } catch (_) {
+        return; // Ignore events not decryptable with our room key
+      }
+
+      if (!msg || typeof msg !== 'object') return;
+      if (msg.target && msg.target !== this.myPk) return; // Directed to another pubkey
+
+      switch (msg.type) {
+        case 'join':
+          if (this.isHost) {
+            this.remotePk = msg.sender || event.pubkey;
+            if (this.pc && this.pc.localDescription) {
+              // Re-send existing offer in case previous offer packet was dropped
+              await this._sendSignalingMessage({
+                type: 'offer',
+                sdp: this.pc.localDescription.sdp,
+                sender: this.myPk,
+                target: this.remotePk
+              });
+            } else {
+              this.callbacks.onStatus?.('Peer rilevato su Nostr. Negoziazione WebRTC…');
+              await this._initiatePeerConnection();
+            }
+          }
+          break;
+
+        case 'offer':
+          if (!this.isHost) {
+            this._hasOffer = true;
+            if (this._joinTimer) {
+              clearInterval(this._joinTimer);
+              this._joinTimer = null;
+            }
+            this.remotePk = msg.sender || event.pubkey;
+            if (this.pc && this.pc.localDescription) {
+              // Re-send existing answer in case previous answer packet was dropped
+              await this._sendSignalingMessage({
+                type: 'answer',
+                sdp: this.pc.localDescription.sdp,
+                sender: this.myPk,
+                target: this.remotePk
+              });
+            } else {
+              this.callbacks.onStatus?.('Ricevuta offerta WebRTC. Invio risposta…');
+              await this._handleOffer(msg.sdp);
+            }
+          }
+          break;
+
+        case 'answer':
+          if (this.isHost && this.pc) {
+            this._hasAnswer = true;
+            if (this._offerTimer) {
+              clearInterval(this._offerTimer);
+              this._offerTimer = null;
+            }
+            this.callbacks.onStatus?.('Ricevuta risposta WebRTC. Stabilizzazione canale…');
+            await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: msg.sdp }));
+            this._flushEarlyCandidates();
+          }
+          break;
+
+        case 'candidate':
+          if (msg.candidate) {
+            if (this.pc && this.pc.remoteDescription) {
+              try {
+                await this.pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+              } catch (_) {}
+            } else {
+              this.earlyCandidates.push(msg.candidate);
+            }
+          }
+          break;
+      }
+    }
+
+    _createPeerConnection() {
+      const pc = new RTCPeerConnection({ iceServers: DEFAULT_STUN_SERVERS });
+
+      // Reserve stable audio/video m-lines. A real local track is used when one
+      // already exists; otherwise replaceTrack() can fill the sender later.
+      try {
+        const audioTrack = this.localAudio?.getAudioTracks?.()[0] || null;
+        const videoTrack = this.localScreen?.getVideoTracks?.()[0] || null;
+        pc.addTransceiver(audioTrack || 'audio', {
+          direction: 'sendrecv',
+          streams: audioTrack ? [this.localAudio] : []
+        });
+        pc.addTransceiver(videoTrack || 'video', {
+          direction: 'sendrecv',
+          streams: videoTrack ? [this.localScreen] : []
+        });
+      } catch (e) {
+        console.warn('[NostrSignalingAdapter] addTransceiver fallback', e);
+        if (this.localAudio) {
+          this.localAudio.getAudioTracks().forEach(t => pc.addTrack(t, this.localAudio));
+        }
+        if (this.localScreen) {
+          this.localScreen.getVideoTracks().forEach(t => pc.addTrack(t, this.localScreen));
+        }
+      }
+
+      pc.onicecandidate = event => {
+        if (event.candidate) {
+          this._sendSignalingMessage({
+            type: 'candidate',
+            candidate: event.candidate,
+            sender: this.myPk,
+            target: this.remotePk
+          });
+        }
+      };
+
+      pc.ontrack = event => {
+        const kind = event.track.kind;
+        if (kind !== 'audio' && kind !== 'video') return;
+
+        // Transceivers created without a source often produce an empty
+        // event.streams array. Keep one stable stream per media kind so that a
+        // later replaceTrack() (notably NW.js -> Chrome screen sharing) becomes
+        // visible without waiting for another `track` event that never comes.
+        let stream = this._remoteStreams[kind];
+        if (!stream) {
+          stream = new MediaStream();
+          this._remoteStreams[kind] = stream;
+        }
+        if (!stream.getTracks().some(track => track.id === event.track.id)) {
+          stream.addTrack(event.track);
+        }
+
+        const notifyTrackReady = () => {
+          if (kind === 'audio') this.callbacks.onRemoteAudio?.(stream);
+          else this.callbacks.onRemoteVideo?.(stream);
+        };
+        event.track.addEventListener?.('unmute', notifyTrackReady);
+        notifyTrackReady();
+      };
+
+      pc.onconnectionstatechange = () => {
+        const state = pc.connectionState;
+        if (state === 'connected') {
+          if (this._connectionLossTimer) {
+            clearTimeout(this._connectionLossTimer);
+            this._connectionLossTimer = null;
+          }
+          this.callbacks.onStatus?.('Connesso P2P diretto');
+          this._closeRelayConnection();
+        } else if (state === 'disconnected') {
+          // Brief ICE interruptions can recover. A real vanished peer should
+          // still return both UIs to setup instead of leaving a stale call.
+          if (!this._connectionLossTimer) {
+            this._connectionLossTimer = setTimeout(() => {
+              this._connectionLossTimer = null;
+              if (pc.connectionState === 'disconnected') this._notifyClose('disconnected');
+            }, 4000);
+          }
+        } else if (state === 'failed' || state === 'closed') {
+          this._notifyClose(state);
+        }
+      };
+
+      this.pc = pc;
+      return pc;
+    }
+
+    async _initiatePeerConnection() {
+      const pc = this._createPeerConnection();
+
+      // Create data channel
+      const dc = pc.createDataChannel('xra-p2p-channel', { ordered: true });
+      this._bindDataChannel(dc);
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      const sendOffer = async () => {
+        if (this._hasAnswer || this.isClosed || (this.pc && this.pc.connectionState === 'connected')) {
+          if (this._offerTimer) clearInterval(this._offerTimer);
+          return;
+        }
+        await this._sendSignalingMessage({
+          type: 'offer',
+          sdp: offer.sdp,
+          sender: this.myPk,
+          target: this.remotePk
+        });
+      };
+
+      await sendOffer();
+      if (this._offerTimer) clearInterval(this._offerTimer);
+      this._offerTimer = setInterval(sendOffer, 2000);
+    }
+
+    async _handleOffer(sdp) {
+      const pc = this._createPeerConnection();
+
+      pc.ondatachannel = event => {
+        this._bindDataChannel(event.channel);
+      };
+
+      await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
+      this._flushEarlyCandidates();
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      await this._sendSignalingMessage({
+        type: 'answer',
+        sdp: answer.sdp,
+        sender: this.myPk,
+        target: this.remotePk
+      });
+    }
+
+    _flushEarlyCandidates() {
+      if (!this.pc || !this.pc.remoteDescription) return;
+      while (this.earlyCandidates.length) {
+        const c = this.earlyCandidates.shift();
+        try { this.pc.addIceCandidate(new RTCIceCandidate(c)); } catch (_) {}
+      }
+    }
+
+    _bindDataChannel(dc) {
+      this.dataChannel = dc;
+      dc.onopen = () => {
+        this.callbacks.onOpen?.(this.isHost ? 'Guest (Nostr)' : 'Host (Nostr)');
+        this._closeRelayConnection();
+      };
+      dc.onmessage = event => {
+        let data = event.data;
+        try {
+          data = JSON.parse(event.data);
+        } catch (_) {}
+        this.callbacks.onData?.(data);
+      };
+      dc.onclose = () => {
+        this._notifyClose('data-channel-closed');
+      };
+      dc.onerror = err => {
+        this.callbacks.onError?.(err);
+      };
+    }
+
+    _closeRelayConnection() {
+      this._clearTimers();
+      if (this.sub) {
+        try { this.sub.close(); } catch (_) {}
+        this.sub = null;
+      }
+      if (this.relay) {
+        try { this.relay.close(); } catch (_) {}
+        this.relay = null;
+      }
+    }
+
+    send(payload) {
+      if (!this.dataChannel || this.dataChannel.readyState !== 'open') return false;
+      const str = typeof payload === 'string' ? payload : JSON.stringify(payload);
+      this.dataChannel.send(str);
+      return true;
+    }
+
+    async _replaceLocalTrack(kind, track, stream) {
+      if (!this.pc) return;
+      const transceiver = this.pc.getTransceivers?.().find(tr =>
+        tr.receiver?.track?.kind === kind || tr.sender?.track?.kind === kind
+      );
+      if (transceiver?.sender) {
+        await transceiver.sender.replaceTrack(track);
+        return;
+      }
+
+      const sender = this.pc.getSenders?.().find(item => item.track?.kind === kind);
+      if (sender) {
+        await sender.replaceTrack(track);
+      } else if (track) {
+        this.pc.addTrack(track, stream);
+      }
+    }
+
+    async setLocalAudio(stream) {
+      const audioTrack = stream?.getAudioTracks()?.[0] || null;
+      await this._replaceLocalTrack('audio', audioTrack, stream);
+      this.localAudio = stream;
+    }
+
+    async setLocalScreen(stream) {
+      const videoTrack = stream?.getVideoTracks()?.[0] || null;
+      await this._replaceLocalTrack('video', videoTrack, stream);
+      this.localScreen = stream;
+      if (videoTrack) this.send({ type: 'xra-screen-start' });
+    }
+
+    async stopLocalScreen() {
+      this.localScreen = null;
+      try {
+        await this._replaceLocalTrack('video', null, null);
+      } finally {
+        this.send({ type: 'xra-screen-stop' });
+      }
+    }
+
+    disconnect() {
+      this.isClosed = true;
+      this._closeRelayConnection();
+      if (this.dataChannel) {
+        try { this.dataChannel.close(); } catch (_) {}
+        this.dataChannel = null;
+      }
+      if (this.pc) {
+        try { this.pc.close(); } catch (_) {}
+        this.pc = null;
+      }
+    }
+  }
+
+  // Export to window
+  window.SignalingCrypto = SignalingCrypto;
+  window.NostrSignalingAdapter = NostrSignalingAdapter;
+  window.NOSTR_RELAYS = NOSTR_RELAYS;
+})();

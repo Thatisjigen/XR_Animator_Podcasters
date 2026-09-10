@@ -102,6 +102,240 @@ main { min-height: 0; }
 .feature-line { margin-top: 28px; display: flex; flex-wrap: wrap; gap: 10px 18px; color: #c3cac5; font: 10px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .04em; text-transform: uppercase; }
 .feature-line span::first-letter { color: var(--green); }
 
+/* ============================================================
+   Engine Mode Switcher (PeerJS vs Nostr)
+   ============================================================ */
+.engine-switch-container {
+  margin-bottom: 6px;
+}
+
+.engine-switch {
+  display: flex;
+  background: rgba(16, 19, 17, .92);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 4px;
+  gap: 4px;
+}
+
+.engine-tab {
+  flex: 1 1 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+
+.engine-tab:hover:not(.active) {
+  background: rgba(255, 255, 255, .04);
+  color: var(--text);
+}
+
+.engine-tab.active {
+  background: rgba(40, 48, 43, .95);
+  border-color: rgba(90, 201, 141, .35);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .25);
+}
+
+.engine-tab.active .engine-icon {
+  filter: drop-shadow(0 0 6px rgba(90, 201, 141, .6));
+}
+
+.engine-tab small {
+  font-size: 10px;
+  font-weight: 400;
+  opacity: .75;
+}
+
+.engine-description {
+  margin: 8px 4px 0;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+/* ============================================================
+   Nostr Token Views (Sleek, Symmetrical & Scrollbar-free)
+   ============================================================ */
+.token-display-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 11px 14px;
+  background: rgba(16, 20, 18, 0.95);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color .15s ease, background-color .15s ease, box-shadow .15s ease;
+  box-sizing: border-box;
+}
+
+.token-display-box:hover {
+  background: rgba(22, 28, 24, 0.98);
+  border-color: rgba(90, 201, 141, 0.4);
+  box-shadow: 0 0 12px rgba(90, 201, 141, 0.1);
+}
+
+.token-display-box:active {
+  transform: translateY(1px);
+}
+
+.token-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.token-tag {
+  font: 9px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 700;
+  letter-spacing: .08em;
+  color: var(--green);
+  opacity: 0.85;
+}
+
+.token-mono {
+  font: 11px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: #c9f5db;
+  word-break: break-all;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.token-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 36px;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.token-actions .primary-button,
+.token-actions .secondary-button {
+  width: auto;
+  min-width: 0;
+  height: 36px;
+  margin: 0;
+  padding: 0 10px;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.token-actions .icon-only {
+  width: 36px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}
+
+.relay-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 4px 10px;
+  background: rgba(16, 19, 17, 0.7);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font: 10px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--muted);
+}
+
+.relay-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--green);
+  border-radius: 50%;
+  box-shadow: 0 0 6px rgba(90, 201, 141, 0.8);
+  display: inline-block;
+}
+
+/* Card 02 Nostr Connect Input */
+.token-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.token-input-field {
+  width: 100%;
+  height: 42px;
+  padding: 0 76px 0 12px;
+  font: 12px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--text);
+  background: #101311;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-sizing: border-box;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+
+.token-input-field:focus {
+  outline: none;
+  border-color: var(--green);
+  box-shadow: 0 0 0 1px var(--green);
+}
+
+.inline-paste-btn {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 28px;
+  padding: 0 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #c3cac5;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+
+.inline-paste-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+.inline-paste-btn:active {
+  transform: translateY(-50%) scale(0.97);
+}
+
+.nostr-connect-row {
+  grid-template-columns: minmax(0, 1fr) 96px;
+}
+
+.nostr-connect-row > .primary-button {
+  min-width: 0;
+  padding-inline: 12px;
+}
+
 .setup-grid { display: grid; gap: 12px; }
 .card {
   padding: 20px;
