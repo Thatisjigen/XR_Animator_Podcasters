@@ -83,15 +83,22 @@
 
             <!-- Nostr Token Identity -->
             <div id="nostr-identity-view" hidden>
-              <div class="token-container">
-                <textarea id="my-token-display" class="token-display" readonly rows="2" title="Token di invito Nostr (clicca per copiare)">generazione-token…</textarea>
+              <div id="copy-token-box" class="token-display-box" role="button" tabindex="0" title="Clicca per copiare il Token">
+                <div class="token-content">
+                  <span class="token-tag">TOKEN NOSTR</span>
+                  <span id="my-token-display" class="token-mono">generazione-token…</span>
+                </div>
+                <span class="copy-glyph" aria-hidden="true">⧉</span>
               </div>
               <div class="token-actions">
-                <button id="copy-token-btn" class="primary-button compact" type="button" disabled>⧉ Copia Token</button>
-                <button id="copy-nostr-invite-btn" class="secondary-button compact" type="button" disabled>Copia link</button>
-                <button id="regen-token-btn" class="quiet-button compact" type="button" title="Genera un nuovo token effimero">🔄 Rigenera</button>
+                <button id="copy-token-btn" class="primary-button" type="button" disabled>Copia Token</button>
+                <button id="copy-nostr-invite-btn" class="secondary-button" type="button" disabled>Copia link</button>
+                <button id="regen-token-btn" class="secondary-button icon-only" type="button" title="Genera un nuovo token effimero">🔄</button>
               </div>
-              <small id="nostr-relay-info" class="relay-badge">Relay: wss://nos.lol (Serverless)</small>
+              <div class="relay-pill">
+                <span class="relay-dot"></span>
+                <span id="nostr-relay-info">Relay: nos.lol · Serverless E2E</span>
+              </div>
             </div>
           </article>
 
@@ -115,13 +122,13 @@
 
             <!-- Nostr Connect -->
             <div id="nostr-connect-view" hidden>
-              <label for="nostr-token-input">Token di invito dell'altro partecipante</label>
-              <div class="nostr-connect-col">
-                <textarea id="nostr-token-input" class="token-input" rows="2" placeholder="Incolla qui il token xra1_..."></textarea>
-                <div class="nostr-connect-actions">
-                  <button id="paste-token-btn" class="secondary-button compact" type="button">📋 Incolla</button>
-                  <button id="connect-nostr-btn" class="primary-button compact" type="button" disabled>Connetti</button>
+              <label for="nostr-token-input">Token dell’altro partecipante</label>
+              <div class="connect-row">
+                <div class="token-input-wrap">
+                  <input id="nostr-token-input" type="text" class="token-input-field" autocomplete="off" spellcheck="false" placeholder="Incolla qui il token xra1_...">
+                  <button id="paste-token-btn" class="inline-paste-btn" type="button" title="Incolla dagli appunti">📋 Incolla</button>
                 </div>
+                <button id="connect-nostr-btn" class="primary-button" type="button" disabled>Connetti</button>
               </div>
             </div>
 

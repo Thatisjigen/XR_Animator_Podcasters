@@ -165,82 +165,161 @@ main { min-height: 0; }
 }
 
 /* ============================================================
-   Nostr Token Views
+   Nostr Token Views (Sleek, Symmetrical & Scrollbar-free)
    ============================================================ */
-.token-container {
+.token-display-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   width: 100%;
+  padding: 11px 14px;
+  background: rgba(16, 20, 18, 0.95);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color .15s ease, background-color .15s ease, box-shadow .15s ease;
+  box-sizing: border-box;
 }
 
-.token-display {
-  width: 100%;
-  min-height: 52px;
-  padding: 8px 11px;
-  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  color: #bbf3d3;
-  background: #101311;
-  border: 1px solid var(--border-strong);
-  border-radius: 9px;
-  resize: none;
+.token-display-box:hover {
+  background: rgba(22, 28, 24, 0.98);
+  border-color: rgba(90, 201, 141, 0.4);
+  box-shadow: 0 0 12px rgba(90, 201, 141, 0.1);
+}
+
+.token-display-box:active {
+  transform: translateY(1px);
+}
+
+.token-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.token-tag {
+  font: 9px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 700;
+  letter-spacing: .08em;
+  color: var(--green);
+  opacity: 0.85;
+}
+
+.token-mono {
+  font: 11px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: #c9f5db;
   word-break: break-all;
-  box-sizing: border-box;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .token-actions {
   display: flex;
   gap: 8px;
-  margin-top: 8px;
-}
-
-.token-actions .primary-button,
-.token-actions .secondary-button,
-.token-actions .quiet-button {
-  margin-top: 0;
-  height: 34px;
+  margin-top: 10px;
 }
 
 .token-actions .primary-button {
   flex: 1 1 auto;
 }
 
-.compact {
-  height: 36px;
-  padding: 0 12px !important;
-  font-size: 11px !important;
+.token-actions .secondary-button {
+  flex: 1 1 auto;
 }
 
-.relay-badge {
-  display: block;
-  margin-top: 9px;
+.token-actions .icon-only {
+  flex: 0 0 40px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}
+
+.relay-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 4px 10px;
+  background: rgba(16, 19, 17, 0.7);
+  border: 1px solid var(--border);
+  border-radius: 999px;
   font: 10px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color: var(--muted);
-  opacity: .85;
 }
 
-.nostr-connect-col {
-  display: grid;
-  gap: 8px;
+.relay-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--green);
+  border-radius: 50%;
+  box-shadow: 0 0 6px rgba(90, 201, 141, 0.8);
+  display: inline-block;
 }
 
-.token-input {
+/* Card 02 Nostr Connect Input */
+.token-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.token-input-field {
   width: 100%;
-  min-height: 52px;
-  padding: 8px 11px;
-  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  height: 42px;
+  padding: 0 88px 0 12px;
+  font: 12px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--text);
   background: #101311;
   border: 1px solid var(--border-strong);
   border-radius: 8px;
-  resize: none;
   box-sizing: border-box;
+  transition: border-color .15s ease, box-shadow .15s ease;
 }
 
-.nostr-connect-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
+.token-input-field:focus {
+  outline: none;
+  border-color: var(--green);
+  box-shadow: 0 0 0 1px var(--green);
 }
 
-.nostr-connect-actions .primary-button {
-  flex: 1 1 120px;
+.inline-paste-btn {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 30px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #c3cac5;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+
+.inline-paste-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+.inline-paste-btn:active {
+  transform: translateY(-50%) scale(0.97);
 }
 
 .setup-grid { display: grid; gap: 12px; }

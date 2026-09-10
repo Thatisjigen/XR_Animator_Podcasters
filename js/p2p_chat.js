@@ -22,6 +22,7 @@
     peerjsIdentityView: $('peerjs-identity-view'), nostrIdentityView: $('nostr-identity-view'),
     peerjsConnectView: $('peerjs-connect-view'), nostrConnectView: $('nostr-connect-view'),
     identitySubheading: $('identity-subheading'), connectSubheading: $('connect-subheading'),
+    copyTokenBox: $('copy-token-box'),
     myTokenDisplay: $('my-token-display'), copyTokenBtn: $('copy-token-btn'), copyNostrInviteBtn: $('copy-nostr-invite-btn'),
     regenTokenBtn: $('regen-token-btn'), nostrRelayInfo: $('nostr-relay-info'),
     nostrTokenInput: $('nostr-token-input'), pasteTokenBtn: $('paste-token-btn'), connectNostrBtn: $('connect-nostr-btn'),
@@ -1058,7 +1059,9 @@
       onError: (err) => {
         console.error('[Studio Link Nostr]', err);
         setNetworkState('error', 'Errore Nostr');
-        appendMessage('system', `Errore Nostr: ${err?.message || err}`);
+        setHint(`⚠️ ${err?.message || err}`, true);
+        appendMessage('system', `⚠️ Errore Nostr: ${err?.message || err}`);
+        if (ui.connectNostrBtn) ui.connectNostrBtn.disabled = !ui.nostrTokenInput.value.trim();
       }
     };
   }
@@ -1080,12 +1083,12 @@
     try {
       const token = await nostrAdapter.initHost();
       nostrToken = token;
-      if (ui.myTokenDisplay) ui.myTokenDisplay.value = token;
+      if (ui.myTokenDisplay) ui.myTokenDisplay.textContent = token;
       if (ui.copyTokenBtn) ui.copyTokenBtn.disabled = false;
       if (ui.copyNostrInviteBtn) ui.copyNostrInviteBtn.disabled = false;
       if (ui.nostrRelayInfo) {
         const relayDomain = (nostrAdapter.relayUrl || '').replace(/^wss?:\/\//, '');
-        ui.nostrRelayInfo.textContent = `Relay: ${relayDomain} (Serverless)`;
+        ui.nostrRelayInfo.textContent = `Relay: ${relayDomain} · Serverless E2E`;
       }
       setNetworkState('online', 'Pronto su Nostr (Token generato)');
       setHint('Condividi il tuo Token o incolla quello ricevuto.');
@@ -1121,7 +1124,7 @@
     } catch (err) {
       console.error('[Studio Link] connectWithNostrToken error', err);
       setNetworkState('error', 'Errore token Nostr');
-      setHint(`Token non valido o relay irraggiungibile: ${err.message}`, true);
+      setHint(`⚠️ Token non valido o relay irraggiungibile: ${err.message}`, true);
       if (ui.connectNostrBtn) ui.connectNostrBtn.disabled = false;
     }
   }
@@ -1239,8 +1242,14 @@
   ui.copyTokenBtn?.addEventListener('click', () => {
     if (nostrToken) copyText(nostrToken, 'Token Nostr copiato');
   });
-  ui.myTokenDisplay?.addEventListener('click', () => {
+  ui.copyTokenBox?.addEventListener('click', () => {
     if (nostrToken) copyText(nostrToken, 'Token Nostr copiato');
+  });
+  ui.copyTokenBox?.addEventListener('keydown', event => {
+    if ((event.key === 'Enter' || event.key === ' ') && nostrToken) {
+      event.preventDefault();
+      copyText(nostrToken, 'Token Nostr copiato');
+    }
   });
   ui.copyNostrInviteBtn?.addEventListener('click', () => {
     const inv = inviteUrl();

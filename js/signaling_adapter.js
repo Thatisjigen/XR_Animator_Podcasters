@@ -141,6 +141,55 @@
       this.localScreen = null;
       this.token = '';
       this.isClosed = false;
+      this._joinTimer = null;
+      this._offerTimer = null;
+      this._hostHeartbeat = null;
+      this._hasOffer = false;
+      this._hasAnswer = false;
+    }
+
+    _clearTimers() {
+      if (this._joinTimer) { clearInterval(this._joinTimer); this._joinTimer = null; }
+      if (this._offerTimer) { clearInterval(this._offerTimer); this._offerTimer = null; }
+      if (this._hostHeartbeat) { clearInterval(this._hostHeartbeat); this._hostHeartbeat = null; }
+    }
+
+    async _connectRelayWithFallback(chosenUrl) {
+      const Nostr = getNostrTools();
+      if (!Nostr) throw new Error('Libreria NostrTools non trovata.');
+      const candidates = chosenUrl
+        ? [chosenUrl, ...NOSTR_RELAYS.filter(r => r !== chosenUrl)]
+        : NOSTR_RELAYS;
+
+      let lastErr = null;
+      for (const url of candidates) {
+        try {
+          const domain = url.replace(/^wss?:\/\//, '');
+          this.callbacks.onStatus?.(`Connessione al relay Nostr (${domain})…`);
+          const relay = await Nostr.Relay.connect(url);
+          this.relayUrl = url;
+          return relay;
+        } catch (err) {
+          lastErr = err;
+          console.warn(`[NostrSignalingAdapter] Relay ${url} unreachable, fallback...`, err);
+        }
+      }
+      throw lastErr || new Error('Tutti i relay Nostr sono risultati irraggiungibili.');
+    }
+
+    _subscribeToRoom() {
+      if (!this.relay || !this.roomId) return;
+      if (this.sub) {
+        try { this.sub.close(); } catch (_) {}
+        this.sub = null;
+      }
+      // Note: No "since" parameter is used here to avoid any clock skew differences between peers.
+      // Ephemeral events (kind 20000) are never stored on relays anyway.
+      this.sub = this.relay.subscribe([
+        { kinds: [20000], '#d': [this.roomId] }
+      ], {
+        onevent: event => this._handleRelayEvent(event)
+      });
     }
 
     async initHost(relayChoice) {
@@ -149,7 +198,6 @@
         throw new Error('Libreria NostrTools non trovata.');
       }
       this.isHost = true;
-      this.relayUrl = relayChoice || NOSTR_RELAYS[0];
       this.roomId = 'xra-' + SignalingCrypto.bytesToBase64Url(SignalingCrypto.generateRandomBytes(9));
       
       const { raw, key } = await SignalingCrypto.generateAesKey();
@@ -158,6 +206,9 @@
 
       this.mySk = Nostr.generateSecretKey();
       this.myPk = Nostr.getPublicKey(this.mySk);
+
+      this.relay = await this._connectRelayWithFallback(relayChoice || NOSTR_RELAYS[0]);
+      this._subscribeToRoom();
 
       const desc = {
         v: 1,
@@ -168,15 +219,20 @@
       };
       this.token = SignalingCrypto.encodeToken(desc);
 
-      // Connect to relay and subscribe
-      this.callbacks.onStatus?.('Connessione al relay Nostr…');
-      this.relay = await Nostr.Relay.connect(this.relayUrl);
-
-      this.sub = this.relay.subscribe([
-        { kinds: [20000], '#d': [this.roomId], since: Math.floor(Date.now() / 1000) - 10 }
-      ], {
-        onevent: event => this._handleRelayEvent(event)
-      });
+      // Keepalive: periodically ensure the WebSocket connection to the relay is healthy while host waits
+      this._hostHeartbeat = setInterval(async () => {
+        if (this.isClosed || !this.isHost || (this.pc && this.pc.connectionState === 'connected')) {
+          clearInterval(this._hostHeartbeat);
+          return;
+        }
+        if (!this.relay || !this.relay.connected) {
+          console.warn('[NostrSignalingAdapter] Host relay connection dropped, reconnecting…');
+          try {
+            this.relay = await this._connectRelayWithFallback(this.relayUrl);
+            this._subscribeToRoom();
+          } catch (_) {}
+        }
+      }, 7000);
 
       this.callbacks.onStatus?.('Pronto su relay Nostr (in attesa del peer)');
       return this.token;
@@ -198,22 +254,39 @@
       this.mySk = Nostr.generateSecretKey();
       this.myPk = Nostr.getPublicKey(this.mySk);
 
-      this.callbacks.onStatus?.(`Connessione a ${this.relayUrl}…`);
-      this.relay = await Nostr.Relay.connect(this.relayUrl);
+      this.relay = await this._connectRelayWithFallback(this.relayUrl);
+      this._subscribeToRoom();
 
-      this.sub = this.relay.subscribe([
-        { kinds: [20000], '#d': [this.roomId], since: Math.floor(Date.now() / 1000) - 10 }
-      ], {
-        onevent: event => this._handleRelayEvent(event)
-      });
+      // Retry loop for join: re-send join announcement every 1.5s until host responds with offer or timeout
+      this._hasOffer = false;
+      let joinCount = 0;
+      const maxJoinAttempts = 15; // 15 attempts * 1.5s = 22.5s timeout
 
-      // Send join announcement to host
-      this.callbacks.onStatus?.('Invio richiesta di handshake WebRTC…');
-      await this._sendSignalingMessage({
-        type: 'join',
-        sender: this.myPk,
-        target: this.remotePk
-      });
+      const doJoin = async () => {
+        if (this._hasOffer || this.isClosed || (this.pc && this.pc.connectionState === 'connected')) {
+          if (this._joinTimer) clearInterval(this._joinTimer);
+          return;
+        }
+        joinCount++;
+        if (joinCount > maxJoinAttempts) {
+          if (this._joinTimer) clearInterval(this._joinTimer);
+          const timeoutErr = new Error("Nessuna risposta dal peer. Verifica che l'host abbia lo studio aperto in modalità Nostr e riprova.");
+          this.callbacks.onError?.(timeoutErr);
+          this.callbacks.onStatus?.('Connessione non riuscita (timeout host).');
+          return;
+        }
+
+        const domain = this.relayUrl.replace(/^wss?:\/\//, '');
+        this.callbacks.onStatus?.(`Invio richiesta di handshake WebRTC… (${joinCount}/${maxJoinAttempts})`);
+        await this._sendSignalingMessage({
+          type: 'join',
+          sender: this.myPk,
+          target: this.remotePk
+        });
+      };
+
+      await doJoin();
+      this._joinTimer = setInterval(doJoin, 1500);
     }
 
     async _sendSignalingMessage(payload) {
@@ -244,28 +317,57 @@
       }
 
       if (!msg || typeof msg !== 'object') return;
-
       if (msg.target && msg.target !== this.myPk) return; // Directed to another pubkey
 
       switch (msg.type) {
         case 'join':
           if (this.isHost) {
             this.remotePk = msg.sender || event.pubkey;
-            this.callbacks.onStatus?.('Peer rilevato su Nostr. Negoziazione WebRTC…');
-            await this._initiatePeerConnection();
+            if (this.pc && this.pc.localDescription) {
+              // Re-send existing offer in case previous offer packet was dropped
+              await this._sendSignalingMessage({
+                type: 'offer',
+                sdp: this.pc.localDescription.sdp,
+                sender: this.myPk,
+                target: this.remotePk
+              });
+            } else {
+              this.callbacks.onStatus?.('Peer rilevato su Nostr. Negoziazione WebRTC…');
+              await this._initiatePeerConnection();
+            }
           }
           break;
 
         case 'offer':
           if (!this.isHost) {
+            this._hasOffer = true;
+            if (this._joinTimer) {
+              clearInterval(this._joinTimer);
+              this._joinTimer = null;
+            }
             this.remotePk = msg.sender || event.pubkey;
-            this.callbacks.onStatus?.('Ricevuta offerta WebRTC. Invio risposta…');
-            await this._handleOffer(msg.sdp);
+            if (this.pc && this.pc.localDescription) {
+              // Re-send existing answer in case previous answer packet was dropped
+              await this._sendSignalingMessage({
+                type: 'answer',
+                sdp: this.pc.localDescription.sdp,
+                sender: this.myPk,
+                target: this.remotePk
+              });
+            } else {
+              this.callbacks.onStatus?.('Ricevuta offerta WebRTC. Invio risposta…');
+              await this._handleOffer(msg.sdp);
+            }
           }
           break;
 
         case 'answer':
           if (this.isHost && this.pc) {
+            this._hasAnswer = true;
+            if (this._offerTimer) {
+              clearInterval(this._offerTimer);
+              this._offerTimer = null;
+            }
             this.callbacks.onStatus?.('Ricevuta risposta WebRTC. Stabilizzazione canale…');
             await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: msg.sdp }));
             this._flushEarlyCandidates();
@@ -349,12 +451,22 @@
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      await this._sendSignalingMessage({
-        type: 'offer',
-        sdp: offer.sdp,
-        sender: this.myPk,
-        target: this.remotePk
-      });
+      const sendOffer = async () => {
+        if (this._hasAnswer || this.isClosed || (this.pc && this.pc.connectionState === 'connected')) {
+          if (this._offerTimer) clearInterval(this._offerTimer);
+          return;
+        }
+        await this._sendSignalingMessage({
+          type: 'offer',
+          sdp: offer.sdp,
+          sender: this.myPk,
+          target: this.remotePk
+        });
+      };
+
+      await sendOffer();
+      if (this._offerTimer) clearInterval(this._offerTimer);
+      this._offerTimer = setInterval(sendOffer, 2000);
     }
 
     async _handleOffer(sdp) {
@@ -408,6 +520,7 @@
     }
 
     _closeRelayConnection() {
+      this._clearTimers();
       if (this.sub) {
         try { this.sub.close(); } catch (_) {}
         this.sub = null;
