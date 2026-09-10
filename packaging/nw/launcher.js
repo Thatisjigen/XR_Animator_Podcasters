@@ -108,29 +108,84 @@ function configureChildWindows(win, port) {
       && target.pathname === '/p2p_chat.html';
     if (!isStudioLink) return;
 
+    const size = getWorkAreaSize();
     policy.setNewWindowManifest({
       id: 'xra-studio-link',
       title: 'Studio Link · XR Animator',
-      width: 980,
-      height: 760,
+      width: size.width,
+      height: size.height,
       min_width: 720,
-      min_height: 600,
+      min_height: 540,
       position: 'center',
       frame: true,
       resizable: true,
       focus: true
     });
     policy.forceNewWindow();
+    if (IS_NIRI) {
+      expandWindowOnNiri();
+    }
   });
+}
+
+function getWorkAreaSize() {
+  try {
+    if (nw.Screen) {
+      nw.Screen.Init();
+      const screens = nw.Screen.screens;
+      const primary = (screens && screens.length > 0) ? screens[0] : null;
+      if (primary && primary.work_area) {
+        return {
+          width: Math.max(1280, primary.work_area.width || 1920),
+          height: Math.max(720, primary.work_area.height || 1080)
+        };
+      }
+    }
+  } catch (_) {}
+  return { width: 1920, height: 1080 };
+}
+
+const IS_NIRI = Boolean(process.env.NIRI_SOCKET || process.env.XDG_CURRENT_DESKTOP === 'niri');
+
+function expandWindowOnNiri() {
+  if (!IS_NIRI) return;
+  let attempts = 0;
+  const timer = setInterval(() => {
+    attempts++;
+    if (attempts > 15) {
+      clearInterval(timer);
+      return;
+    }
+    childProcess.execFile('niri', ['msg', '-j', 'focused-window'], (err, stdout) => {
+      if (err || !stdout) return;
+      try {
+        const info = JSON.parse(stdout);
+        if (info.app_id === 'xr-animator-podcasters-bundled' || info.pid === process.pid) {
+          childProcess.execFile('niri', ['msg', 'action', 'set-column-width', '100%'], () => {});
+          clearInterval(timer);
+        }
+      } catch (_) {}
+    });
+  }, 150);
+}
+
+function restoreWindowOnNiri(savedWidth) {
+  if (!IS_NIRI) return;
+  const widthArg = (savedWidth && Number.isFinite(savedWidth) && savedWidth > 200)
+    ? String(Math.round(savedWidth))
+    : '100%';
+  childProcess.execFile('niri', ['msg', 'action', 'set-column-width', widthArg], () => {});
 }
 
 function openAnimator(port) {
   const url = `http://${HOST}:${port}/XR_Animator.html`;
+  const size = getWorkAreaSize();
+
   nw.Window.open(url, {
     id: 'xr-animator-main',
     title: 'XR Animator · Podcasters',
-    width: 1440,
-    height: 900,
+    width: size.width,
+    height: size.height,
     min_width: 800,
     min_height: 560,
     position: 'center',
@@ -140,7 +195,38 @@ function openAnimator(port) {
   }, win => {
     mainWindow = win;
     configureChildWindows(win, port);
+
+    let savedWidth = size.width;
+    let savedHeight = size.height;
+
+    win.on('resize', (w, h) => {
+      if (!win.isFullscreen && w && h) {
+        savedWidth = w;
+        savedHeight = h;
+      }
+    });
+
+    win.on('leave-fullscreen', () => {
+      setTimeout(() => {
+        try {
+          if (IS_NIRI) {
+            restoreWindowOnNiri(savedWidth);
+            if (savedWidth && savedHeight) {
+              win.resizeTo(savedWidth, savedHeight);
+            }
+          } else {
+            win.maximize();
+          }
+        } catch (_) {}
+      }, 50);
+    });
+
     win.show();
+    if (!IS_NIRI) {
+      try { win.maximize(); } catch (_) {}
+    } else {
+      expandWindowOnNiri();
+    }
     win.focus();
     win.on('closed', quit);
   });
