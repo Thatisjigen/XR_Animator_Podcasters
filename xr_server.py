@@ -1073,6 +1073,29 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json({"ok": True, "items": recovery_list()})
             return
 
+        if path == "/__xra_recording/active-status":
+            try:
+                with RECORDING_LOCK:
+                    active = len(RECORDING_SESSIONS) > 0
+                    if active:
+                        first_session = next(iter(RECORDING_SESSIONS.values()))
+                        started = first_session.get("started", time.time())
+                        elapsed_ms = int(max(0.0, time.time() - started) * 1000)
+                        p = str(first_session.get("final_path") or first_session.get("path") or "")
+                        folder = str(Path(p).parent) if p else str(RECORDINGS_DIR.resolve())
+                        self.send_json({
+                            "ok": True, "active": True, "elapsed_ms": elapsed_ms,
+                            "path": p, "output_dir": folder
+                        })
+                    else:
+                        self.send_json({
+                            "ok": True, "active": False, "elapsed_ms": 0, "path": "",
+                            "output_dir": str(RECORDINGS_DIR.resolve())
+                        })
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+
         super().do_GET()
 
     def read_json_body(self, max_bytes=4 * 1024 * 1024):
@@ -1261,6 +1284,51 @@ class Handler(SimpleHTTPRequestHandler):
                 info["path"] = Path(raw["path"]); info["final_path"] = Path(raw["final_path"])
                 final_path = convert_recording(info); delete_recording_manifest(session)
                 self.send_json({"ok": True, "path": str(final_path), "bytes": final_path.stat().st_size})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+
+        if path == "/__xra_recording/sync-marker":
+            try:
+                obj = self.read_json_body(128 * 1024)
+                rec_path_str = obj.get("recording_path") or ""
+                folder_str = obj.get("output_dir") or ""
+                content = str(obj.get("content") or "")
+                base_name = str(obj.get("base_name") or "")
+                folder = None
+
+                if rec_path_str:
+                    rp = Path(rec_path_str)
+                    if rp.parent and str(rp.parent) not in (".", "/"):
+                        folder = rp.parent
+                    if not base_name:
+                        base_name = rp.stem.lstrip(".")
+                if not folder and folder_str:
+                    folder = resolve_output_dir(folder_str)
+                if not folder:
+                    with RECORDING_LOCK:
+                        for s_info in RECORDING_SESSIONS.values():
+                            p = s_info.get("final_path") or s_info.get("path")
+                            if p:
+                                folder = Path(p).parent
+                                if not base_name:
+                                    base_name = Path(p).stem.lstrip(".")
+                                break
+                if not folder:
+                    folder = RECORDINGS_DIR.resolve()
+                folder.mkdir(parents=True, exist_ok=True)
+
+                marker_filename = f"{base_name}_sync_markers.txt" if base_name else "sync_markers.txt"
+                marker_file = folder / marker_filename
+                with marker_file.open("a", encoding="utf-8") as f:
+                    f.write(content)
+
+                self.send_json({
+                    "ok": True,
+                    "path": str(marker_file.resolve()),
+                    "filename": marker_filename,
+                    "folder": str(folder.resolve())
+                })
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, status=400)
             return
