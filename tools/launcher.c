@@ -29,17 +29,33 @@ int main(int argc, char *argv[]) {
     char user_data_arg[PATH_MAX + 32];
     snprintf(user_data_arg, sizeof(user_data_arg), "--user-data-dir=%s", profile_dir);
 
-    char **new_argv = malloc((argc + 2) * sizeof(char *));
+    /*
+     * Native Wayland lets Chromium hand getDisplayMedia() straight to the
+     * xdg-desktop-portal picker.  Running through XWayland instead produces a
+     * Chromium picker followed by the portal picker (and Wayland windows
+     * cannot be enumerated reliably by the first one).
+     */
+    const char *session_type = getenv("XDG_SESSION_TYPE");
+    const int use_wayland =
+        (session_type && strcmp(session_type, "wayland") == 0) ||
+        getenv("WAYLAND_DISPLAY") != NULL ||
+        getenv("NIRI_SOCKET") != NULL;
+
+    char **new_argv = malloc((argc + 3) * sizeof(char *));
     if (!new_argv) {
         perror("malloc");
         return 1;
     }
     new_argv[0] = browser_path;
     new_argv[1] = user_data_arg;
-    for (int i = 1; i < argc; i++) {
-        new_argv[i + 1] = argv[i];
+    int next_arg = 2;
+    if (use_wayland) {
+        new_argv[next_arg++] = "--ozone-platform=wayland";
     }
-    new_argv[argc + 1] = NULL;
+    for (int i = 1; i < argc; i++) {
+        new_argv[next_arg++] = argv[i];
+    }
+    new_argv[next_arg] = NULL;
 
     execv(browser_path, new_argv);
     perror("execv xra_browser");
