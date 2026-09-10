@@ -46,20 +46,53 @@
           </div>
         </div>
 
+        <div class="engine-switch-container">
+          <div class="engine-switch" role="tablist" aria-label="Modalità di connessione">
+            <button id="engine-peerjs-btn" class="engine-tab active" type="button" role="tab" aria-selected="true">
+              <span class="engine-icon">🌐</span>
+              <span class="engine-name">PeerJS <small>(ID Standard)</small></span>
+            </button>
+            <button id="engine-nostr-btn" class="engine-tab" type="button" role="tab" aria-selected="false">
+              <span class="engine-icon">⚡</span>
+              <span class="engine-name">Nostr <small>(Token Cifrato)</small></span>
+            </button>
+          </div>
+          <p id="engine-description" class="engine-description">
+            Connessione standard basata su ID corto. Usa il cloud PeerJS per l'handshake iniziale.
+          </p>
+        </div>
+
         <div class="setup-grid">
           <article class="card identity-card">
             <div class="card-heading">
               <span class="step">01</span>
               <div>
                 <h2>Il tuo studio</h2>
-                <p>Invia questo ID all’altro partecipante.</p>
+                <p id="identity-subheading">Invia questo ID all’altro partecipante.</p>
               </div>
             </div>
-            <button id="copy-id-btn" class="id-display" type="button" title="Copia ID">
-              <span id="my-id">generazione-id…</span>
-              <span class="copy-glyph" aria-hidden="true">⧉</span>
-            </button>
-            <button id="copy-invite-btn" class="secondary-button" type="button" disabled>Copia invito</button>
+
+            <!-- PeerJS Identity -->
+            <div id="peerjs-identity-view">
+              <button id="copy-id-btn" class="id-display" type="button" title="Copia ID">
+                <span id="my-id">generazione-id…</span>
+                <span class="copy-glyph" aria-hidden="true">⧉</span>
+              </button>
+              <button id="copy-invite-btn" class="secondary-button" type="button" disabled>Copia invito</button>
+            </div>
+
+            <!-- Nostr Token Identity -->
+            <div id="nostr-identity-view" hidden>
+              <div class="token-container">
+                <textarea id="my-token-display" class="token-display" readonly rows="2" title="Token di invito Nostr (clicca per copiare)">generazione-token…</textarea>
+              </div>
+              <div class="token-actions">
+                <button id="copy-token-btn" class="primary-button compact" type="button" disabled>⧉ Copia Token</button>
+                <button id="copy-nostr-invite-btn" class="secondary-button compact" type="button" disabled>Copia link</button>
+                <button id="regen-token-btn" class="quiet-button compact" type="button" title="Genera un nuovo token effimero">🔄 Rigenera</button>
+              </div>
+              <small id="nostr-relay-info" class="relay-badge">Relay: wss://nos.lol (Serverless)</small>
+            </div>
           </article>
 
           <article class="card connect-card">
@@ -67,14 +100,31 @@
               <span class="step">02</span>
               <div>
                 <h2>Entra in studio</h2>
-                <p>Incolla l’ID ricevuto e collegati.</p>
+                <p id="connect-subheading">Incolla l’ID ricevuto e collegati.</p>
               </div>
             </div>
-            <label for="peer-id-input">ID dell’altro partecipante</label>
-            <div class="connect-row">
-              <input id="peer-id-input" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="peer-id">
-              <button id="connect-btn" class="primary-button" type="button" disabled>Connetti</button>
+
+            <!-- PeerJS Connect -->
+            <div id="peerjs-connect-view">
+              <label for="peer-id-input">ID dell’altro partecipante</label>
+              <div class="connect-row">
+                <input id="peer-id-input" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="peer-id">
+                <button id="connect-btn" class="primary-button" type="button" disabled>Connetti</button>
+              </div>
             </div>
+
+            <!-- Nostr Connect -->
+            <div id="nostr-connect-view" hidden>
+              <label for="nostr-token-input">Token di invito dell'altro partecipante</label>
+              <div class="nostr-connect-col">
+                <textarea id="nostr-token-input" class="token-input" rows="2" placeholder="Incolla qui il token xra1_..."></textarea>
+                <div class="nostr-connect-actions">
+                  <button id="paste-token-btn" class="secondary-button compact" type="button">📋 Incolla</button>
+                  <button id="connect-nostr-btn" class="primary-button compact" type="button" disabled>Connetti</button>
+                </div>
+              </div>
+            </div>
+
             <p id="connect-hint" class="hint">L’ID appare appena il collegamento alla rete è pronto.</p>
           </article>
 
@@ -194,12 +244,14 @@
 
     <footer>
       <span>WebRTC cifrato durante il trasporto</span>
-      <span>Il server PeerJS viene usato solo per trovare l’altro peer</span>
+      <span id="footer-engine-info">Il server PeerJS viene usato solo per trovare l’altro peer</span>
     </footer>
   </div>
 
   <audio id="remote-audio" autoplay playsinline hidden></audio>
   <script src="js/peerjs.min.js"></script>
+  <script src="js/nostr.bundle.min.js"></script>
+  <script src="js/signaling_adapter.js"></script>
   <script src="js/p2p_chat.js"></script>
 </body>
 </html>

@@ -102,6 +102,147 @@ main { min-height: 0; }
 .feature-line { margin-top: 28px; display: flex; flex-wrap: wrap; gap: 10px 18px; color: #c3cac5; font: 10px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .04em; text-transform: uppercase; }
 .feature-line span::first-letter { color: var(--green); }
 
+/* ============================================================
+   Engine Mode Switcher (PeerJS vs Nostr)
+   ============================================================ */
+.engine-switch-container {
+  margin-bottom: 6px;
+}
+
+.engine-switch {
+  display: flex;
+  background: rgba(16, 19, 17, .92);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 4px;
+  gap: 4px;
+}
+
+.engine-tab {
+  flex: 1 1 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+
+.engine-tab:hover:not(.active) {
+  background: rgba(255, 255, 255, .04);
+  color: var(--text);
+}
+
+.engine-tab.active {
+  background: rgba(40, 48, 43, .95);
+  border-color: rgba(90, 201, 141, .35);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .25);
+}
+
+.engine-tab.active .engine-icon {
+  filter: drop-shadow(0 0 6px rgba(90, 201, 141, .6));
+}
+
+.engine-tab small {
+  font-size: 10px;
+  font-weight: 400;
+  opacity: .75;
+}
+
+.engine-description {
+  margin: 8px 4px 0;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+/* ============================================================
+   Nostr Token Views
+   ============================================================ */
+.token-container {
+  width: 100%;
+}
+
+.token-display {
+  width: 100%;
+  min-height: 52px;
+  padding: 8px 11px;
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: #bbf3d3;
+  background: #101311;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  resize: none;
+  word-break: break-all;
+  box-sizing: border-box;
+}
+
+.token-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.token-actions .primary-button,
+.token-actions .secondary-button,
+.token-actions .quiet-button {
+  margin-top: 0;
+  height: 34px;
+}
+
+.token-actions .primary-button {
+  flex: 1 1 auto;
+}
+
+.compact {
+  height: 36px;
+  padding: 0 12px !important;
+  font-size: 11px !important;
+}
+
+.relay-badge {
+  display: block;
+  margin-top: 9px;
+  font: 10px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--muted);
+  opacity: .85;
+}
+
+.nostr-connect-col {
+  display: grid;
+  gap: 8px;
+}
+
+.token-input {
+  width: 100%;
+  min-height: 52px;
+  padding: 8px 11px;
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #101311;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  resize: none;
+  box-sizing: border-box;
+}
+
+.nostr-connect-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.nostr-connect-actions .primary-button {
+  flex: 1 1 120px;
+}
+
 .setup-grid { display: grid; gap: 12px; }
 .card {
   padding: 20px;
