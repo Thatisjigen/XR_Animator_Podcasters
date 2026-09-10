@@ -48,6 +48,7 @@
   let currentPath = '';
   let rawPath = '';
   let completedBytes = 0;
+  let activeRecordingBaseName = '';
   let freeBytes = null;
   let finalizing = false;
   let hud = null;
@@ -741,6 +742,7 @@
     state.id = data.session;
     state.path = data.path || '';
     state.writingPath = data.writing_path || '';
+    state.resolved_output_dir = data.resolved_output_dir || '';
     return data;
   }
 
@@ -977,6 +979,7 @@
   async function start() {
     if ((recorder && recorder.state !== 'inactive') || nativeModeActive) return false;
     stopRequested = false; rotating = false; finalizing = false; segmentIndex = 0; completedBytes = 0; freeBytes = null;
+    activeRecordingBaseName = expandedFilename();
     currentPath = ''; rawPath = ''; startTime = Date.now(); drawFrames = 0;
     await stopGateMonitor();
     await requestWakeLock();
@@ -1205,9 +1208,14 @@
     const mainBytes = Number(mainSession?.bytes || 0);
     const expectedFrames = cfg().mode === 'audio' ? 0 : Math.floor(elapsed / 1000 * Number(cfg().fps || 30));
     const droppedEstimate = captureStrategy === 'composite' && expectedFrames ? Math.max(0, expectedFrames - drawFrames) : 0;
+    const ext = String(cfg().output_format || 'webm').toLowerCase();
+    const resolvedPath = currentPath || mainSession?.path || (active && activeRecordingBaseName ? `${activeRecordingBaseName}.${ext}` : '');
+    const filename = resolvedPath ? resolvedPath.replace(/^.*[\\/]/, '') : (activeRecordingBaseName ? `${activeRecordingBaseName}.${ext}` : '');
     return {
       active, finalizing, state: nativeModeActive ? 'native-recording' : (recorder?.state || 'inactive'), elapsed_ms: elapsed,
-      bytes: completedBytes + mainBytes, path: currentPath || mainSession?.path || '', raw_path: rawPath || rawSession?.path || '',
+      bytes: completedBytes + mainBytes, path: resolvedPath, raw_path: rawPath || rawSession?.path || '',
+      base_name: activeRecordingBaseName, filename,
+      resolved_output_dir: mainSession?.resolved_output_dir || cfg().output_dir || '',
       segment: segmentIndex + 1, preset: cfg().preset || 'PODCAST', output_format: cfg().output_format || 'webm',
       free_bytes: freeBytes, gate_db: gateCurrentDb, gate_open: gateOpen, capture_strategy: captureStrategy,
       draw_frames: drawFrames, dropped_frames_estimate: droppedEstimate,
@@ -1219,6 +1227,23 @@
   events.on('recording-progress', updateHud);
   events.on('recording-start', updateHud);
   events.on('recording-stop', updateHud);
+
+  const syncChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('xra-recorder-sync') : null;
+  if (syncChannel) {
+    syncChannel.onmessage = event => {
+      if (event.data?.type === 'ping-recorder-status') {
+        const cur = status();
+        syncChannel.postMessage({
+          type: 'pong-recorder-status',
+          requestId: event.data.requestId,
+          status: {
+            ...cur,
+            resolved_output_dir: mainSession?.resolved_output_dir || cfg().output_dir || ''
+          }
+        });
+      }
+    };
+  }
 
   XRA.recorder = {
     PRESETS, start, stop, status, applyPreset, estimateBytes, estimateBytesPerHour,
