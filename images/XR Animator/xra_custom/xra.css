@@ -43,8 +43,8 @@
 }
 
 #XRA_CUSTOM_PANEL.xra-right-panel.panel-closed {
-  width: 200px;
-  right: 0;
+  width: 246px;
+  right: 10px;
   top: 10px;
 }
 
@@ -63,7 +63,7 @@
 }
 
 .panel-closed .xra-right-header {
-  width: 200px;
+  width: 100%;
   margin: 0 0 4px;
   padding-right: 0;
   gap: 4px;
@@ -91,9 +91,16 @@
   border-radius: 8px;
 }
 
+.panel-closed .xra-fullscreen-toggle {
+  flex: 0 0 32px;
+  width: 32px;
+  border-radius: 8px;
+}
+
 .xra-hands,
 .xra-hide,
-.xra-total-hide {
+.xra-total-hide,
+.xra-fullscreen-toggle {
   height: 36px;
   min-height: 36px;
   border: 0;
@@ -103,6 +110,25 @@
   cursor: pointer;
   box-shadow: 0 2px 5px rgba(0,0,0,.28);
   transition: background .15s ease, opacity .15s ease;
+}
+
+.xra-fullscreen-toggle {
+  background: rgba(36, 42, 38, .92);
+  flex: 0 0 36px;
+  width: 36px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+}
+.xra-fullscreen-toggle:hover {
+  background: rgba(50, 60, 54, .98);
+  color: var(--xra-mint);
+}
+
+#LbuttonTL {
+  display: none !important;
 }
 
 .xra-hands {
@@ -169,6 +195,15 @@
   background: var(--xra-bg-2);
   border-color: rgba(255,255,255,.25);
 }
+
+.panel-closed .xra-right-launcher {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  border-radius: 12px;
+  border-right: 1px solid var(--xra-panel-border);
+}
+
 
 .xra-right-body {
   max-height: min(82vh, 820px);

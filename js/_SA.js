@@ -252,22 +252,20 @@ if (is_SA_child_animation) {
   return
 }
 
-if (is_mobile && (is_SA_child_animation_host || self.MMD_SA)) {
-  LbuttonFullscreen.style.visibility = "hidden"
-  LbuttonRestore.style.visibility = "inherit"
-// Some browsers (e.g. Safari) does not return promise for requestFullscreen. Use await instead of then().
-  await document.documentElement.requestFullscreen()
-  DEBUG_show('Fullscreen:ON',2)
-  return
+if (typeof nw !== 'undefined' && nw?.Window?.get) {
+  try {
+    nw.Window.get().toggleFullscreen();
+    event.stopPropagation();
+    return;
+  } catch (_) {}
 }
 
-System.Gadget.Settings.writeString("CSSTransformFullscreen", "non_default")
-Settings.CSSTransformFullscreen = true
-SA_zoom = 1
-
-resize(null,null,null, true)
-
-event.stopPropagation()
+if (!document.fullscreenElement) {
+  await (document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen)?.call(document.documentElement).catch(() => {});
+} else {
+  await (document.exitFullscreen || document.webkitExitFullscreen)?.call(document).catch(() => {});
+}
+event.stopPropagation();
     }, true)
 
     LbuttonRestore.addEventListener("click", function (event) {

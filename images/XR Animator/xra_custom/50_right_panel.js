@@ -162,10 +162,12 @@
       return;
     }
 
+    const w = window.screen.availWidth || 1280;
+    const h = window.screen.availHeight || 800;
     studioWindow = window.open(
       '/p2p_chat.html',
       'xra-studio-link',
-      'popup=yes,width=980,height=760,resizable=yes,scrollbars=yes'
+      `width=${w},height=${h},left=0,top=0,resizable=yes,scrollbars=yes`
     );
     if (!studioWindow) {
       XRA.toast('Il browser ha bloccato la finestra della chat.', 'error', 4500);
@@ -1448,7 +1450,87 @@
     totalHide.title = "Nascondi completamente l'interfaccia (Premi Esc per ripristinare)";
     totalHide.onclick = () => UI.setTotalHidden(true);
 
-    header.append(hands, hide, totalHide);
+    const fs = button('⛶', 'xra-fullscreen-toggle');
+    fs.title = 'Schermo intero (F11)';
+    const updateFsIcon = () => {
+      const isFs = typeof nw !== 'undefined' && nw?.Window?.get
+        ? !!nw.Window.get().isFullscreen
+        : !!(document.fullscreenElement || document.webkitFullscreenElement);
+      fs.textContent = isFs ? '🗗' : '⛶';
+      fs.title = isFs ? 'Esci da schermo intero (F11)' : 'Schermo intero (F11)';
+    };
+    fs.onclick = () => {
+      if (typeof nw !== 'undefined' && nw?.Window?.get) {
+        try {
+          nw.Window.get().toggleFullscreen();
+          setTimeout(updateFsIcon, 100);
+          return;
+        } catch (_) {}
+      }
+      if (!document.fullscreenElement) {
+        (document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen)?.call(document.documentElement).catch(() => {});
+      } else {
+        (document.exitFullscreen || document.webkitExitFullscreen)?.call(document).catch(() => {});
+      }
+    };
+    document.addEventListener('fullscreenchange', updateFsIcon);
+    document.addEventListener('webkitfullscreenchange', updateFsIcon);
+    if (typeof nw !== 'undefined' && nw?.Window?.get) {
+      try {
+        const win = nw.Window.get();
+        const isNiri = Boolean(
+          (typeof process !== 'undefined' && (process?.env?.NIRI_SOCKET || process?.env?.XDG_CURRENT_DESKTOP === 'niri'))
+        );
+        let savedW = win.width || window.innerWidth || screen.availWidth || 1920;
+        let savedH = win.height || window.innerHeight || screen.availHeight || 1080;
+        win.on('resize', (w, h) => {
+          if (!win.isFullscreen && w && h) {
+            savedW = w;
+            savedH = h;
+          }
+        });
+        const restoreNiri = () => {
+          if (!isNiri) return;
+          try {
+            const cp = typeof require !== 'undefined' ? require('child_process') : null;
+            if (cp?.execFile) {
+              const widthArg = (savedW && Number.isFinite(savedW) && savedW > 200)
+                ? String(Math.round(savedW))
+                : '100%';
+              cp.execFile('niri', ['msg', 'action', 'set-column-width', widthArg], () => {});
+            }
+          } catch (_) {}
+          if (savedW && savedH) {
+            try { win.resizeTo(savedW, savedH); } catch (_) {}
+          }
+        };
+        win.on('enter-fullscreen', updateFsIcon);
+        win.on('restore', () => {
+          updateFsIcon();
+          if (isNiri) restoreNiri();
+        });
+        win.on('leave-fullscreen', () => {
+          updateFsIcon();
+          setTimeout(() => {
+            try {
+              if (isNiri) {
+                restoreNiri();
+              } else {
+                win.maximize();
+              }
+            } catch (_) {}
+          }, 50);
+        });
+      } catch (_) {}
+    }
+    window.addEventListener('keydown', e => {
+      if (e.key === 'F11') {
+        e.preventDefault();
+        fs.click();
+      }
+    });
+
+    header.append(hands, hide, totalHide, fs);
 
     let panelBodyOpen = false;
 
