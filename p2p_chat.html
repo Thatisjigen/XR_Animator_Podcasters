@@ -24,9 +24,12 @@
         </span>
       </div>
 
-      <div class="network-state" aria-live="polite">
-        <span id="status-dot" class="status-dot"></span>
-        <span id="status-text">Avvio rete…</span>
+      <div class="topbar-actions">
+        <button id="topbar-fullscreen-btn" class="quiet-button" type="button" title="Attiva/disattiva schermo intero (F11)">⛶ Schermo intero</button>
+        <div class="network-state" aria-live="polite">
+          <span id="status-dot" class="status-dot"></span>
+          <span id="status-text">Avvio rete…</span>
+        </div>
       </div>
     </header>
 
@@ -99,7 +102,35 @@
               <span class="eyebrow">SESSIONE ATTIVA</span>
               <strong id="session-peer">Peer</strong>
             </div>
-            <button id="disconnect-btn" class="quiet-button" type="button">Disconnetti</button>
+            <div class="session-bar-actions">
+              <button id="session-fullscreen-btn" class="quiet-button" type="button" title="Attiva/disattiva schermo intero (F11)">⛶ Schermo intero</button>
+              <button id="session-devices-toggle" class="quiet-button" type="button" title="Impostazioni microfono e uscita audio durante la chiamata">⚙️ Audio</button>
+              <button id="disconnect-btn" class="quiet-button" type="button">Disconnetti</button>
+            </div>
+          </div>
+
+          <div id="session-devices-panel" class="session-devices-popover" hidden>
+            <div class="devices-popover-head">
+              <div class="devices-popover-title">
+                <span class="devices-popover-icon" aria-hidden="true">🎙️</span>
+                <span>Dispositivi Audio</span>
+              </div>
+              <button id="session-devices-close" class="devices-popover-close" type="button" aria-label="Chiudi impostazioni audio">✕</button>
+            </div>
+            <div class="devices-popover-body">
+              <label class="devices-popover-field">
+                <span class="devices-field-label">Microfono</span>
+                <select id="session-audio-input-select"><option value="">Predefinito</option></select>
+              </label>
+              <label class="devices-popover-field">
+                <span class="devices-field-label">Uscita audio (cuffie / casse)</span>
+                <select id="session-audio-output-select"><option value="">Predefinita</option></select>
+              </label>
+            </div>
+            <div class="devices-popover-foot">
+              <button id="session-refresh-devices-btn" class="popover-refresh-btn" type="button">🔄 Aggiorna elenco</button>
+              <span class="devices-popover-live-badge"><span class="badge-dot"></span> In tempo reale</span>
+            </div>
           </div>
 
           <div class="video-stage">
@@ -113,17 +144,21 @@
           </div>
 
           <div class="call-controls" aria-label="Controlli chiamata">
-            <button id="call-btn" type="button">
-              <span aria-hidden="true">◉</span>
-              <span>Avvia voce</span>
+            <button id="mute-btn" class="mute-button" type="button" disabled title="Muta o riattiva il tuo microfono">
+              <span class="mute-icon" aria-hidden="true">🎤</span>
+              <span class="mute-text">Muta</span>
             </button>
             <button id="screenshare-btn" type="button">
               <span aria-hidden="true">▣</span>
               <span>Condividi schermo</span>
             </button>
-            <button id="hangup-btn" class="danger-button" type="button" disabled>
-              <span aria-hidden="true">■</span>
-              <span>Termina media</span>
+            <button id="stop-share-btn" class="warning-button" type="button" hidden title="Interrompi solo la condivisione dello schermo (la voce continua)">
+              <span aria-hidden="true">⏹️</span>
+              <span>Ferma schermo</span>
+            </button>
+            <button id="sync-marker-btn" class="sync-button" type="button" disabled title="Registra un marker di sincronizzazione (entrambi devono essere in registrazione)">
+              <span aria-hidden="true">⏱️</span>
+              <span>Sincronizza</span>
             </button>
           </div>
         </section>
@@ -134,7 +169,10 @@
               <span class="eyebrow">REGIA</span>
               <h2>Chat</h2>
             </div>
-            <span id="chat-state" class="chat-state">in attesa</span>
+            <div class="conversation-head-actions">
+              <button id="chat-sync-marker-btn" class="chat-sync-btn" type="button" disabled title="Sincronizza registrazioni">⏱️ Sync</button>
+              <span id="chat-state" class="chat-state">in attesa</span>
+            </div>
           </div>
 
           <div id="chat-box" class="chat-box" aria-live="polite">
