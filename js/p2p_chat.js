@@ -559,6 +559,10 @@
 
     nextConnection.on('data', payload => {
       if (connection !== nextConnection) return;
+      if (payload && typeof payload === 'object' && payload.type === 'xra-session-end') {
+        finishPeerSession('L’altro partecipante si è disconnesso');
+        return;
+      }
       if (payload && typeof payload === 'object' && typeof payload.type === 'string' && payload.type.startsWith('xra-sync-')) {
         handleSyncProtocolMessage(payload);
         return;
@@ -577,11 +581,7 @@
 
     nextConnection.on('close', () => {
       if (connection !== nextConnection) return;
-      connection = null;
-      setChatReady(false);
-      appendMessage('system', 'Il canale chat è stato chiuso');
-      setNetworkState(peer?.open ? 'online' : '', peer?.open ? 'Pronto a collegarsi' : 'Rete non disponibile');
-      if (!mediaCall) showSetup();
+      finishPeerSession('L’altro partecipante si è disconnesso');
     });
 
     nextConnection.on('error', error => {
@@ -604,6 +604,63 @@
     stream?.getTracks?.().forEach(track => {
       try { track.stop(); } catch (_) {}
     });
+  }
+
+  function clearSessionMedia() {
+    stopTracks(localAudio);
+    stopTracks(displayStream);
+    localAudio = null;
+    displayStream = null;
+    remoteStream = null;
+    remoteVideoStream = null;
+    isRemoteSharingScreen = false;
+    resetVideoStage(true);
+    updateShareButtonsUi();
+    updateMuteButtonUi();
+  }
+
+  function finishPeerSession(message, { notifyPeer = false } = {}) {
+    const oldConnection = connection;
+    const oldCall = mediaCall;
+
+    if (notifyPeer && oldConnection?.open) {
+      try { oldConnection.send({ type: 'xra-session-end' }); } catch (_) {}
+    }
+
+    connection = null;
+    mediaCall = null;
+    closingMedia = true;
+    try { oldCall?.close(); } catch (_) {}
+    try { oldConnection?.close(); } catch (_) {}
+    clearSessionMedia();
+    closingMedia = false;
+    ui.peerInput.value = '';
+    showSetup();
+    setNetworkState(peer?.open ? 'online' : '', peer?.open ? 'Pronto a collegarsi' : 'Rete non disponibile');
+    setHint('Incolla un ID per aprire una nuova sessione.');
+    if (message) appendMessage('system', message);
+  }
+
+  function finishNostrSession(message, { notifyPeer = false, restart = true } = {}) {
+    const oldAdapter = nostrAdapter;
+    if (notifyPeer) oldAdapter?.send({ type: 'xra-session-end' });
+
+    // Null this first: callbacks raised while closing the old transport must
+    // not tear down the fresh waiting room created just below.
+    nostrAdapter = null;
+    oldAdapter?.disconnect();
+    nostrToken = '';
+    if (ui.myTokenDisplay) ui.myTokenDisplay.textContent = 'generazione-token…';
+    if (ui.copyTokenBtn) ui.copyTokenBtn.disabled = true;
+    if (ui.copyNostrInviteBtn) ui.copyNostrInviteBtn.disabled = true;
+    ui.nostrTokenInput.value = '';
+    clearSessionMedia();
+    showSetup();
+    if (message) appendMessage('system', message);
+
+    if (restart && currentEngine === 'nostr') {
+      initNostrHost();
+    }
   }
 
   function resetVideoStage(clearAudio = false) {
@@ -707,7 +764,7 @@
     resetVideoStage(false);
 
     if (currentEngine === 'nostr') {
-      nostrAdapter?.stopLocalScreen();
+      await nostrAdapter?.stopLocalScreen();
       updateMuteButtonUi();
       appendMessage('system', message);
       return;
@@ -734,6 +791,17 @@
       : { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
   }
 
+  function screenShareConstraints() {
+    return {
+      video: {
+        frameRate: { ideal: 30, max: 30 },
+        displaySurface: 'window'
+      },
+      audio: false,
+      surfaceSwitching: 'include'
+    };
+  }
+
   async function getLocalAudio() {
     const live = localAudio?.getAudioTracks?.().some(track => track.readyState === 'live');
     if (!live) {
@@ -751,12 +819,12 @@
       try {
         if (mode === 'audio') {
           const audio = await getLocalAudio();
-          nostrAdapter?.setLocalAudio(audio);
+          await nostrAdapter?.setLocalAudio(audio);
           ui.muteBtn.disabled = false;
           updateMuteButtonUi();
         } else if (mode === 'screen') {
-          displayStream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: false });
-          nostrAdapter?.setLocalScreen(displayStream);
+          displayStream = await navigator.mediaDevices.getDisplayMedia(screenShareConstraints());
+          await nostrAdapter?.setLocalScreen(displayStream);
           showVideo(displayStream, true);
           updateShareButtonsUi();
           const screenTrack = displayStream.getVideoTracks()[0];
@@ -797,7 +865,7 @@
       const audio = await getLocalAudio();
       let outgoing = new MediaStream(audio.getAudioTracks());
       if (mode === 'screen') {
-        displayStream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: false });
+        displayStream = await navigator.mediaDevices.getDisplayMedia(screenShareConstraints());
         outgoing = new MediaStream([...audio.getAudioTracks(), ...displayStream.getVideoTracks()]);
         showVideo(displayStream, true);
         updateShareButtonsUi();
@@ -863,33 +931,11 @@
 
   function disconnectEverything() {
     if (currentEngine === 'nostr') {
-      if (displayStream) {
-        stopTracks(displayStream);
-        displayStream = null;
-      }
-      stopTracks(localAudio);
-      localAudio = null;
-      resetVideoStage(true);
-      updateShareButtonsUi();
-      updateMuteButtonUi();
-      if (nostrAdapter) {
-        nostrAdapter.disconnect();
-        nostrAdapter = null;
-      }
-      ui.nostrTokenInput.value = '';
-      showSetup();
-      initNostrHost(true);
+      finishNostrSession('Sessione Nostr terminata', { notifyPeer: true });
       return;
     }
 
-    endMedia('Sessione media chiusa');
-    const oldConnection = connection;
-    connection = null;
-    try { oldConnection?.close(); } catch (_) {}
-    ui.peerInput.value = '';
-    showSetup();
-    setNetworkState(peer?.open ? 'online' : '', peer?.open ? 'Pronto a collegarsi' : 'Rete non disponibile');
-    setHint('Incolla un ID per aprire una nuova sessione.');
+    finishPeerSession('Sessione terminata', { notifyPeer: true });
   }
 
   function sendMessage() {
@@ -933,7 +979,7 @@
         if (newTrack) {
           newTrack.enabled = !isMuted;
           if (currentEngine === 'nostr' && nostrAdapter) {
-            nostrAdapter.setLocalAudio(newAudio);
+            await nostrAdapter.setLocalAudio(newAudio);
           } else if (mediaCall?.peerConnection) {
             const senders = mediaCall.peerConnection.getSenders?.() || [];
             const audioSender = senders.find(s => s.track && s.track.kind === 'audio');
@@ -992,22 +1038,29 @@
     }
   }
 
-  function createNostrCallbacks() {
+  function createNostrCallbacks(isCurrent = () => true) {
     return {
       onStatus: (msg) => {
+        if (!isCurrent()) return;
         setNetworkState('connecting', msg);
         setHint(msg);
       },
       onOpen: (peerLabel) => {
+        if (!isCurrent()) return;
         showSession(peerLabel);
         setChatReady(true);
         setNetworkState('online', `Connesso via Nostr (${peerLabel})`);
         setHint('Connessione P2P decentralizzata stabilita.');
         appendMessage('system', `Canale P2P diretto aperto (via Nostr) con ${peerLabel}`);
         ui.chatInput.focus();
-        startMedia('audio');
+        void startMedia('audio');
       },
       onData: (payload) => {
+        if (!isCurrent()) return;
+        if (payload && typeof payload === 'object' && payload.type === 'xra-session-end') {
+          finishNostrSession('L’altro partecipante si è disconnesso');
+          return;
+        }
         if (payload && typeof payload === 'object' && typeof payload.type === 'string' && payload.type.startsWith('xra-sync-')) {
           handleSyncProtocolMessage(payload);
           return;
@@ -1032,6 +1085,7 @@
         appendMessage('theirs', text, sentAt ? new Date(sentAt) : new Date());
       },
       onRemoteAudio: (stream) => {
+        if (!isCurrent()) return;
         remoteStream = stream;
         const audioTracks = stream.getAudioTracks();
         if (audioTracks.length) {
@@ -1044,6 +1098,7 @@
         updateShareButtonsUi();
       },
       onRemoteVideo: (stream) => {
+        if (!isCurrent()) return;
         remoteVideoStream = stream;
         if (isRemoteSharingScreen) {
           showVideo(stream, false);
@@ -1051,12 +1106,11 @@
         updateShareButtonsUi();
       },
       onClose: () => {
-        setChatReady(false);
-        appendMessage('system', 'La sessione Nostr è stata chiusa');
-        setNetworkState('online', 'Pronto a collegarsi');
-        showSetup();
+        if (!isCurrent()) return;
+        finishNostrSession('L’altro partecipante si è disconnesso');
       },
       onError: (err) => {
+        if (!isCurrent()) return;
         console.error('[Studio Link Nostr]', err);
         setNetworkState('error', 'Errore Nostr');
         setHint(`⚠️ ${err?.message || err}`, true);
@@ -1069,8 +1123,9 @@
   async function initNostrHost(forceNew = false) {
     if (nostrAdapter && !forceNew) return;
     if (nostrAdapter) {
-      nostrAdapter.disconnect();
+      const oldAdapter = nostrAdapter;
       nostrAdapter = null;
+      oldAdapter.disconnect();
     }
     if (typeof window.NostrSignalingAdapter === 'undefined') {
       setNetworkState('error', 'Modulo Nostr non disponibile');
@@ -1078,21 +1133,29 @@
       return;
     }
     setNetworkState('connecting', 'Connessione al relay Nostr…');
-    nostrAdapter = new window.NostrSignalingAdapter(createNostrCallbacks());
+    let adapter = null;
+    adapter = new window.NostrSignalingAdapter(createNostrCallbacks(() => nostrAdapter === adapter));
+    nostrAdapter = adapter;
 
     try {
-      const token = await nostrAdapter.initHost();
+      const token = await adapter.initHost();
+      if (nostrAdapter !== adapter) {
+        adapter.disconnect();
+        return;
+      }
       nostrToken = token;
       if (ui.myTokenDisplay) ui.myTokenDisplay.textContent = token;
       if (ui.copyTokenBtn) ui.copyTokenBtn.disabled = false;
       if (ui.copyNostrInviteBtn) ui.copyNostrInviteBtn.disabled = false;
       if (ui.nostrRelayInfo) {
-        const relayDomain = (nostrAdapter.relayUrl || '').replace(/^wss?:\/\//, '');
-        ui.nostrRelayInfo.textContent = `Relay: ${relayDomain} · Serverless E2E`;
+        const relayDomain = (adapter.relayUrl || '').replace(/^wss?:\/\//, '');
+        const reserveCount = Math.max(0, (window.NOSTR_RELAYS?.length || 1) - 1);
+        ui.nostrRelayInfo.textContent = `${relayDomain} · +${reserveCount} riserve · E2E`;
       }
       setNetworkState('online', 'Pronto su Nostr (Token generato)');
       setHint('Condividi il tuo Token o incolla quello ricevuto.');
     } catch (err) {
+      if (nostrAdapter !== adapter) return;
       console.error('[Studio Link] initNostrHost error', err);
       setNetworkState('error', 'Errore relay Nostr');
       setHint(`Errore connessione Nostr: ${err.message}`, true);
@@ -1106,8 +1169,9 @@
       return;
     }
     if (nostrAdapter) {
-      nostrAdapter.disconnect();
+      const oldAdapter = nostrAdapter;
       nostrAdapter = null;
+      oldAdapter.disconnect();
     }
     if (typeof window.NostrSignalingAdapter === 'undefined') {
       setNetworkState('error', 'Modulo Nostr non disponibile');
@@ -1117,11 +1181,15 @@
     setHint('Connessione in corso via Nostr…');
     if (ui.connectNostrBtn) ui.connectNostrBtn.disabled = true;
 
-    nostrAdapter = new window.NostrSignalingAdapter(createNostrCallbacks());
+    let adapter = null;
+    adapter = new window.NostrSignalingAdapter(createNostrCallbacks(() => nostrAdapter === adapter));
+    nostrAdapter = adapter;
 
     try {
-      await nostrAdapter.connectWithToken(token);
+      await adapter.connectWithToken(token);
+      if (nostrAdapter !== adapter) adapter.disconnect();
     } catch (err) {
+      if (nostrAdapter !== adapter) return;
       console.error('[Studio Link] connectWithNostrToken error', err);
       setNetworkState('error', 'Errore token Nostr');
       setHint(`⚠️ Token non valido o relay irraggiungibile: ${err.message}`, true);

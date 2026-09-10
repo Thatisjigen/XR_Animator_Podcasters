@@ -97,7 +97,7 @@
               </div>
               <div class="relay-pill">
                 <span class="relay-dot"></span>
-                <span id="nostr-relay-info">Relay: nos.lol · Serverless E2E</span>
+                <span id="nostr-relay-info">nos.lol · +4 riserve · E2E</span>
               </div>
             </div>
           </article>
@@ -123,10 +123,10 @@
             <!-- Nostr Connect -->
             <div id="nostr-connect-view" hidden>
               <label for="nostr-token-input">Token dell’altro partecipante</label>
-              <div class="connect-row">
+              <div class="connect-row nostr-connect-row">
                 <div class="token-input-wrap">
                   <input id="nostr-token-input" type="text" class="token-input-field" autocomplete="off" spellcheck="false" placeholder="Incolla qui il token xra1_...">
-                  <button id="paste-token-btn" class="inline-paste-btn" type="button" title="Incolla dagli appunti">📋 Incolla</button>
+                  <button id="paste-token-btn" class="inline-paste-btn" type="button" title="Incolla dagli appunti" aria-label="Incolla dagli appunti"><span aria-hidden="true">📋</span><span class="paste-label">Incolla</span></button>
                 </div>
                 <button id="connect-nostr-btn" class="primary-button" type="button" disabled>Connetti</button>
               </div>

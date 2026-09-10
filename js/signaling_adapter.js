@@ -108,7 +108,7 @@
     'wss://relay.damus.io',
     'wss://relay.primal.net',
     'wss://nostr.mom',
-    'wss://relay.nostr.band'
+    'wss://relay.snort.social'
   ];
 
   const getNostrTools = () => {
@@ -144,22 +144,32 @@
       this._joinTimer = null;
       this._offerTimer = null;
       this._hostHeartbeat = null;
+      this._connectionLossTimer = null;
       this._hasOffer = false;
       this._hasAnswer = false;
+      this._didNotifyClose = false;
+      this._remoteStreams = { audio: null, video: null };
     }
 
     _clearTimers() {
       if (this._joinTimer) { clearInterval(this._joinTimer); this._joinTimer = null; }
       if (this._offerTimer) { clearInterval(this._offerTimer); this._offerTimer = null; }
       if (this._hostHeartbeat) { clearInterval(this._hostHeartbeat); this._hostHeartbeat = null; }
+      if (this._connectionLossTimer) { clearTimeout(this._connectionLossTimer); this._connectionLossTimer = null; }
     }
 
-    async _connectRelayWithFallback(chosenUrl) {
+    _notifyClose(reason) {
+      if (this.isClosed || this._didNotifyClose) return;
+      this._didNotifyClose = true;
+      this.callbacks.onClose?.(reason || 'closed');
+    }
+
+    async _connectRelayWithFallback(chosenUrl, allowFallback = true) {
       const Nostr = getNostrTools();
       if (!Nostr) throw new Error('Libreria NostrTools non trovata.');
-      const candidates = chosenUrl
+      const candidates = chosenUrl && allowFallback
         ? [chosenUrl, ...NOSTR_RELAYS.filter(r => r !== chosenUrl)]
-        : NOSTR_RELAYS;
+        : (chosenUrl ? [chosenUrl] : NOSTR_RELAYS);
 
       let lastErr = null;
       for (const url of candidates) {
@@ -208,6 +218,11 @@
       this.myPk = Nostr.getPublicKey(this.mySk);
 
       this.relay = await this._connectRelayWithFallback(relayChoice || NOSTR_RELAYS[0]);
+      if (this.isClosed) {
+        try { this.relay.close(); } catch (_) {}
+        this.relay = null;
+        throw new Error('Connessione Nostr annullata.');
+      }
       this._subscribeToRoom();
 
       const desc = {
@@ -228,7 +243,9 @@
         if (!this.relay || !this.relay.connected) {
           console.warn('[NostrSignalingAdapter] Host relay connection dropped, reconnecting…');
           try {
-            this.relay = await this._connectRelayWithFallback(this.relayUrl);
+            // The token names one exact relay. Switching relay after publishing
+            // the token would strand the guest in a different room.
+            this.relay = await this._connectRelayWithFallback(this.relayUrl, false);
             this._subscribeToRoom();
           } catch (_) {}
         }
@@ -254,7 +271,14 @@
       this.mySk = Nostr.generateSecretKey();
       this.myPk = Nostr.getPublicKey(this.mySk);
 
-      this.relay = await this._connectRelayWithFallback(this.relayUrl);
+      // Both peers must meet on the relay encoded in the token. The fallback
+      // list is used by the host before token creation, not by the guest after.
+      this.relay = await this._connectRelayWithFallback(this.relayUrl, false);
+      if (this.isClosed) {
+        try { this.relay.close(); } catch (_) {}
+        this.relay = null;
+        throw new Error('Connessione Nostr annullata.');
+      }
       this._subscribeToRoom();
 
       // Retry loop for join: re-send join announcement every 1.5s until host responds with offer or timeout
@@ -391,12 +415,27 @@
     _createPeerConnection() {
       const pc = new RTCPeerConnection({ iceServers: DEFAULT_STUN_SERVERS });
 
-      // Pre-add transceivers for audio and video to allow dynamic track replacement without renegotiation
+      // Reserve stable audio/video m-lines. A real local track is used when one
+      // already exists; otherwise replaceTrack() can fill the sender later.
       try {
-        pc.addTransceiver('audio', { direction: 'sendrecv' });
-        pc.addTransceiver('video', { direction: 'sendrecv' });
+        const audioTrack = this.localAudio?.getAudioTracks?.()[0] || null;
+        const videoTrack = this.localScreen?.getVideoTracks?.()[0] || null;
+        pc.addTransceiver(audioTrack || 'audio', {
+          direction: 'sendrecv',
+          streams: audioTrack ? [this.localAudio] : []
+        });
+        pc.addTransceiver(videoTrack || 'video', {
+          direction: 'sendrecv',
+          streams: videoTrack ? [this.localScreen] : []
+        });
       } catch (e) {
         console.warn('[NostrSignalingAdapter] addTransceiver fallback', e);
+        if (this.localAudio) {
+          this.localAudio.getAudioTracks().forEach(t => pc.addTrack(t, this.localAudio));
+        }
+        if (this.localScreen) {
+          this.localScreen.getVideoTracks().forEach(t => pc.addTrack(t, this.localScreen));
+        }
       }
 
       pc.onicecandidate = event => {
@@ -411,31 +450,52 @@
       };
 
       pc.ontrack = event => {
-        const stream = event.streams?.[0] || new MediaStream([event.track]);
-        if (event.track.kind === 'audio') {
-          this.callbacks.onRemoteAudio?.(stream);
-        } else if (event.track.kind === 'video') {
-          this.callbacks.onRemoteVideo?.(stream);
+        const kind = event.track.kind;
+        if (kind !== 'audio' && kind !== 'video') return;
+
+        // Transceivers created without a source often produce an empty
+        // event.streams array. Keep one stable stream per media kind so that a
+        // later replaceTrack() (notably NW.js -> Chrome screen sharing) becomes
+        // visible without waiting for another `track` event that never comes.
+        let stream = this._remoteStreams[kind];
+        if (!stream) {
+          stream = new MediaStream();
+          this._remoteStreams[kind] = stream;
         }
+        if (!stream.getTracks().some(track => track.id === event.track.id)) {
+          stream.addTrack(event.track);
+        }
+
+        const notifyTrackReady = () => {
+          if (kind === 'audio') this.callbacks.onRemoteAudio?.(stream);
+          else this.callbacks.onRemoteVideo?.(stream);
+        };
+        event.track.addEventListener?.('unmute', notifyTrackReady);
+        notifyTrackReady();
       };
 
       pc.onconnectionstatechange = () => {
         const state = pc.connectionState;
         if (state === 'connected') {
+          if (this._connectionLossTimer) {
+            clearTimeout(this._connectionLossTimer);
+            this._connectionLossTimer = null;
+          }
           this.callbacks.onStatus?.('Connesso P2P diretto');
           this._closeRelayConnection();
+        } else if (state === 'disconnected') {
+          // Brief ICE interruptions can recover. A real vanished peer should
+          // still return both UIs to setup instead of leaving a stale call.
+          if (!this._connectionLossTimer) {
+            this._connectionLossTimer = setTimeout(() => {
+              this._connectionLossTimer = null;
+              if (pc.connectionState === 'disconnected') this._notifyClose('disconnected');
+            }, 4000);
+          }
         } else if (state === 'failed' || state === 'closed') {
-          this.callbacks.onClose?.();
+          this._notifyClose(state);
         }
       };
-
-      // Attach any local tracks already configured
-      if (this.localAudio) {
-        this.localAudio.getAudioTracks().forEach(t => pc.addTrack(t, this.localAudio));
-      }
-      if (this.localScreen) {
-        this.localScreen.getVideoTracks().forEach(t => pc.addTrack(t, this.localScreen));
-      }
 
       this.pc = pc;
       return pc;
@@ -512,7 +572,7 @@
         this.callbacks.onData?.(data);
       };
       dc.onclose = () => {
-        this.callbacks.onClose?.();
+        this._notifyClose('data-channel-closed');
       };
       dc.onerror = err => {
         this.callbacks.onError?.(err);
@@ -538,55 +598,44 @@
       return true;
     }
 
-    setLocalAudio(stream) {
-      this.localAudio = stream;
+    async _replaceLocalTrack(kind, track, stream) {
       if (!this.pc) return;
+      const transceiver = this.pc.getTransceivers?.().find(tr =>
+        tr.receiver?.track?.kind === kind || tr.sender?.track?.kind === kind
+      );
+      if (transceiver?.sender) {
+        await transceiver.sender.replaceTrack(track);
+        return;
+      }
+
+      const sender = this.pc.getSenders?.().find(item => item.track?.kind === kind);
+      if (sender) {
+        await sender.replaceTrack(track);
+      } else if (track) {
+        this.pc.addTrack(track, stream);
+      }
+    }
+
+    async setLocalAudio(stream) {
       const audioTrack = stream?.getAudioTracks()?.[0] || null;
-      const t = this.pc.getTransceivers?.().find(tr => tr.receiver?.track?.kind === 'audio');
-      if (t?.sender) {
-        t.sender.replaceTrack(audioTrack);
-      } else {
-        const senders = this.pc.getSenders().filter(s => s.track && s.track.kind === 'audio');
-        if (senders.length > 0) {
-          senders[0].replaceTrack(audioTrack);
-        } else if (audioTrack) {
-          this.pc.addTrack(audioTrack, stream);
-        }
-      }
+      await this._replaceLocalTrack('audio', audioTrack, stream);
+      this.localAudio = stream;
     }
 
-    setLocalScreen(stream) {
-      this.localScreen = stream;
-      if (!this.pc) return;
+    async setLocalScreen(stream) {
       const videoTrack = stream?.getVideoTracks()?.[0] || null;
-      const t = this.pc.getTransceivers?.().find(tr => tr.receiver?.track?.kind === 'video');
-      if (t?.sender) {
-        t.sender.replaceTrack(videoTrack);
-      } else {
-        const senders = this.pc.getSenders().filter(s => s.track && s.track.kind === 'video');
-        if (senders.length > 0) {
-          senders[0].replaceTrack(videoTrack);
-        } else if (videoTrack) {
-          this.pc.addTrack(videoTrack, stream);
-        }
-      }
-      this.send({ type: 'xra-screen-start' });
+      await this._replaceLocalTrack('video', videoTrack, stream);
+      this.localScreen = stream;
+      if (videoTrack) this.send({ type: 'xra-screen-start' });
     }
 
-    stopLocalScreen() {
+    async stopLocalScreen() {
       this.localScreen = null;
-      if (this.pc) {
-        const t = this.pc.getTransceivers?.().find(tr => tr.receiver?.track?.kind === 'video');
-        if (t?.sender) {
-          t.sender.replaceTrack(null);
-        } else {
-          const senders = this.pc.getSenders().filter(s => s.track && s.track.kind === 'video');
-          senders.forEach(s => {
-            try { s.replaceTrack(null); } catch (_) {}
-          });
-        }
+      try {
+        await this._replaceLocalTrack('video', null, null);
+      } finally {
+        this.send({ type: 'xra-screen-stop' });
       }
-      this.send({ type: 'xra-screen-stop' });
     }
 
     disconnect() {
