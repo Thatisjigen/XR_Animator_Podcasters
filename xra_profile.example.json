@@ -116,7 +116,6 @@
     },
     "ui": {
       "visible": true,
-      "show_startup": true,
       "active_tab": "quick",
       "language": "auto",
       "preview_video": null,

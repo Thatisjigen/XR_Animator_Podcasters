@@ -4,6 +4,28 @@
   const TAG = '[XRA CORE]';
   const XRA = window.XRA = window.XRA || {};
 
+  // Global patch for video paused state: ensures internal accumulators in XR Animator (e.g. calibration)
+  // recognize the camera stream as active even when driven by the Python backend.
+  try {
+    Object.defineProperty(HTMLVideoElement.prototype, 'paused', {
+      configurable: true,
+      get() { return false; }
+    });
+  } catch (e) {}
+
+  if (!window.XRA_DETECTED_GPU) {
+    try {
+      const _c = document.createElement('canvas');
+      const _gl = _c.getContext('webgl2') || _c.getContext('webgl');
+      if (_gl) {
+        const _ext = _gl.getExtension('WEBGL_debug_renderer_info');
+        if (_ext) {
+          window.XRA_DETECTED_GPU = _gl.getParameter(_ext.UNMASKED_RENDERER_WEBGL);
+        }
+      }
+    } catch (_) {}
+  }
+
   const defaults = {
     camera: {
       optimized: true,
@@ -27,13 +49,27 @@
       preset: 'CUSTOM',
       master_preset: 'CUSTOM',
       tracking_pipeline: 'FULL_BODY',
+      tracker_backend: 'mediapipe-tasks-landmarker',
+      min_tracking_confidence: 0.50,
+      min_pose_confidence: 0.50,
+      min_face_confidence: 0.50,
+      min_joint_confidence: 0.25,
       disable_postfx: false,
+      render_fps: 60,
+      render_resolution: '1080p',
+      shadows: 'auto',
       pose_fps: 30,
       hand_fps: 20,
+      infer_mode: 'native',
       auto_last_result: null,
       runtime_adaptive: false,
-      diagnostics_hud: false
+      diagnostics_hud: false,
+      spring_bone: 'full',       // 'full' | 'half' (15 Hz) | 'off'
+      antialias: 'auto',         // 'auto' (MSAA hardware) | 'off'
+      gpu_preference: 'default', // 'default' | 'high-performance' (RTX) | 'low-power' (iGPU)
+      preserve_drawing_buffer: true
     },
+
     debug: {
       session_enabled: false,
       max_events: 12000
@@ -47,6 +83,10 @@
       hands_enabled: true,
       hand_recovery_mode: 'normal',
       hand_detection_sensitivity: 'high',
+      stabilize_hand_percent: 0,
+      stabilize_arm: 0,
+      stabilize_arm_time: 0,
+      constrain_tracking_region: false,
       native_smoothing: 0,
       body_bend_reduction: 0,
       motion_hysteresis_enabled: false,
@@ -67,7 +107,10 @@
       desk_max_roll_deg: 12,
       guard_release_ms: 450,
       freeze_head_on_face_loss: false,
-      freeze_recovery_ms: 350
+      freeze_recovery_ms: 350,
+      arm_steady_hold: false,
+      smart_arm_sync: true,
+      desk_wrist_guard: true
     },
     background: {
       mode: 'color',
@@ -90,7 +133,8 @@
     },
     left_settings: {},
     avatar: {
-      filename: ''
+      filename: '',
+      pose_key: ''
     },
     devices: {
       mic_device_id: '',
@@ -126,7 +170,6 @@
     },
     ui: {
       visible: true,
-      show_startup: true,
       active_tab: 'quick',
       language: 'auto',
       preview_video: null,
@@ -221,6 +264,13 @@
   // profile payload instead of carrying dead state through every save.
   delete config.view;
   delete config.performance.startup_mocap;
+  for (const key of ['body_fps', 'head_fps', 'dwpose_body_fps', 'mediapipe_head_fps', 'drishti_threads']) {
+    delete config.performance[key];
+  }
+  // The quick-start card is mandatory on every launch. Remove the retired
+  // preference from older profiles so no generic/legacy settings UI can bring
+  // back a "skip startup" switch.
+  if (config.ui) delete config.ui.show_startup;
   delete config.performance.e2_master;
   delete config.ui.show_legacy_toolbar;
   if (config.performance?.tracking_pipeline === 'HOLISTIC' || config.performance?.tracking_pipeline === 'SPLIT') {
@@ -239,6 +289,11 @@
   if (!config.recorder.capture_source || ['browser_visible','native_visible','native_xr'].includes(config.recorder.capture_source)) {
     config.recorder.capture_source = 'classic_v74';
   }
+  // Zero is the explicit "Unlimited / Monitor" value and must survive boot.
+  window.XRA_render_fps_limit = Number(config.performance?.render_fps ?? 60);
+  window.XRA_gpu_preference = String(config.performance?.gpu_preference || 'default');
+  window.XRA_preserve_drawing_buffer = config.performance?.preserve_drawing_buffer !== false;
+  window.XRA_antialias = config.performance?.antialias !== 'off';
   const events = new Emitter();
 
   XRA.defaults = defaults;
@@ -259,13 +314,23 @@
     return 'Full Body';
   }
 
-  // MediaPipe Vision full-body mocap engine is selected at startup for calibration,
-  // then restored to the user's saved pipeline after calibration completes.
+  // V7.81: the old "boot in MediaPipe Vision Full Body, calibrate, then restore
+  // the saved pipeline" workaround is retired. The native MediaPipe engine
+  // now provides a full 3D structure and standard landmark
+  // casing from the first frame, so there is no reason to force the WASM engine
+  // at startup. We boot straight into the configured engine/pipeline.
+  //
+  // `startupCalibration` stays as a thin compatibility shim: it is marked
+  // completed immediately so every legacy guard (assertStartupNativeOptions,
+  // prepareStartupMocap, finishStartupNativeOverride) becomes a no-op and never
+  // overrides the user's saved mocap_type again.
   const startupCalibration = XRA.startupCalibration ||= {
-    active: true,
-    completed: false,
+    active: false,
+    completed: true,
     native: 'Full Body'
   };
+  startupCalibration.active = false;
+  startupCalibration.completed = true;
 
   function cleanRetiredSettings() {
     config.left_settings ||= {};
@@ -296,11 +361,9 @@
     if (typeof config.ui?.preview_debug === 'boolean')
       nativeConfig.user_camera.ML_models.debug_hidden = !config.ui.preview_debug;
 
-    if (config.camera.optimized) {
-      nativeConfig.user_camera.pixel_limit.disabled = false;
-      nativeConfig.user_camera.pixel_limit.current = [config.camera.width, config.camera.height];
-      nativeConfig.user_camera.fps = { ideal: config.camera.fps };
-    }
+    nativeConfig.user_camera.pixel_limit.disabled = false;
+    nativeConfig.user_camera.pixel_limit.current = [Number(config.camera.width) || 640, Number(config.camera.height) || 360];
+    nativeConfig.user_camera.fps = { ideal: Number(config.camera.fps) || 30 };
 
     nativeConfig.user_camera.ML_models.pose.model_quality = config.pose_model;
 
@@ -541,28 +604,413 @@
   // Native settings can fire several write events in quick succession; debounce them.
   window.addEventListener('SA_writeSettings', () => requestSave(350));
 
+  function ensureVideoCanvas(cam) {
+    if (!cam || typeof cam !== 'object') return cam;
+    if (!cam.video_canvas || typeof cam.video_canvas.width !== 'number') {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 960;
+        canvas.height = 540;
+        const ctx = canvas.getContext?.('2d');
+        if (ctx) {
+          ctx.fillStyle = '#000000';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+        cam.video_canvas = canvas;
+        if (!cam.video_canvas_context) cam.video_canvas_context = ctx;
+      } catch (e) {
+        console.warn(TAG, 'ensureVideoCanvas failed', e);
+      }
+    }
+    return cam;
+  }
+  XRA.ensureVideoCanvas = ensureVideoCanvas;
+
+  function makeCamPropertySafe(obj, prop, fallbackVal) {
+    if (!obj || typeof obj !== 'object') return;
+    try {
+      const desc = Object.getOwnPropertyDescriptor(obj, prop);
+      if (desc && !desc.configurable) return;
+      if (!desc || (!desc.set && !desc.writable)) {
+        let customVal = fallbackVal;
+        const originalGet = desc?.get;
+        Object.defineProperty(obj, prop, {
+          configurable: true,
+          enumerable: true,
+          get() {
+            return customVal !== undefined ? customVal : (originalGet ? originalGet.call(this) : fallbackVal);
+          },
+          set(v) {
+            customVal = v;
+          }
+        });
+      }
+    } catch (_) {}
+  }
+
+  function installCameraGuard() {
+    try {
+      window.System = window.System || {};
+      const browser = window.System._browser = window.System._browser || {};
+      let cam = browser.camera || {};
+      ensureVideoCanvas(cam);
+      makeCamPropertySafe(cam, 'ML_enabled', false);
+      makeCamPropertySafe(cam, 'mocap_enabled', false);
+      makeCamPropertySafe(cam, 'running', false);
+
+      let currentCam = cam;
+      Object.defineProperty(browser, 'camera', {
+        configurable: true,
+        enumerable: true,
+        get() {
+          if (currentCam) {
+            ensureVideoCanvas(currentCam);
+            makeCamPropertySafe(currentCam, 'ML_enabled', false);
+            makeCamPropertySafe(currentCam, 'mocap_enabled', false);
+            makeCamPropertySafe(currentCam, 'running', false);
+          }
+          return currentCam;
+        },
+        set(val) {
+          currentCam = val;
+          if (currentCam) {
+            ensureVideoCanvas(currentCam);
+            makeCamPropertySafe(currentCam, 'ML_enabled', false);
+            makeCamPropertySafe(currentCam, 'mocap_enabled', false);
+            makeCamPropertySafe(currentCam, 'running', false);
+          }
+        }
+      });
+    } catch (e) {
+      console.warn(TAG, 'installCameraGuard failed', e);
+    }
+  }
+  installCameraGuard();
+
+  function calibratePoseScores(pn) {
+    if (!pn) return;
+    const adjust = (list) => {
+      if (!Array.isArray(list)) return;
+      for (const kp of list) {
+        if (!kp || typeof kp !== 'object') continue;
+        const s = kp.score ?? kp.visibility;
+        if (typeof s === 'number' && Number.isFinite(s)) {
+          if (s < 0.25) {
+            kp.score = 0.0;
+            kp.visibility = 0.0;
+          } else if (s < 0.85) {
+            const mapped = 0.55 + 0.45 * Math.min(1.0, (s - 0.25) / 0.70);
+            kp.score = mapped;
+            kp.visibility = mapped;
+          }
+        }
+      }
+    };
+    adjust(pn.keypoints);
+    adjust(pn._keypoints);
+    adjust(pn.landmarks);
+  }
+
+  function syncCameraCanvasesLayout(cam, cw, ch) {
+    if (!cam) return;
+    try {
+      const opts = window.MMD_SA_options?.user_camera;
+      if (!opts) return;
+      const display = opts.display || {};
+      const a = display.webcam_as_bg ? { scale: 1, top: 0 } : (display.video || {});
+      const winW = window.innerWidth || 1280;
+      const winH = window.innerHeight || 720;
+      let o_w, o_h;
+      if (!a.scale) {
+        o_w = winW;
+        o_h = winH;
+      } else {
+        const floatingScale = cam.display_floating
+          ? (display.floating_scale || (display.floating && 1) || 0.5)
+          : 1;
+        const e = a.scale * floatingScale;
+        o_w = ~~(winW * e);
+        o_h = ~~(winH * e);
+      }
+      const left_e = (winW - o_w) / 2;
+      const top_t = (winH - o_h) / 2;
+      const v_left = left_e * (1 + (a.left != null ? a.left : -1));
+      const v_top = top_t * (1 + (a.top != null ? a.top : 0));
+
+      if (cam.video_canvas) {
+        const vcStyle = cam.video_canvas.style;
+        const wStr = `${o_w}px`;
+        const hStr = `${o_h}px`;
+        const lStr = `${v_left}px`;
+        const tStr = `${v_top}px`;
+        if (vcStyle.width !== wStr || vcStyle.height !== hStr || vcStyle.left !== lStr || vcStyle.top !== tStr) {
+          vcStyle.width = wStr;
+          vcStyle.height = hStr;
+          vcStyle.left = lStr;
+          vcStyle.top = tStr;
+        }
+        vcStyle.pixelWidth = o_w;
+        vcStyle.pixelHeight = o_h;
+      }
+
+      if (cam.video_canvas_facemesh) {
+        const wf = display.wireframe || {};
+        const wf_scale = wf.align_with_video ? 1 : (wf.scale || (typeof is_mobile !== 'undefined' && is_mobile ? 0.25 : 1));
+        const wf_w = ~~(o_w * wf_scale);
+        const wf_h = ~~(o_h * wf_scale);
+        let wf_left, wf_top;
+        if (wf.align_with_video) {
+          wf_left = v_left;
+          wf_top = v_top;
+        } else {
+          const ew = (winW - wf_w) / 2;
+          const th = (winH - wf_h) / 2;
+          wf_left = ew * (1 + (wf.left != null ? wf.left : 1));
+          wf_top = th * (1 + (wf.top != null ? wf.top : -1));
+        }
+        const fmStyle = cam.video_canvas_facemesh.style;
+        const wStr = `${wf_w}px`;
+        const hStr = `${wf_h}px`;
+        const lStr = `${wf_left}px`;
+        const tStr = `${wf_top}px`;
+        if (fmStyle.width !== wStr || fmStyle.height !== hStr || fmStyle.left !== lStr || fmStyle.top !== tStr) {
+          fmStyle.width = wStr;
+          fmStyle.height = hStr;
+          fmStyle.left = lStr;
+          fmStyle.top = tStr;
+        }
+        fmStyle.pixelWidth = wf_w;
+        fmStyle.pixelHeight = wf_h;
+      }
+    } catch (e) {}
+  }
+
+  function installWorkerPoseGuard() {
+    try {
+      if (window.Worker && !window.Worker._xra_wrapped) {
+        const _origWorker = window.Worker;
+        const WorkerProxy = function(scriptURL, options) {
+          const w = new _origWorker(scriptURL, options);
+          try {
+            const urlStr = String(scriptURL || '');
+            w._xra_url = urlStr;
+            if (urlStr.includes('facemesh')) {
+              window._xra_facemesh_worker = w;
+            } else if (urlStr.includes('pose')) {
+              window._xra_pose_worker = w;
+            }
+          } catch (e) {}
+          return w;
+        };
+        WorkerProxy.prototype = _origWorker.prototype;
+        WorkerProxy._xra_wrapped = true;
+        window.Worker = WorkerProxy;
+      }
+
+      const origDesc = Object.getOwnPropertyDescriptor(Worker.prototype, 'onmessage');
+      if (!origDesc || !origDesc.set) return;
+      Object.defineProperty(Worker.prototype, 'onmessage', {
+        configurable: true,
+        enumerable: true,
+        get: origDesc.get,
+        set(fn) {
+          if (typeof fn !== 'function') return origDesc.set.call(this, fn);
+          const workerInstance = this;
+          if (workerInstance?._xra_url?.includes('facemesh')) {
+            window._xra_facemesh_handler = fn;
+          }
+          const wrapped = function(event) {
+            try {
+              let data = event?.data;
+              let parsed = null;
+              if (typeof data === 'string' && data.charCodeAt(0) === 123) {
+                if (data.includes('posenet') || data.includes('facemesh')) {
+                  parsed = JSON.parse(data);
+                }
+              } else if (data && typeof data === 'object') {
+                parsed = data;
+              }
+
+              if (parsed) {
+                const cam = window.System?._browser?.camera;
+                const cw = Number(parsed.capture_width) || Number(parsed.w) || 640;
+                const ch = Number(parsed.capture_height) || Number(parsed.h) || 360;
+                if (cam) {
+                  cam.target_width = cw;
+                  cam.target_height = ch;
+                  if (cam.video_canvas && (cam.video_canvas.width !== cw || cam.video_canvas.height !== ch)) {
+                    cam.video_canvas.width = cw;
+                    cam.video_canvas.height = ch;
+                  }
+                  if (cam.video) {
+                    if (cam.video.videoWidth !== cw || cam.video.videoHeight !== ch || cam.video.readyState < 2) {
+                      try {
+                        Object.defineProperty(cam.video, 'videoWidth', { configurable: true, get: () => cw });
+                        Object.defineProperty(cam.video, 'videoHeight', { configurable: true, get: () => ch });
+                        Object.defineProperty(cam.video, 'readyState', { configurable: true, get: () => 4 });
+                      } catch (e) {}
+                    }
+                  }
+                  syncCameraCanvasesLayout(cam, cw, ch);
+                }
+
+                if (parsed.facemesh) {
+                  const fm = cam?.facemesh;
+                  const faces = parsed.facemesh.faces || [];
+                  const vw = cam?.video_canvas?.width || cw;
+                  const vh = cam?.video_canvas?.height || ch;
+                  const fallbackBB = parsed.facemesh.bb || faces[0]?.bb || { x: 0, y: 0, w: vw, h: vh };
+                  if (faces[0]) {
+                    if (!faces[0].bb) faces[0].bb = fallbackBB;
+                    if (faces[0].faceInViewConfidence == null) faces[0].faceInViewConfidence = 0.95;
+                  }
+                  parsed.facemesh.bb = fallbackBB;
+
+                  // XR Animator's calibration integrates `_t` until it reaches
+                  // five seconds. On the WASM path `_t` was inference time;
+                  // with the native backend the JS adapter itself takes only
+                  // about 1 ms, which stretched calibration to nearly a minute.
+                  // Use the actual frame cadence while the external backend is
+                  // active, preserving the stock value for browser/WASM models.
+                  const externalBackendActive = !!window.XRA?.xraBackend?.active;
+                  let externalFps = 0;
+                  if (externalBackendActive) {
+                    try {
+                      const capture = window.XRA_BACKEND_CAMERA?.status?.()?.backend?.capture
+                        || window.XRA?.xraBackend?.snapshot?.()?.capture
+                        || {};
+                      externalFps = Number(
+                        capture.measured_fps || capture.effective_fps || capture.target_fps
+                      );
+                    } catch (e) {}
+                  }
+                  if (externalBackendActive) {
+                    // `facemesh.fps` from mocap_lib_module is processing
+                    // throughput, not camera cadence, so it is deliberately
+                    // not used as a fallback here.
+                    const faceFps = Math.max(5, Math.min(60, externalFps || 30));
+                    parsed.facemesh.fps = faceFps;
+                    parsed.facemesh._t = Math.max(1, Math.min(75, 1000 / faceFps));
+                  } else {
+                    parsed.facemesh._t = Number(parsed.facemesh._t || parsed._t || parsed.ms || 33);
+                  }
+
+                  if (fm) {
+                    fm.enabled = true;
+                    fm.data_detected = Math.max(fm.data_detected || 0, 10);
+                    fm.data_detected_timestamp = fm.data_detected_timestamp || performance.now();
+
+                    if (cam?.video && cam.video.paused) {
+                      try {
+                        Object.defineProperty(cam.video, 'paused', { configurable: true, get: () => false });
+                      } catch (e) {}
+                    }
+
+                    // The original pose-worker handler called below already
+                    // forwards parsed.facemesh to fm.worker_onmessage and emits
+                    // SA_camera_facemesh_update. Repeating either here doubles
+                    // facial rig/calibration work and startup notifications.
+
+                    // 2. Ensure wireframe canvas ALWAYS has face data for cyan mesh triangulation
+                    if (fm.wireframe?._data) {
+                      fm.wireframe._data.faces = faces;
+                      fm.wireframe._data.facemesh = faces;
+                      fm.wireframe._data.bb = fallbackBB;
+                    }
+                    const qe = window.System?._browser?.camera?.poseNet?.wireframe;
+                    if (qe?._data) {
+                      qe._data.faces = faces;
+                      qe._data.facemesh = faces;
+                      qe._data.bb = fallbackBB;
+                    }
+                  }
+                }
+
+                if (parsed.posenet) {
+                  const pn = parsed.posenet;
+                  pn._keypoints = pn._keypoints || pn.keypoints || [];
+                  pn._keypoints3D = pn._keypoints3D || pn.keypoints3D || [];
+                  calibratePoseScores(pn);
+                  if (typeof data === 'string') {
+                    Object.defineProperty(event, 'data', { configurable: true, value: parsed });
+                  }
+                }
+              }
+            } catch (_e) {}
+            return fn.call(this, event);
+          };
+          return origDesc.set.call(this, wrapped);
+        }
+      });
+    } catch (e) {
+      console.warn(TAG, 'installWorkerPoseGuard failed', e);
+    }
+  }
+
+  installWorkerPoseGuard();
+
+  function installDataFilterGuard() {
+    try {
+      const df = window.System?._browser?.data_filter;
+      if (!df || df._xra_guarded) return;
+      const origFilter = df.prototype.filter;
+      df.prototype.filter = function(t, o, i) {
+        if (t != null) {
+          const hasNaN = Array.isArray(t) ? t.some(e => Number.isNaN(e) || !Number.isFinite(e)) : (Number.isNaN(t) || !Number.isFinite(t));
+          if (hasNaN) {
+            return this.data !== undefined ? this.data : (Array.isArray(t) ? t.map(v => Number.isFinite(v) ? v : 0) : 0);
+          }
+        }
+        return origFilter.call(this, t, o, i);
+      };
+      df._xra_guarded = true;
+    } catch (e) {}
+  }
+
+  installDataFilterGuard();
+
   let nativeReadyPromise = null;
   XRA.whenNativeReady = function whenNativeReady(timeout = 15000) {
-    if (window.System?._browser?.camera && window.MMD_SA_options) return Promise.resolve(true);
+    const isReady = () => !!(
+      window.System?._browser?.camera?.streamer_mode?.init_mocap &&
+      window.MMD_SA_options
+    );
+    if (isReady()) return Promise.resolve(true);
     if (nativeReadyPromise) return nativeReadyPromise;
 
     nativeReadyPromise = new Promise(resolve => {
       const started = performance.now();
-      const onStart = () => finish(true);
       let timer = null;
 
       function finish(ok) {
-        window.removeEventListener('MMDStarted', onStart);
+        window.removeEventListener('MMDStarted', onMMDStarted);
         if (timer) clearInterval(timer);
         nativeReadyPromise = null;
         resolve(ok);
+      }
+
+      function onMMDStarted() {
+        ensureGlobals();
+        if (isReady()) finish(true);
       }
 
       function ensureGlobals() {
         try {
           window.System = window.System || {};
           window.System._browser = window.System._browser || {};
-          window.System._browser.camera = window.System._browser.camera || {};
+          const cam = window.System._browser.camera;
+          ensureVideoCanvas(cam);
+          installCameraGuard();
+          installDataFilterGuard();
+          if (cam) {
+            if (!cam.facemesh) cam.facemesh = { enabled: true };
+            cam.facemesh.update_frame = function() {};
+            if (!cam.poseNet) cam.poseNet = { enabled: true };
+            cam.poseNet.update_frame = function() {};
+          }
+          if (window.MMD_SA_options?.user_camera?.ML_models?.facemesh) {
+            window.MMD_SA_options.user_camera.ML_models.facemesh.worker_disabled = false;
+          }
           if (!window.System._browser.camera.bodyPix) window.System._browser.camera.bodyPix = { enabled: false };
           if (!window.System._browser.camera.face_detection) window.System._browser.camera.face_detection = { enabled: false };
           if (window.System._browser.video_capture && !window.System._browser.video_capture.FFmpeg) {
@@ -575,10 +1023,10 @@
         } catch (e) {}
       }
 
-      window.addEventListener('MMDStarted', () => { ensureGlobals(); onStart(); }, { once: true });
+      window.addEventListener('MMDStarted', onMMDStarted, { once: true });
       timer = setInterval(() => {
         ensureGlobals();
-        if (window.System?._browser?.camera && window.MMD_SA_options) finish(true);
+        if (isReady()) finish(true);
         else if (performance.now() - started > timeout) finish(false);
       }, 120);
     });
@@ -588,6 +1036,68 @@
 
   XRA.toast = function toast(message, type = 'info', ms = 2500) {
     events.emit('toast', { message: String(message), type, ms });
+  };
+
+  XRA.promptRestart = function promptRestart(reason) {
+    if (typeof document === 'undefined' || !document.body) return;
+    if (document.querySelector('.xra-restart-dialog-overlay')) return;
+    const overlay = document.createElement('div');
+    overlay.className = 'xra-overlay xra-restart-dialog-overlay';
+
+    const card = document.createElement('div');
+    card.className = 'xra-start-card';
+
+    const head = document.createElement('div');
+    head.className = 'xra-start-head';
+    const heading = document.createElement('div');
+    heading.innerHTML = '<h2>⚠️ Chiusura Applicazione Richiesta</h2>';
+    head.append(heading);
+
+    const desc = document.createElement('div');
+    desc.className = 'xra-sub';
+    desc.style.margin = '10px 0 18px';
+    desc.style.fontSize = '13px';
+    desc.style.lineHeight = '1.5';
+    desc.style.color = 'var(--xra-text)';
+    const msg = (reason ? reason + '\n\n' : '') +
+      'Per applicare le modifiche alla scheda video (GPU) o al rendering, chiudi l\'applicazione e riaprila.';
+    desc.innerText = msg;
+
+    const actions = document.createElement('div');
+    actions.className = 'xra-start-foot';
+    actions.style.justifyContent = 'flex-end';
+    actions.style.gap = '10px';
+    actions.style.marginTop = '14px';
+
+    const btnLater = document.createElement('button');
+    btnLater.type = 'button';
+    btnLater.className = 'xra-action';
+    btnLater.textContent = 'Chiudi dopo';
+    btnLater.onclick = () => overlay.remove();
+
+    const btnQuit = document.createElement('button');
+    btnQuit.type = 'button';
+    btnQuit.className = 'xra-action primary';
+    btnQuit.style.background = '#c0392b';
+    btnQuit.style.borderColor = '#e74c3c';
+    btnQuit.textContent = '❌ Chiudi applicazione';
+    btnQuit.onclick = async () => {
+      btnQuit.disabled = true;
+      btnQuit.textContent = 'Chiusura…';
+      overlay.remove();
+      if (typeof XRA.nativeBridge?.quitApp === 'function') {
+        await XRA.nativeBridge.quitApp();
+      } else {
+        const nwApp = typeof nw !== 'undefined' ? nw.App : (window.nw?.App);
+        if (nwApp?.quit) nwApp.quit();
+        else window.close();
+      }
+    };
+
+    actions.append(btnLater, btnQuit);
+    card.append(head, desc, actions);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
   };
 
   window.XRA_OPT = {

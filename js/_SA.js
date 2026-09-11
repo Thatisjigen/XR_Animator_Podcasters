@@ -2642,22 +2642,65 @@ var Animate_RAF = function (timestamp) {
     return
   }
 
+  // Render FPS limiter (controlled by XRA settings):
+  const xra_frame_rate = Number(window.XRA_render_fps_limit);
+  if (Number.isFinite(xra_frame_rate) && xra_frame_rate > 0) {
+    if (window._XRA_last_fps_limit !== xra_frame_rate) {
+      window._XRA_last_fps_limit = xra_frame_rate;
+      window._XRA_render_acc = 0;
+      window._XRA_last_raf_time = timestamp;
+    }
+    const target_interval = 1000 / xra_frame_rate;
+    if (window._XRA_last_raf_time == null) {
+      window._XRA_last_raf_time = timestamp;
+      window._XRA_render_acc = 0;
+    } else {
+      const delta = Math.max(0, Math.min(200, timestamp - window._XRA_last_raf_time));
+      window._XRA_last_raf_time = timestamp;
+      window._XRA_render_acc = (window._XRA_render_acc || 0) + delta;
+    }
+    // Half-frame threshold (target_interval * 0.75) absorbs display refresh jitter and avoids harmonic frame-dropping (e.g. 120 FPS on 144Hz)
+    if (window._XRA_render_acc < target_interval * 0.75) {
+      return;
+    }
+    // Consume one interval, clamping leftover accumulator to at most 1 interval to prevent catch-up bursts
+    window._XRA_render_acc = Math.min(window._XRA_render_acc - target_interval, target_interval);
+  } else {
+    window._XRA_render_acc = 0;
+    window._XRA_last_raf_time = timestamp;
+    window._XRA_last_fps_limit = xra_frame_rate;
+  }
+
+  // Counts frames that passed the render limiter. VRM spring-bone throttling
+  // uses this cadence, so skipped requestAnimationFrame callbacks cost nothing.
+  window.XRA_render_frame_count = (window.XRA_render_frame_count || 0) + 1;
+
   if (RAF_timestamp) {
     RAF_timestamp_delta = timestamp - RAF_timestamp + RAF_timestamp_delta_accumulated
 
-    let ms_per_frame = 1000 / (EV_sync_update.count_to_10fps_ * 10)
-    let time_diff = RAF_timestamp_delta - ms_per_frame
-    RAF_frame_time_delayed += time_diff
+    const legacy_frame_rate = EV_sync_update.count_to_10fps_ * 10
+    const xra_overrides_legacy_cap = Number.isFinite(xra_frame_rate)
 
-    if (RAF_frame_time_delayed < -ms_per_frame) {
+    if (!xra_overrides_legacy_cap) {
+      let ms_per_frame = 1000 / legacy_frame_rate
+      let time_diff = RAF_timestamp_delta - ms_per_frame
+      RAF_frame_time_delayed += time_diff
+
+      if (RAF_frame_time_delayed < -ms_per_frame) {
 // funny that -= or += makes no big difference as fps control (-= seems more logical though)
-      RAF_frame_time_delayed -= time_diff
+        RAF_frame_time_delayed -= time_diff
 //DEBUG_show(~~RAF_frame_time_delayed+'/'+ ~~time_diff,0,1)
 //console.log(++RAF_frame_drop)
-      return
+        return
+      }
+      else if (RAF_frame_time_delayed > ms_per_frame) {
+        RAF_frame_time_delayed = ms_per_frame
+      }
     }
-    else if (RAF_frame_time_delayed > ms_per_frame) {
-      RAF_frame_time_delayed = ms_per_frame
+    else {
+      // The explicit XRA limiter above (or the monitor for Unlimited) owns the
+      // cadence. Do not let stale debt from the legacy 60 FPS gate skip frames.
+      RAF_frame_time_delayed = 0
     }
   }
   RAF_timestamp = timestamp
@@ -2675,6 +2718,7 @@ var Animate_RAF = function (timestamp) {
 }
 
 function Animate() {
+  window.XRA_render_frame_tick?.(performance.now());
 //EV_sync_update.fps_count_func()
 //if (!is_SA_child_animation && EV_sync_update.fps_last) { console.log('FPS:' + EV_sync_update.fps_last); EV_sync_update.fps_last=0; }
   var active_child = []
