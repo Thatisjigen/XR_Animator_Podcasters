@@ -1,3 +1,4 @@
+// XRA_UNIVERSAL_RUNTIME_V9
 (() => {
   'use strict';
 
@@ -17,13 +18,17 @@
     MAX:      { cam: [1280,720, 60], pose: 'Best',   lip: [2048, 60], post: false, native: 'Full Body', rates: [60, 60] }
   };
 
-  // MediaPipe Vision Full Body mocap engine is selected at startup for native calibration,
-  // then restored to the user's saved pipeline after calibration completes.
+  // V7.81: the startup "MediaPipe Vision Full Body" calibration boost is
+  // retired (see 00_core.js). External backends ship full 3D landmarks + standard
+  // casing, so we boot straight into the configured engine. Keep the object as a
+  // thin shim marked completed so the legacy guards below are inert.
   const startupCalibration = XRA.startupCalibration ||= {
-    active: true,
-    completed: false,
+    active: false,
+    completed: true,
     native: 'Full Body'
   };
+  startupCalibration.active = false;
+  startupCalibration.completed = true;
 
   let postFXBaseline = null;
   let controlChannel = null;
@@ -136,7 +141,7 @@
     controlChannel?.postMessage({
       type: 'mocap_rates',
       pose_fps: effectivePoseFps(),
-      hand_fps: effectiveHandFps()
+      hand_fps: XRA.xraBackend?.snapshot?.()?.active === true ? effectivePoseFps() : effectiveHandFps()
     });
   }
 
@@ -149,46 +154,84 @@
   }
 
   function adaptiveStep(fps, longPct) {
-    if (!config.performance?.runtime_adaptive) {
-      if (runtimePoseFps != null || runtimeHandFps != null) resetAdaptiveRates();
-      return;
-    }
-    const basePose = Number(config.performance.pose_fps || 30);
-    const baseHand = Number(config.performance.hand_fps || 20);
-    runtimePoseFps ??= basePose;
-    runtimeHandFps ??= baseHand;
-    runtimePoseFps = Math.min(runtimePoseFps, basePose);
-    runtimeHandFps = Math.min(runtimeHandFps, baseHand);
-
-    monitorBaselineFps = Math.max(monitorBaselineFps * .995, fps);
-    const baseline = Math.max(24, monitorBaselineFps || fps);
-    const stressed = fps < baseline * .82 || longPct > 18;
-    const healthy = fps > baseline * .93 && longPct < 8;
-
-    if (stressed) {
-      stableWindows = 0;
-      if (runtimeHandFps > Math.max(8, baseHand - 10)) {
-        runtimeHandFps = Math.max(8, runtimeHandFps - 5);
-        adaptiveState = `hands ${runtimeHandFps} Hz`;
+      if (!config.performance?.runtime_adaptive) {
+        if (runtimePoseFps != null || runtimeHandFps != null) resetAdaptiveRates();
+        return;
       }
-      else if (runtimePoseFps > Math.max(15, basePose - 10)) {
-        runtimePoseFps = Math.max(15, runtimePoseFps - 5);
-        adaptiveState = `pose ${runtimePoseFps} Hz`;
+
+      const basePose = Math.max(5, Number(config.performance.pose_fps || 30));
+      const baseHand = Math.max(5, Number(config.performance.hand_fps || 20));
+      const backend = XRA.xraBackend?.snapshot?.() || {};
+      const external = backend.active === true;
+      const inferMs = Number(backend.capture?.last_infer_ms || 0);
+
+      runtimePoseFps ??= basePose;
+      runtimeHandFps ??= baseHand;
+      runtimePoseFps = Math.min(runtimePoseFps, basePose);
+      runtimeHandFps = Math.min(runtimeHandFps, baseHand);
+
+      if (external && Number.isFinite(inferMs) && inferMs > 0) {
+        // 25% headroom: inference should not own the whole frame budget.
+        let safePose = Math.floor(1000 / Math.max(1, inferMs * 1.25));
+        safePose = Math.max(5, Math.min(basePose, safePose));
+        if (fps < Math.max(20, monitorBaselineFps * .80) || longPct > 18) {
+          safePose = Math.max(5, safePose - 2);
+        }
+
+        const previous = runtimePoseFps;
+        if (safePose <= runtimePoseFps - 2) {
+          runtimePoseFps = safePose;
+          stableWindows = 0;
+        }
+        else if (safePose > runtimePoseFps) {
+          stableWindows++;
+          if (stableWindows >= 2) {
+            runtimePoseFps = Math.min(safePose, runtimePoseFps + 2);
+            stableWindows = 0;
+          }
+        }
+        else {
+          stableWindows = Math.min(2, stableWindows + 1);
+        }
+
+        // External wholebody models produce hands in the same inference pass.
+        runtimeHandFps = runtimePoseFps;
+        adaptiveState = runtimePoseFps === basePose
+          ? 'backend base'
+          : `backend ${runtimePoseFps} Hz (${inferMs.toFixed(0)} ms)`;
+        if (previous !== runtimePoseFps) sendInferenceRates();
+        return;
       }
-      sendInferenceRates();
-    }
-    else if (healthy) {
-      stableWindows++;
-      if (stableWindows >= 2) {
+
+      // Browser/native fallback keeps the existing render-pressure behaviour.
+      monitorBaselineFps = Math.max(monitorBaselineFps * .995, fps);
+      const baseline = Math.max(24, monitorBaselineFps || fps);
+      const stressed = fps < baseline * .82 || longPct > 18;
+      const healthy = fps > baseline * .93 && longPct < 8;
+      if (stressed) {
         stableWindows = 0;
-        const oldPose = runtimePoseFps, oldHand = runtimeHandFps;
-        if (runtimePoseFps < basePose) runtimePoseFps = Math.min(basePose, runtimePoseFps + 5);
-        else if (runtimeHandFps < baseHand) runtimeHandFps = Math.min(baseHand, runtimeHandFps + 5);
-        adaptiveState = runtimePoseFps === basePose && runtimeHandFps === baseHand ? 'base' : 'recovering';
-        if (oldPose !== runtimePoseFps || oldHand !== runtimeHandFps) sendInferenceRates();
+        if (runtimeHandFps > Math.max(8, baseHand - 10)) {
+          runtimeHandFps = Math.max(8, runtimeHandFps - 5);
+          adaptiveState = `hands ${runtimeHandFps} Hz`;
+        }
+        else if (runtimePoseFps > Math.max(10, basePose - 15)) {
+          runtimePoseFps = Math.max(10, runtimePoseFps - 5);
+          adaptiveState = `pose ${runtimePoseFps} Hz`;
+        }
+        sendInferenceRates();
+      }
+      else if (healthy) {
+        stableWindows++;
+        if (stableWindows >= 2) {
+          stableWindows = 0;
+          const oldPose = runtimePoseFps, oldHand = runtimeHandFps;
+          if (runtimePoseFps < basePose) runtimePoseFps = Math.min(basePose, runtimePoseFps + 5);
+          else if (runtimeHandFps < baseHand) runtimeHandFps = Math.min(baseHand, runtimeHandFps + 5);
+          adaptiveState = runtimePoseFps === basePose && runtimeHandFps === baseHand ? 'base' : 'recovering';
+          if (oldPose !== runtimePoseFps || oldHand !== runtimeHandFps) sendInferenceRates();
+        }
       }
     }
-  }
 
   function ensureDiagnosticsHud() {
     if (diagnosticsHud?.isConnected) return diagnosticsHud;
@@ -297,6 +340,39 @@
       MMD_SA_options.user_camera.streamer_mode.mocap_type = type;
     }
     return type;
+  }
+
+  // V7.81: pre-allocate the body/pose solver structures at boot regardless of
+  // the initially selected mode. Historically, booting directly into "Face"
+  // only enabled the facemesh path, leaving the pose worker, IK state and
+  // landmark buffers unallocated; switching to Full Body at runtime then failed
+  // to track the body because the one-time allocation had been skipped.
+  //
+  // We therefore run init_mocap('Full Body') exactly once (which allocates the
+  // poseNet solver + IK + landmark filters), then immediately re-apply the
+  // configured mode. This is a no-op if the configured mode IS Full Body.
+  let trackingStructuresPreallocated = false;
+  function preallocateTrackingStructures() {
+    if (trackingStructuresPreallocated) return false;
+    const camera = window.System?._browser?.camera;
+    const sm = camera?.streamer_mode;
+    if (!camera?.initialized || !sm?.init_mocap) return false;
+
+    const target = config.performance?.tracking_pipeline === 'FACE' ? 'Face' : 'Full Body';
+    try {
+      // Allocate ALL body/pose structures + IK state + landmark buffers.
+      initNative('Full Body');
+      // Restore the user's configured mode (no-op when it is Full Body).
+      if (target !== 'Full Body') initNative(target);
+      trackingStructuresPreallocated = true;
+      events.emit('tracking-structures-ready', { target });
+      XRA.debug?.record?.('startup.tracking-structures-preallocated', { target });
+      return true;
+    }
+    catch (e) {
+      console.warn(TAG, 'tracking structure pre-allocation failed', e);
+      return false;
+    }
   }
 
   function pipelineNameFromNative(native) {
@@ -700,6 +776,9 @@
     if (native === 'Full Body Holistic' || native === 'Face+Body') native = 'Full Body';
     const allowed = new Set(['Face', 'Full Body']);
     if (!allowed.has(native)) throw new Error('Unsupported mocap mode: ' + native);
+    // Ensure body/pose solvers exist even if the app booted into Face only,
+    // so a runtime switch to Full Body can track the body immediately.
+    preallocateTrackingStructures();
     initNative(native);
     config.performance.tracking_pipeline = pipelineNameFromNative(native);
     await util.sleep(900);
@@ -710,6 +789,7 @@
 
   async function setPipeline(name) {
     const native = nativeFromPipeline(name);
+    preallocateTrackingStructures();
     initNative(native);
     config.performance.tracking_pipeline = pipelineNameFromNative(native);
     await util.sleep(900);
@@ -739,6 +819,7 @@
     prepareStartupMocap,
     installStartupMocapStartGuard,
     installNeckCalibrationBridge,
+    preallocateTrackingStructures,
     applyPresetSafe,
     applyMasterPreset,
     benchmarkHardwareOnly,
@@ -797,22 +878,26 @@
     apply();
     ensureRuntimeMonitor();
     installNeckCalibrationBridge();
+    preallocateTrackingStructures();
     watchForStartupCamera();
   });
 
   events.on('camera-started', () => {
     installNeckCalibrationBridge();
+    preallocateTrackingStructures();
     selectStartupMocap();
   });
 
   window.addEventListener('MMDStarted', () => {
     installNeckCalibrationBridge();
+    preallocateTrackingStructures();
     setTimeout(() => apply(), 500);
     setTimeout(sendInferenceRates, 1200);
     watchForStartupCamera();
   });
 
   installNeckCalibrationBridge();
+  preallocateTrackingStructures();
   watchForStartupCamera();
   setTimeout(sendInferenceRates, 1500);
   setTimeout(ensureRuntimeMonitor, 1700);

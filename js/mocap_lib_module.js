@@ -1,3 +1,7 @@
+// XRA_UNIVERSAL_RUNTIME_V9
+// XRA_FRONTEND_STABILITY_V6
+// XRA_CAMERA_OWNERSHIP_V4
+// XRA_BACKEND_CAMERA_V3
 // 2025-05-24
 
 const is_worker = (typeof window !== "object");
@@ -94,6 +98,29 @@ function path_adjusted(url) {
   return url
 }
 
+// Companion to XRA_ONNX_pose: the backend pose bypasses pose_adjust(), which is
+// the ONLY place shoulder_width is normally computed. hands_adjust() derives its
+// palm-distance acceptance radius from shoulder_width, so without an explicit
+// value here that radius becomes NaN (first frame) or a stale MediaPipe number
+// (later frames) and EVERY detected hand is silently filtered out before the
+// pose is posted to the renderer -> no hand wireframe anywhere downstream.
+// Measure it from the BlazePose-33 shoulder keypoints (indices 11/12) exactly
+// like pose_adjust() does, keeping the rig/hand scale self-consistent.
+function XRA_pose_shoulder_width(pose) {
+  const pointAt = (i) => {
+    const kp = pose?.keypoints?.[i];
+    if (!kp) return null;
+    const p = kp.position || kp;
+    const x = Number(p.x), y = Number(p.y), z = Number(p.z) || 0;
+    return Number.isFinite(x) && Number.isFinite(y) ? { x, y, z } : null;
+  };
+  const l = pointAt(11), r = pointAt(12);
+  if (!l || !r) return 0;
+  const dx = l.x - r.x, dy = l.y - r.y, dz = (l.z - r.z) / 3;
+  const d = Math.sqrt(dx*dx + dy*dy + dz*dz);
+  return Number.isFinite(d) && d > 0 ? d : 0;
+}
+
 function XRA_pose_model_asset_path(quality) {
   const tier = quality === 'Best' ? 'heavy' : quality === 'Lite' ? 'lite' : 'full';
   return path_adjusted(`@mediapipe/tasks/pose_landmarker_${tier}.task`);
@@ -153,6 +180,12 @@ async function PoseAT_init(_worker, param) {
 function _onmessage(e) {
   let t = performance.now()
   let data = (typeof e.data === "string") ? JSON.parse(e.data) : e.data;
+  if (data?.options) {
+    XRA_backend_last_options = data.options;
+    if (Number.isFinite(Number(data.w))) XRA_backend_last_w = Number(data.w);
+    if (Number.isFinite(Number(data.h))) XRA_backend_last_h = Number(data.h);
+    XRA_ONNX?.frontendReady?.(XRA_backend_last_w, XRA_backend_last_h);
+  }
 
   if (data.canvas) {
     canvas = data.canvas
@@ -166,13 +199,62 @@ function _onmessage(e) {
   if (data.canvas_hands_worker)
     _canvas_hands_worker = data.canvas_hands_worker;
 
-  if (data.rgba) {
-    process_video_buffer.call(this, data.rgba, data.w,data.h, data.options);
+  if (data.rgba && XRA_ONNX_active()) {
+    // The synthetic browser frame is only XR Animator's scheduler tick. Python owns
+    // the physical camera, therefore this ImageBitmap must never be inferred here;
+    // it must still be closed explicitly or Chromium retains its backing texture.
+    const XRA_tick_frame = data.rgba;
+    data.rgba = undefined;
+    XRA_backend_close_tick_frame(XRA_tick_frame);
+    XRA_backend_diag.ticks++;
+
+    // Preserve the original one-request/one-reply worker contract. A WebSocket
+    // callback only updates XRA_ONNX.latest; this tick consumes it. Never run a
+    // second push-driven process_video_buffer() in parallel.
+    if (XRA_backend_tick_busy) {
+      XRA_backend_diag.busyReplays++;
+      XRA_backend_replay_last_output("tick_busy");
+    }
+    else if (!XRA_backend_has_fresh_pose() && XRA_backend_last_output_json) {
+      XRA_backend_diag.cleanReplays++;
+      XRA_backend_replay_last_output("no_new_pose");
+    }
+    else {
+      XRA_backend_tick_busy = true;
+      const XRA_tick_promise = process_video_buffer.call(
+        this, null, data.w, data.h, data.options
+      );
+      Promise.resolve(XRA_tick_promise).catch((err) => {
+        XRA_backend_diag.processErrors++;
+        XRA_backend_diag.lastError = String(err?.stack || err?.message || err);
+        try { console.error('[XRA MOCAP] backend tick failed:', err); } catch (e) {}
+        XRA_backend_replay_last_output("process_error");
+      }).finally(() => {
+        XRA_backend_tick_busy = false;
+      });
+    }
+    data = undefined;
+    return;
+  }
+    try {
+      const _pv = process_video_buffer.call(this, data.rgba, data.w,data.h, data.options);
+      // The worker message handler is fire-and-forget: if the async pipeline
+      // rejects after its first await, the promise is orphaned and NOTHING
+      // downstream (including postMessageAT) ever runs -- which looks exactly
+      // like "the pipeline silently stops after N frames". Surface it.
+      if (_pv && typeof _pv.catch === 'function') {
+        _pv.catch((err)=>{
+          try { console.error('[XRA MOCAP] process_video_buffer rejected:', err && (err.stack || err.message || err)); } catch (e) {}
+        });
+      }
+    }
+    catch (err) {
+      try { console.error('[XRA MOCAP] process_video_buffer threw sync:', err && (err.stack || err.message || err)); } catch (e) {}
+    }
 
     data.rgba = undefined
     data = undefined
   }
-}
 
 // common
 param = init_common.call(this, _worker, param, _onmessage);
@@ -241,6 +323,13 @@ use_mobilenet = param.get('use_mobilenet');
 
 if (is_worker) {
   importScripts('./one_euro_filter.js');
+  // Optional ONNX backend bridge. Loaded defensively: if the file is missing
+  // the worker still runs MediaPipe exactly as before.
+  try { importScripts('./xra_onnx_bridge.js'); }
+  catch (e) { console.warn('[XRA MOCAP] ONNX bridge unavailable', e); }
+  // Do not install a push processor here. xra_onnx_bridge.js already caches
+  // the newest WebSocket pose; the normal pose-worker tick consumes that cache.
+  // This keeps XR Animator's legacy worker scheduler back-pressured and bounded.
 }
 
 postMessageAT('(Pose worker initialized)')
@@ -281,6 +370,21 @@ function _onmessage(e) {
 
   var posenet_initialized, handpose_initialized, holistic_initialized, human_initialized;
   async function PoseAT_load_lib(options) {
+  // XRA_CAMERA_OWNERSHIP_V4: wait for the main-window backend choice.
+  // Without this, PoseAT can start MediaPipe WASM before BroadcastChannel replies.
+  if (is_worker && typeof XRA_ONNX !== 'undefined' && XRA_ONNX?.waitUntilConfigured) {
+    await XRA_ONNX.waitUntilConfigured(1500);
+  }
+    // Calibration / startup decoupling: when an ONNX or native-MediaPipe
+    // backend is active, do NOT instantiate the WASM MediaPipe runtime at all
+    // (it was the WebKitGTK calibration stall). The body/face/hand landmarks
+    // come straight from the backend's WebSocket stream instead, so the
+    // calibration routine below consumes those frames directly.
+    if (XRA_ONNX_active()) {
+      posenet_initialized = holistic_initialized = true;
+      postMessageAT('(ONNX/native backend active: WASM MediaPipe skipped)');
+      return;
+    }
 if (options.use_holistic_legacy && !holistic_initialized) {
   await load_scripts('@mediapipe/holistic/holistic.js');
 
@@ -582,6 +686,7 @@ else {
 }
 
 use_hands_worker = options.pose_enabled && options.use_hands_worker;// = true;
+if (XRA_ONNX_active()) use_hands_worker = false;
 use_hands_worker_parallel = (use_hands_worker == 2);
 
 if (use_hands_worker) {
@@ -844,6 +949,98 @@ var XRA_last_pose_run_ms = 0;
 var XRA_last_pose_payload = null;
 var XRA_last_hand_run_ms = 0;
 var XRA_last_hands_result = null;
+// Set true on the frame the ONNX/native-MediaPipe wholebody stream supplied
+// hands/face, so the native hand-pose blocks below don't clobber them.
+var XRA_ONNX_wholebody = false;
+var XRA_backend_last_options = null;
+var XRA_backend_last_w = 384;
+var XRA_backend_last_h = 216;
+var XRA_backend_tick_busy = false;
+var XRA_backend_last_output = null;
+var XRA_backend_last_output_json = null;
+
+var XRA_backend_diag = {
+  ticks: 0,
+  posted: 0,
+  replayed: 0,
+  busyReplays: 0,
+  cleanReplays: 0,
+  processErrors: 0,
+  closedImageBitmaps: 0,
+  lastFrameId: null,
+  lastPostedFrameId: null,
+  lastReplayReason: null,
+  lastError: ""
+};
+
+function XRA_backend_close_tick_frame(frame) {
+  try {
+    if (typeof ImageBitmap !== 'undefined' && frame instanceof ImageBitmap) {
+      frame.close();
+      XRA_backend_diag.closedImageBitmaps++;
+    }
+  }
+  catch (error) {
+    XRA_backend_diag.lastError = String(error?.message || error);
+  }
+}
+
+function XRA_backend_has_fresh_pose() {
+  const status = (typeof XRA_ONNX !== 'undefined') ? XRA_ONNX.status : null;
+  return !!status && Number(status.sequence) !== Number(status.consumed);
+}
+
+self.XRA_BACKEND_PIPELINE_STATUS = function () {
+  const bridge = (typeof XRA_ONNX !== "undefined") ? XRA_ONNX.status : null;
+  return {
+    ...XRA_backend_diag,
+    hasOptions: !!XRA_backend_last_options,
+    busy: XRA_backend_tick_busy,
+    hasCachedOutput: !!XRA_backend_last_output_json,
+    freshPose: XRA_backend_has_fresh_pose(),
+    bridge
+  };
+};
+
+function XRA_backend_empty_output(reason) {
+  return {
+    posenet: {
+      score: 0,
+      keypoints: [],
+      keypoints3D: [],
+      keypoints3D_raw: [],
+      ea: [],
+      has_pose: false,
+      data_detected: 0,
+      _xra_empty: true,
+      _xra: { source: "backend_camera", reason }
+    },
+    handpose: [],
+    facemesh: null,
+    object_detection: null,
+    _t: 0,
+    fps: 0
+  };
+}
+
+function XRA_backend_post_output(payload) {
+  XRA_backend_last_output = payload;
+  XRA_backend_last_output_json = JSON.stringify(payload);
+  XRA_backend_diag.posted++;
+  XRA_backend_diag.lastPostedFrameId = payload?.posenet?._xra?.frame_id ?? null;
+  postMessageAT(XRA_backend_last_output_json);
+}
+
+function XRA_backend_replay_last_output(reason) {
+  XRA_backend_diag.replayed++;
+  XRA_backend_diag.lastReplayReason = reason || null;
+  if (!XRA_backend_last_output_json) {
+    XRA_backend_post_output(XRA_backend_empty_output(reason || "waiting_backend_pose"));
+    return;
+  }
+  postMessageAT(XRA_backend_last_output_json);
+}
+
 var XRA_last_stable_pose = null;
 var XRA_last_stable_hands = null;
 var XRA_pose_loss_active = false;
@@ -875,6 +1072,94 @@ function XRA_send_telemetry(payload) {
   try {
     XRA_control_channel.postMessage(Object.assign({ type:"mocap_telemetry" }, payload));
   } catch (e) {}
+}
+
+// -- ONNX backend bridge accessors ------------------------------------------
+// The bridge (js/xra_onnx_bridge.js) installs self.XRA_ONNX. These thin
+// wrappers keep the call sites safe when the bridge is absent (e.g. the file
+// was not shipped, or importScripts failed) so MediaPipe keeps working.
+function XRA_ONNX_active() {
+  return is_worker && typeof XRA_ONNX !== 'undefined' && XRA_ONNX && XRA_ONNX.active;
+}
+
+function XRA_ONNX_pose(rgba, w, h) {
+  if (!XRA_ONNX_active()) return null;
+  try {
+    return (XRA_ONNX.consumeLatestPose ? XRA_ONNX.consumeLatestPose(w, h) : XRA_ONNX.maybeReplaceFrame(null, w, h)) || null;
+  }
+  catch (e) {
+    XRA_debug_event('onnx-bridge-error', { error:String(e) });
+    return null;
+  }
+}
+
+// Build the worker's `hands` array from normalized COCO-hand landmarks.
+// hands_adjust(..., from_onnx=true) performs the single normalized->pixel scale.
+function XRA_ONNX_hands(w, h) {
+  if (!XRA_ONNX_active() || typeof XRA_ONNX.leftHand === 'undefined') return null;
+  const finite = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+  const to_normalized = (arr) => (arr || []).slice(0, 21).map(p => ({
+    x: finite(p.x), y: finite(p.y), z: finite(p.z),
+    visibility: Math.max(0, Math.min(1, finite(p.score ?? p.visibility, 1))),
+  }));
+  const left = to_normalized(XRA_ONNX.leftHand);
+  const right = to_normalized(XRA_ONNX.rightHand);
+  if (!left.length && !right.length) return null;
+
+  const hands = { multiHandedness: [], multiHandLandmarks: [] };
+  // Mirrored convention: the camera-left hand is the subject's Right (matches
+  // MediaPipe holistic legacy, which the rest of the pipeline expects).
+  if (left.length >= 21) {
+    hands.multiHandLandmarks.push(left);
+    hands.multiHandedness.push({ score: 1, categoryName: 'Right', label: 'Right' });
+  }
+  if (right.length >= 21) {
+    hands.multiHandLandmarks.push(right);
+    hands.multiHandedness.push({ score: 1, categoryName: 'Left', label: 'Left' });
+  }
+  return hands.multiHandLandmarks.length ? hands : null;
+}
+
+// Build the worker's `facemesh` object from the ONNX wholebody face payload.
+// The server sends face landmarks (px) + a small blendshape dict; we forward
+// the blendshapes verbatim so the VRM morph solver (which reads
+// faceBlendshapes) animates blinks/jaw regardless of which backend produced them.
+function XRA_ONNX_facemesh(w, h) {
+  if (!XRA_ONNX_active() || typeof XRA_ONNX.face === 'undefined') return null;
+  const face = XRA_ONNX.face;
+  const landmarks = face?.landmarks;
+  if (!Array.isArray(landmarks) || landmarks.length < 468) return null;
+
+  // Existing XR Animator facemesh consumers index MediaPipe's 468/478 topology
+  // (e.g. 234, 454, 468, 473) and expect [x,y,z] arrays, not {x,y,z} objects.
+  const scaledMesh = landmarks.map(p => [
+    (Number(p.x) || 0) * w,
+    (Number(p.y) || 0) * h,
+    (Number(p.z) || 0) * w,
+  ]);
+  const mesh = landmarks.map(p => [
+    Number(p.x) || 0,
+    Number(p.y) || 0,
+    Number(p.z) || 0,
+  ]);
+
+  let blendshapes = null;
+  const bs = face.blendshapes || {};
+  const entries = bs.native || bs;
+  if (entries && typeof entries === 'object') {
+    blendshapes = Object.keys(entries).map(name => ({
+      categoryName: name,
+      score: Number(entries[name]) || 0,
+    }));
+  }
+  return {
+    faces: [{
+      faceInViewConfidence: 0.9,
+      scaledMesh,
+      mesh,
+      faceBlendshapes: blendshapes,
+    }],
+  };
 }
 
 // Report detector validity from the worker that owns the fresh inference result.
@@ -922,21 +1207,18 @@ function XRA_pose_tracking_state(pose, width, height, enabled) {
       if (hip) visibleHips++;
     }
     if (Number.isFinite(x) && Number.isFinite(y)) {
-      const normalized = Math.abs(x) <= 2.5 && Math.abs(y) <= 2.5;
-      const marginX = normalized ? 0.10 : Math.max(1, Number(width) || 1) * 0.10;
-      const marginY = normalized ? 0.10 : Math.max(1, Number(height) || 1) * 0.10;
-      const maxX = normalized ? 1 : Math.max(1, Number(width) || 1);
-      const maxY = normalized ? 1 : Math.max(1, Number(height) || 1);
-      if (x >= -marginX && x <= maxX + marginX && y >= -marginY && y <= maxY + marginY) {
+      const hasNorm = Number.isFinite(point?.normX);
+      const nx = hasNorm ? point.normX : (Math.abs(x) <= 2.5 ? x : x / Math.max(1, Number(width) || 640));
+      const ny = hasNorm ? point.normY : (Math.abs(y) <= 2.5 ? y : y / Math.max(1, Number(height) || 480));
+      const margin = 0.10;
+      if (nx >= -margin && nx <= 1 + margin && ny >= -margin && ny <= 1 + margin) {
         insideCore++;
         if (shoulder) insideShoulders++;
         if (hip) insideHips++;
       }
-      const nx = normalized ? x : x / maxX;
-      const ny = normalized ? y : y / maxY;
       if (shoulder) shoulderPoints.push([nx, ny]);
       if (hip) hipPoints.push([nx, ny]);
-      signature.push(`${Math.round(x / (normalized ? .02 : 8))},${Math.round(y / (normalized ? .02 : 8))}`);
+      signature.push(`${Math.round(nx / 0.02)},${Math.round(ny / 0.02)}`);
     }
   }
 
@@ -1454,7 +1736,7 @@ name: BLAZEPOSE_KEYPOINTS[i]
     return result;
   }
 
-  function hands_adjust(hands, nowInMs, pose) {
+  function hands_adjust(hands, nowInMs, pose, from_onnx) {
     function landmark_adjust(h, clip) {
 const scale = clip[8];
 const cw = canvas_hands.width;
@@ -1494,7 +1776,7 @@ function get_wrist(i) {
   if (side && wrist) return true;
 
   let _side = hands.multiHandedness[i].categoryName;
-  if (canvas_hands) {
+  if (canvas_hands && !from_onnx) {
     let clip_index = hand_clip.findIndex(c=>(_side=='Left') ? c[9]==1 : c[9]==-1);
     if (clip_index == -1) return false;
 
@@ -1517,7 +1799,7 @@ let dis;
 dis = hands.multiHandLandmarks.map((hand,i)=>{
   if (!get_wrist(i)) return 9999*9999;
 
-  const palm = (canvas_hands) ? landmark_adjust(hand[0], clip) : [hand[0].x*w, hand[0].y*h];
+  const palm = (canvas_hands && !from_onnx) ? landmark_adjust(hand[0], clip) : [hand[0].x*w, hand[0].y*h];
   const x = wrist[0] - palm[0];
   const y = wrist[1] - palm[1];
 //console.log(i, wrist.slice(), palm.slice())
@@ -1585,7 +1867,7 @@ return h_list.some(_h=>(_h[0] >= clip[0]) && (_h[1] >= clip[1]) && (_h[0] <= cli
     let discard_wrong_handedness = true;
 
     if (!pose || options.use_holistic) {}
-    else if (canvas_hands) {
+    else if (canvas_hands && !from_onnx) {
       if (hands.multiHandedness.length == 1) {
         if (!clipped(0)) {
           if (discard_wrong_handedness || clipped(0,true)) {
@@ -1649,7 +1931,11 @@ return h_list.some(_h=>(_h[0] >= clip[0]) && (_h[1] >= clip[1]) && (_h[0] <= cli
     if (pose) {
       const _multiHandedness = [];
       const _multiHandLandmarks = [];
-      const dis_to_palm = shoulder_width*shoulder_width*0.25 * Math.pow(1 + Math.max(options.stabilize_hand_percent/100-0.2, 0), 4);
+      // Fail-safe: a non-finite shoulder_width (any pose source that skipped
+      // pose_adjust) must not yield a NaN acceptance radius, which makes
+      // `dis < dis_to_palm` false for every hand and discards all of them.
+      let dis_to_palm = shoulder_width*shoulder_width*0.25 * Math.pow(1 + Math.max(options.stabilize_hand_percent/100-0.2, 0), 4);
+      if (!Number.isFinite(dis_to_palm)) dis_to_palm = Infinity;
       palm_distance_squared().forEach((dis,i)=>{
         if (dis < dis_to_palm) {
           _multiHandedness.push(hands.multiHandedness[i]);
@@ -1664,13 +1950,13 @@ return h_list.some(_h=>(_h[0] >= clip[0]) && (_h[1] >= clip[1]) && (_h[0] <= cli
       const label = hands.multiHandedness[i].label || hands.multiHandedness[i].categoryName;
 //options.video_flipped
       let clip;
-      if (!options.use_holistic && canvas_hands) {
+      if (!options.use_holistic && canvas_hands && !from_onnx) {
         clip = hand_clip.find(c=>(label=='Left') ? c[9]==1 : c[9]==-1);
         if (!clip) continue;
       }
 
       const h = hands.multiHandLandmarks[i].map(_h=>{
-if (options.use_holistic || !canvas_hands) {
+if (options.use_holistic || !canvas_hands || from_onnx) {
   return [
 _h.x*iw,
 _h.y*ih,
@@ -1682,14 +1968,25 @@ else {
 }
       });
 
-      const worldLandmarks = (hands.worldLandmarks?.[i][0].x == null) ? hands.worldLandmarks?.[i] : null;
+      const worldCandidate = Array.isArray(hands.worldLandmarks?.[i])
+        ? hands.worldLandmarks[i]
+        : null;
+      const worldLandmarks = worldCandidate?.length >= 21 ? worldCandidate : null;
 
-      _hands.push({
+      // Build the hand object WITHOUT a `worldLandmarks` key when there is no
+      // world-landmark data (the ONNX/native backend path never sends any).
+      // Writing `worldLandmarks: undefined` leaves the key present-but-undefined,
+      // and the renderer's rig indexes hand.worldLandmarks[0] -> TypeError
+      // "Cannot read properties of undefined (reading '0')" -> the rig aborts
+      // every frame and NO hand wireframe is ever drawn. Omitting the key keeps
+      // the object shaped exactly like a MediaPipe hand that has no world set.
+      const hand_entry = {
 score: hands.multiHandedness[i].score,
 label: hands.multiHandedness[i].label || hands.multiHandedness[i].categoryName,
 keypoints: h,
-
-worldLandmarks: worldLandmarks && {
+      };
+      if (worldLandmarks) {
+hand_entry.worldLandmarks = {
   keypoints: worldLandmarks,
   annotations: {
     "palm":   [worldLandmarks[0]],
@@ -1699,8 +1996,10 @@ worldLandmarks: worldLandmarks && {
     "ring":   [worldLandmarks[13],worldLandmarks[14],worldLandmarks[15],worldLandmarks[16]],
     "pinky":  [worldLandmarks[17],worldLandmarks[18],worldLandmarks[19],worldLandmarks[20]]
   }
-},
-      });
+};
+      }
+
+      _hands.push(hand_entry);
     }
 //console.log(_hands)
 
@@ -2088,7 +2387,16 @@ catch (err) {
 async function PoseAT_process_video_buffer() {
   const XRA_pose_gate_now = performance.now();
   const XRA_pose_interval = 1000 / Math.max(5, XRA_pose_target_fps || 30);
-  if (XRA_last_pose_payload && (XRA_pose_gate_now - XRA_last_pose_run_ms) < XRA_pose_interval) {
+  // NOTE: on the ONNX/native backend path this worker-side replay gate MUST be
+  // bypassed. The gate caches XRA_last_pose_payload and re-emits it verbatim on
+  // every frame that arrives faster than the target interval. The bridge already
+  // paces uploads to the server (targetFps), so the gate is redundant here -- and
+  // harmful: if the cached payload was captured on a cold frame whose hands were
+  // still empty but whose face was already present, the pipeline replays that
+  // frozen packet forever, which is exactly "face animates, hands never move"
+  // (and, if the cold frame had neither, "nothing works / calibration stuck").
+  // The bridge owns pacing on this path, so run the full pipeline every frame.
+  if (!XRA_ONNX_active() && XRA_last_pose_payload && (XRA_pose_gate_now - XRA_last_pose_run_ms) < XRA_pose_interval) {
     // Reply with the last complete mocap packet so the parent worker/main thread
     // remains ready for the next frame. This limits actual inference, not render.
     const reused = Object.assign({}, XRA_last_pose_payload, { xra_reused:true, _t:0 });
@@ -2136,6 +2444,10 @@ hands_worker_ready = false;
 
   let _t = performance.now();
 
+  // Reset the per-frame ONNX wholebody marker; it is re-set below if this
+  // frame's pose came from the backend and carried hands/face.
+  XRA_ONNX_wholebody = false;
+
   if (options.timestamp != null) {
     vt = options.timestamp + vt_offset;
     if (vt <= vt_last + 1) {
@@ -2161,7 +2473,7 @@ hands_worker_ready = false;
 
   pose_model_z_depth_scale = options.z_depth_scale || 3;
 
-  if (options.use_holistic_legacy) {
+  if (!XRA_ONNX_active() && options.use_holistic_legacy) {
     const result = await holistic_model.predict(rgba, {}, vt);
 //console.log(result)
 
@@ -2178,7 +2490,7 @@ hands_worker_ready = false;
 //console.log(facemesh)
     }
   }
-  else if (use_human_only) {
+  else if (!XRA_ONNX_active() && use_human_only) {
     const result = await human.detect(rgba, {
       hand: { enabled: options.use_handpose && XRA_hands_enabled }
     });
@@ -2199,6 +2511,7 @@ hands_worker_ready = false;
     const XRA_parallel_hand_visible = pose_last && is_hand_visible(pose_last);
     const XRA_parallel_recovery = !!(pose_last && !XRA_parallel_hand_visible && XRA_should_hand_recover(XRA_hand_now));
     if (
+      !XRA_ONNX_active() &&
       XRA_hands_enabled &&
       use_hands_worker_parallel &&
       pose_last &&
@@ -2212,15 +2525,75 @@ hands_worker_ready = false;
       options.XRA_full_hand_recovery = false;
     }
 
+    // ONNX/native backend bridge: when a server-side model is selected we do
+    // NOT run the WASM MediaPipe estimator (PoseAT_load_lib skipped it, so
+    // posenet_model/holistic would be undefined anyway). Source the rig pose
+    // straight from the Python WS backend instead. The bridge returns the same
+    // {score, keypoints:[{position,score,part}], keypoints3D, keypoints3D_raw}
+    // shape pose_adjust emits, so stabilization / IK / bones are unchanged.
+    let XRA_onnx_handled = false;
+    if (XRA_ONNX_active()) {
+      const onnxPose = XRA_ONNX_pose(rgba, w, h);
+      if (onnxPose?._xra_empty) {
+        pose = onnxPose;
+        hands = [];
+        facemesh = null;
+        XRA_onnx_handled = true;
+        XRA_last_pose_payload = null;
+      }
+      else if (onnxPose && onnxPose.keypoints && onnxPose.keypoints.length >= 17) {
+        pose = onnxPose;
+        pose.score = 1.0;
+        if (!pose.landmarks) pose.landmarks = pose.keypoints;
+        if (!pose.keypoints3D_raw) pose.keypoints3D_raw = pose.keypoints3D;
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (let i = 0; i < pose.keypoints.length; i++) {
+          const kp = pose.keypoints[i];
+          const pos = kp.position || kp;
+          if (pos.x < minX) minX = pos.x;
+          if (pos.x > maxX) maxX = pos.x;
+          if (pos.y < minY) minY = pos.y;
+          if (pos.y > maxY) maxY = pos.y;
+        }
+        pose.box = { xMin: minX, yMin: minY, width: maxX - minX, height: maxY - minY };
+        const onnx_shoulder_width = XRA_pose_shoulder_width(pose);
+        shoulder_width = onnx_shoulder_width > 0 ? onnx_shoulder_width : (Math.max(w, h) / 7);
+        XRA_onnx_handled = true;
+        const onnxHands = XRA_ONNX_hands(w, h);
+        if (onnxHands) hands = hands_adjust(onnxHands, vt, pose, true);
+        const onnxFace = XRA_ONNX_facemesh(w, h);
+        if (onnxFace) facemesh = onnxFace;
+        XRA_ONNX_wholebody = !!onnxHands;
+      } else {
+        // The backend is the selected engine but the socket is still warming up
+        // (handshake + first model frame can take a few ms). Return the last
+        // cached payload unchanged so calibration / IK / rig does not see an
+        // empty pose that resets the hold counter or triggers a false "no body"
+        // state. We skip writing XRA_last_pose_payload for this frame too
+        // (it is written after this block only when XRA_onnx_handled is true
+        // or the MediaPipe branch ran).
+        if (XRA_last_pose_payload) {
+          // Reuse last good packet: keeps the rig frozen in place instead of
+          // snapping to the T-pose during the model warm-up window.
+          XRA_backend_replay_last_output("backend_pose_not_fresh");
+          return;
+        }
+        // Very first frame ever, no cached payload: emit a silent empty one
+        // (the rig is in T-pose anyway at startup).
+        pose = { score:0, keypoints:[], keypoints3D:[], keypoints3D_raw:[] };
+        hands = [];
+      }
+    }
+
     let result;
-    if (options.pose_enabled) {
+    if (options.pose_enabled && !XRA_onnx_handled && !XRA_ONNX_active()) {
       result = await ((use_human_pose) ? human.detect(rgba) : ((use_movenet) ? posenet.estimatePoses(rgba, {}, vt) : posenet_model.estimateSinglePose(rgba, {})));
       pose = pose_adjust((use_human_pose) ? result.body[0] : result);
     }
 
     if (use_hands_worker_parallel) pose_last = pose;
 
-    if (options.object_detection?.enabled) {
+    if (!XRA_ONNX_active() && options.object_detection?.enabled) {
       if (!object_detection_worker) {
         await new Promise((resolve)=>{
           object_detection_worker = new Worker('object_detection_worker.js');
@@ -2267,7 +2640,7 @@ else {
       object_detection_data = null;
     }
 
-    if (options.use_holistic_landmarker) {
+    if (options.use_holistic_landmarker && !XRA_ONNX_wholebody && !XRA_ONNX_active()) {
       hands = XRA_hands_enabled ? hands_adjust(result, vt, pose) : undefined;
 
       if (result.faceLandmarks && result.faceLandmarks.length) {
@@ -2281,6 +2654,8 @@ else {
       }
     }
     else if (
+      !XRA_ONNX_wholebody &&
+      !XRA_ONNX_active() &&
       XRA_hands_enabled &&
       options.use_handpose &&
       (
@@ -2364,6 +2739,8 @@ else {
   const XRA_fresh_hands_this_frame = !!(hands && Array.isArray(hands) && hands.length);
   if (XRA_fresh_hands_this_frame) XRA_last_hands_seen_ms = performance.now();
 
+
+
   // Standalone Split mode: when hand inference is intentionally throttled, keep
   // the latest valid hand pose briefly (up to ~140ms / during countdown) rather
   // than clearing/flickering between samples. Once hands leave camera, clear promptly.
@@ -2413,10 +2790,11 @@ else {
       if (!hand) continue;
 
       const kp = pose.keypoints[get_pose_index(id)];
-      if (kp.score < score_threshold) continue;
+      if (!kp || kp.score < score_threshold) continue;
 
       const kp_hands = hands_worker_pose.keypoints[get_pose_index(id)];
-      if (kp_hands.score < score_threshold) continue;
+      if (!kp_hands || kp_hands.score < score_threshold) continue;
+
 
       const x_offset = kp.position.x - kp_hands.position.x;
       const y_offset = kp.position.y - kp_hands.position.y;
@@ -2481,8 +2859,9 @@ else {
     });
   }
 
-  const XRA_payload = { posenet:pose, object_detection:object_detection_data, handpose:hands, facemesh:facemesh, _t:_t, fps:fps, _t_hands:_t_hands, fps_hands:fps_hands };
-  XRA_last_pose_payload = XRA_payload;
+      const XRA_payload = { posenet:pose, object_detection:object_detection_data, handpose:hands, facemesh:facemesh, _t:_t, fps:fps, _t_hands:_t_hands, fps_hands:fps_hands };
+      XRA_last_pose_payload = XRA_payload;
+
   XRA_send_telemetry({
     inference_ms:_t,
     fps:fps,
@@ -2490,7 +2869,7 @@ else {
     hands_fps:fps_hands,
     holistic:!!options.use_holistic_landmarker
   });
-  postMessageAT(JSON.stringify(XRA_payload));
+  XRA_backend_post_output(XRA_payload);
 }
 
 async function HandsAT_process_video_buffer() {

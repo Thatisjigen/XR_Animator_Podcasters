@@ -1,10 +1,65 @@
+// XRA_FRONTEND_STABILITY_V6
+;(() => {
+  const probeEnabled = (() => {
+    try {
+      const query = new URLSearchParams(location.search);
+      return query.get('xra_pose_probe') === '1' || localStorage.getItem('xra.poseProbe') === '1';
+    }
+    catch (e) { return false; }
+  })();
+  if (!probeEnabled || window.__XRA_POSE_WORKER_PROBE__) return;
+
+  window.__XRA_POSE_WORKER_PROBE__ = true;
+  const NativeWorker = window.Worker;
+  window.__XRA_POSE_MESSAGES = { total:0, payloads:0, last:null, errors:[] };
+  window.Worker = new Proxy(NativeWorker, {
+    construct(Target, args) {
+      const worker = Reflect.construct(Target, args);
+      const url = String(args[0] || '');
+      if (!url.includes('pose_worker.js')) return worker;
+      window.__XRA_POSE_WORKER = worker;
+      worker.addEventListener('message', event => {
+        const state = window.__XRA_POSE_MESSAGES;
+        state.total++;
+        let data = event.data;
+        try {
+          if (typeof data === 'string' && data.trimStart().startsWith('{')) data = JSON.parse(data);
+        }
+        catch (error) {
+          if (state.errors.length < 25) state.errors.push(String(error));
+          return;
+        }
+        if (!data || typeof data !== 'object' || !Object.prototype.hasOwnProperty.call(data, 'posenet')) return;
+        const pose = data.posenet;
+        state.payloads++;
+        state.last = {
+          frameId: pose?._xra?.frame_id,
+          hasPose: pose?.has_pose,
+          dataDetected: pose?.data_detected,
+          keypoints: pose?.keypoints?.length,
+          keypoints3D: pose?.keypoints3D?.length,
+          hands: Array.isArray(data.handpose) ? data.handpose.length : 0,
+          facePoints: data.facemesh?.faces?.[0]?.scaledMesh?.length || 0,
+          empty: pose?._xra_empty,
+          geometry: pose?._xra?.geometry,
+        };
+      });
+      worker.addEventListener('error', event => {
+        const errors = window.__XRA_POSE_MESSAGES.errors;
+        if (errors.length < 25) errors.push(String(event.message || event));
+      });
+      return worker;
+    }
+  });
+})();
+
 (() => {
   'use strict';
 
   const XRA = window.XRA;
   const { config, events } = XRA;
   const CHANNEL_NAME = 'XRA_CONTROL';
-  const DEFAULT_MAX_EVENTS = 12000;
+  const DEFAULT_MAX_EVENTS = 1500;
   const EVENT_NAMES = [
     'body-stable', 'body-captured', 'body-transition', 'body-transition-end',
     'motion-hysteresis', 'upper-body-guard-reject', 'upper-body-guard-reacquired',
@@ -51,7 +106,7 @@
     if (typeof value === 'bigint') return String(value);
     if (typeof value === 'function') return `[function ${value.name || 'anonymous'}]`;
     if (value instanceof Error) {
-      return { name:value.name, message:value.message, stack:String(value.stack || '').slice(0, 8000) };
+      return { name:value.name, message:value.message, stack:String(value.stack || '').slice(0, 2000) };
     }
     if (depth >= 5) return '[max-depth]';
     if (typeof value !== 'object') return String(value);
@@ -77,7 +132,7 @@
   }
 
   function maxEvents() {
-    return Math.max(500, Math.min(50000, Number(config.debug?.max_events) || DEFAULT_MAX_EVENTS));
+    return Math.max(500, Math.min(5000, Number(config.debug?.max_events) || DEFAULT_MAX_EVENTS));
   }
 
   function record(type, data = null) {
@@ -271,10 +326,20 @@
   catch (e) {}
 
   for (const name of EVENT_NAMES) events.on(name, payload => record(`xra.${name}`, payload));
-  window.addEventListener('error', event => record('window.error', {
-    message:event.message, filename:event.filename, line:event.lineno, column:event.colno, error:event.error
-  }));
-  window.addEventListener('unhandledrejection', event => record('window.unhandledrejection', { reason:event.reason }));
+  window.addEventListener('error', event => {
+    const signature = `${event.message || 'error'}@${event.filename || ''}:${event.lineno || 0}:${event.colno || 0}`;
+    sample(`window.error:${signature}`, 'window.error', {
+      message:event.message,
+      filename:event.filename,
+      line:event.lineno,
+      column:event.colno,
+      error:event.error,
+    }, 1000);
+  });
+  window.addEventListener('unhandledrejection', event => {
+    const reason = event.reason?.message || String(event.reason || 'unhandledrejection');
+    sample(`window.rejection:${reason}`, 'window.unhandledrejection', { reason:event.reason }, 1000);
+  });
   events.on('profile-loaded', () => {
     // A profile load can finish after the user has clicked the switch. Debug is
     // session state: never let that late refresh silently turn recording off.

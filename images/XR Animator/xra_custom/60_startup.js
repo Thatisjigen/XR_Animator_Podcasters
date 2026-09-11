@@ -1,3 +1,4 @@
+/* XRA_BACKEND_CONTROL_V5 */
 (() => {
   'use strict';
 
@@ -218,8 +219,20 @@
       overlay.remove();
       XRA.ui?.refresh?.();
       if (autoStartCamera && !XRA.nativeBridge?.cameraRunning?.()) {
-        try { await XRA.nativeBridge?.startNativeStreamer?.(); }
-        catch (e) { console.warn('Auto-starting camera on START failed', e); }
+        try {
+          if (XRA.xraBackend?.active && globalThis.XRA_BACKEND_CAMERA) {
+            await globalThis.XRA_BACKEND_CAMERA.start();
+          } else {
+            await XRA.nativeBridge?.startNativeStreamer?.();
+          }
+        }
+        catch (e) {
+          // Ownership transitions are expected in external mode and must never
+          // abort the startup overlay/UI state machine.
+          if (!globalThis.XRA_CAMERA_OWNERSHIP?.isOwnershipError?.(e)) {
+            console.warn('Auto-starting camera on START failed', e);
+          }
+        }
       }
     }
     function onKeyDown(event) {

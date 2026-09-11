@@ -1,3 +1,4 @@
+# XRA_UNIVERSAL_RUNTIME_V9
 #!/usr/bin/env python3
 """One-click launcher for the HTTP version of XR Animator.
 
@@ -9,6 +10,7 @@ custom UI depend on that origin.
 from __future__ import annotations
 
 import argparse
+import multiprocessing
 import threading
 import time
 import urllib.error
@@ -118,4 +120,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     raise SystemExit(main())

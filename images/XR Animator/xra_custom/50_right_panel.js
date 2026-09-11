@@ -892,7 +892,7 @@
     const perfAdvanced = details(box.body, 'Advanced');
 
     const pipeline = select([
-      ['Full Body', 'Full body (MediaPipe Vision)'],
+      ['Full Body', 'Full body'],
       ['Face', 'Face only']
     ]);
     bindRefresh(() => {
@@ -914,6 +914,146 @@
     row(perfAdvanced.body, 'Tracking / mocap mode', pipeline, {
       sub: 'Only useful combined modes are shown here. Startup/LOAD never changes this automatically.'
     });
+
+    // --- Mocap backend (server-side engine + bundled native MediaPipe) -----
+    // All models ship locally inside the bundle, so there is NO download button:
+    // this just selects which engine drives the avatar and shows live status.
+    const backendSelect = select([['mediapipe', 'MediaPipe (built-in)']]);
+    const backendStatus = el('div', 'xra-sub', 'Backend: MediaPipe (built-in)');
+
+    // model_complexity selector — only meaningful for mediapipe-holistic
+    // (0 = Lite for potato CPUs, 1 = Full).
+    const complexitySelect = select([
+      ['1', 'Full (accurate)'],
+      ['0', 'Lite (low-end CPU)'],
+    ]);
+    complexitySelect.value = '1';
+    const complexityRow = el('div', 'xra-stack-control');
+    complexityRow.append(complexitySelect);
+
+    const backendLabel = (id) => {
+      const names = {
+        mediapipe: 'MediaPipe (built-in, WASM)',
+        'dwpose-s': 'DWPose-S · ONNX (fast, CPU)',
+        'dwpose-m': 'DWPose-M · ONNX (accurate)',
+        'dwpose-l': 'DWPose-L · ONNX (max accuracy, 384px)',
+        'mediapipe-holistic': 'MediaPipe Holistic · native (Lite/Full)',
+        'mediapipe-tasks-landmarker': 'MediaPipe Tasks Holistic · native (52 blendshapes)',
+      };
+      return names[id] || id;
+    };
+
+    const refreshBackendOptions = async () => {
+      const list = await XRA.xraBackend?.listBackends?.() || [];
+      const current = XRA.xraBackend?.selected || 'mediapipe';
+
+      backendSelect.innerHTML = '';
+      const add = (value, label, disabled = false) => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        option.disabled = disabled;
+        backendSelect.appendChild(option);
+      };
+      add('mediapipe', backendLabel('mediapipe'));
+      for (const backend of list) {
+        if (backend.id === 'mediapipe') continue;
+        // Bundled/native engines are always installed; ONNX models ship in the
+        // bundle too. Only mark truly-missing payloads as unavailable.
+        const label = backendLabel(backend.id);
+        add(backend.id, backend.installed ? label : `${label} — non disponibile`);
+      }
+      const node = [...backendSelect.options].find(o => o.value === current && !o.disabled);
+      if (node) backendSelect.value = current;
+      else if (current !== 'mediapipe') backendSelect.value = 'mediapipe';
+
+      // Show the complexity selector only for the legacy holistic engine.
+      const chosen = list.find(b => b.id === backendSelect.value);
+      const wantsComplexity = backendSelect.value === 'mediapipe-holistic'
+        || (chosen && Array.isArray(chosen.complexity_options) && chosen.complexity_options.length);
+      complexityRow.style.display = wantsComplexity ? '' : 'none';
+      const c = XRA.xraBackend?.snapshot?.()?.modelComplexity;
+      if (wantsComplexity && (c === 0 || c === 1)) complexitySelect.value = String(c);
+    };
+
+    const renderBackendStatus = () => {
+      const snapshot = XRA.xraBackend?.snapshot?.();
+      if (!snapshot) {
+        backendStatus.textContent = 'Backend: non disponibile';
+        return;
+      }
+      if (snapshot.selected === 'mediapipe') {
+        backendStatus.textContent = 'Backend: MediaPipe (built-in, WASM) — attivo';
+        return;
+      }
+      const provider = snapshot.providerHuman || snapshot.provider || '—';
+      const cx = (snapshot.modelComplexity === 0 || snapshot.modelComplexity === 1)
+        ? ` · complexità ${snapshot.modelComplexity === 0 ? 'Lite' : 'Full'}` : '';
+
+      // The backend now runs capture+inference server-side, so the meaningful
+      // liveness signal is the CAPTURE source (camera open + frames flowing),
+      // not the control socket handshake. Deriving a single phase from both
+      // avoids the old "in attesa" that never resolved even once poses arrived.
+      const cap = snapshot.capture || {};
+      const frames = Number(snapshot.framesReceived || 0);
+      let phase;
+      if (!snapshot.connected) phase = 'connessione…';
+      else if (!snapshot.ready) phase = 'caricamento modello…';
+      else if (cap.running && (cap.available || frames > 0)) phase = 'attivo';
+      else if (cap.running) phase = 'camera in avvio…';
+      else if (!cap.running) phase = 'camera in avvio…';
+      else phase = 'pronto';
+
+      const cam = cap.device ? ` · ${cap.device}` : '';
+      const fps = cap.target_fps ? ` · ${Math.round(cap.target_fps)} fps` : '';
+      // NB: show the ACTUAL active engine, never a hardcoded "MediaPipe Vision".
+      backendStatus.textContent =
+        `Backend: ${backendLabel(snapshot.selected)} — ${phase} · ${provider}${cx}${cam}${fps}` +
+        (cap.last_error ? ` · ${cap.last_error}` : '') +
+        (snapshot.lastError ? ` · errore: ${snapshot.lastError}` : '');
+    };
+
+    if (XRA.xraBackend?.onStatus) {
+      XRA.xraBackend.onStatus(() => { renderBackendStatus(); });
+    }
+
+    bindRefresh(() => {
+      renderBackendStatus();
+      refreshBackendOptions();
+    });
+
+    // Switching the dropdown switches the LIVE session in server.py and updates
+    // the status text immediately (no separate download step).
+    backendSelect.onchange = async () => {
+      const chosen = backendSelect.value;
+      const complexity = chosen === 'mediapipe-holistic' ? Number(complexitySelect.value) : null;
+      await XRA.xraBackend?.select?.(chosen, { modelComplexity: complexity });
+      config.performance.tracker_backend = chosen;
+      await XRA.profileService.save();
+      refreshAll();
+    };
+
+    complexitySelect.onchange = async () => {
+      if (backendSelect.value !== 'mediapipe-holistic') return;
+      await XRA.xraBackend?.setModelComplexity?.(Number(complexitySelect.value));
+      refreshAll();
+    };
+
+    const backendWrap = el('div', 'xra-stack-control');
+    backendWrap.append(backendSelect);
+    row(perfAdvanced.body, 'Tracker backend', backendWrap, {
+      reset: async () => {
+        config.performance.tracker_backend = 'mediapipe';
+        await XRA.xraBackend?.select?.('mediapipe');
+        await XRA.profileService.save();
+      },
+      isDefault: () => (XRA.xraBackend?.selected || 'mediapipe') === 'mediapipe',
+      sub: 'Motore di motion capture. Tutti i modelli sono già inclusi nel bundle locale: la selezione cambia subito la sessione attiva, senza download.'
+    });
+    row(perfAdvanced.body, 'MediaPipe Holistic complexity', complexityRow, {
+      sub: 'Lite (0) per CPU deboli, Full (1) per CPU più potenti. Vale solo per il backend MediaPipe Holistic nativo.'
+    });
+    perfAdvanced.body.appendChild(backendStatus);
 
     const camOpt = document.createElement('input');
     camOpt.type = 'checkbox';

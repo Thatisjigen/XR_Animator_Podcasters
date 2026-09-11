@@ -1,3 +1,4 @@
+# XRA_RUNTIME_BUILD_V8
 #!/usr/bin/env python3
 """Build a Linux package with its own NW.js/Chromium browser."""
 
@@ -6,6 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,7 +40,7 @@ def main() -> int:
             "Scarica la build Linux x64 prima di creare il bundle."
         )
 
-    completed = subprocess.run(["python3", str(ROOT / "tools" / "build_release.py")], cwd=ROOT)
+    completed = subprocess.run([sys.executable, str(ROOT / "tools" / "build_release.py")], cwd=ROOT)
     if completed.returncode:
         return completed.returncode
 

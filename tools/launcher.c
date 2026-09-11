@@ -41,7 +41,7 @@ int main(int argc, char *argv[]) {
         getenv("WAYLAND_DISPLAY") != NULL ||
         getenv("NIRI_SOCKET") != NULL;
 
-    char **new_argv = malloc((argc + 3) * sizeof(char *));
+    char **new_argv = malloc((argc + 5) * sizeof(char *));
     if (!new_argv) {
         perror("malloc");
         return 1;
@@ -50,7 +50,19 @@ int main(int argc, char *argv[]) {
     new_argv[1] = user_data_arg;
     int next_arg = 2;
     if (use_wayland) {
+        /*
+         * Chromium's Ozone Wayland backend cannot run with Vulkan enabled:
+         * "wayland_surface_factory.cc: '--ozone-platform=wayland' is not
+         * compatible with Vulkan". Vulkan is disabled ONLY on this Wayland
+         * path; native X11 keeps whatever the runtime defaults to.
+         *
+         * "--disable-vulkan" is not a real Chromium switch (Chromium ignores
+         * it), so the ozone/Vulkan conflict persisted. The check keys off the
+         * "Vulkan" feature, so --disable-features=Vulkan is what actually
+         * suppresses it.
+         */
         new_argv[next_arg++] = "--ozone-platform=wayland";
+        new_argv[next_arg++] = "--disable-features=Vulkan";
     }
     for (int i = 1; i < argc; i++) {
         new_argv[next_arg++] = argv[i];

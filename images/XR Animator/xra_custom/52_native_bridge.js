@@ -1,3 +1,4 @@
+// XRA_PERFORMANCE_RUNTIME_V7
 (() => {
   'use strict';
 
@@ -1076,7 +1077,7 @@
     // merely for the webcam. Let the UI continue as soon as the video track is
     // healthy while mocap initialization finishes in the background.
     const active = first.kind === 'camera' ? first.active : await healthPromise;
-    if (!active.healthy) throw new Error('Webcam did not start');
+      if (!active.healthy) throw new Error('Webcam did not start');
     if (first.kind === 'camera') {
       XRA.debug?.record('camera.native-start-pending-mocap', { state:cameraDebugState() });
     }
@@ -1475,3 +1476,143 @@
   window.addEventListener('MMDStarted', () => setTimeout(refreshNativeShell, 250));
 
 })();
+
+/* XRA_BACKEND_CONTROL_V5: route legacy camera UI to Python in external mode. */
+;(() => {
+  'use strict';
+  if (globalThis.__XRA_NATIVE_BACKEND_ROUTE_V5__) return;
+  globalThis.__XRA_NATIVE_BACKEND_ROUTE_V5__ = true;
+
+  function install(attempt = 0) {
+    const XRA = globalThis.XRA;
+    const bridge = XRA?.nativeBridge;
+    if (!bridge) {
+      if (attempt < 100) setTimeout(() => install(attempt + 1), 25);
+      return;
+    }
+    if (bridge.__xraBackendRouteV5) return;
+    const original = {};
+    for (const name of [
+      'activeCamera', 'cameraRunning', 'enumerateCameras', 'switchCamera',
+      'setCameraPreference', 'restartNativeStreamer', 'startNativeStreamer',
+      'stopNativeStreamer', 'applyCameraConstraintsSafe', 'ensureCameraHealthy',
+      'cameraHealth',
+    ]) original[name] = bridge[name];
+
+    const deviceIndex = new Map();
+    const external = () => XRA?.xraBackend?.active === true;
+    const api = () => globalThis.XRA_BACKEND_CAMERA;
+    const capture = () => api()?.status?.().backend?.capture || XRA?.xraBackend?.snapshot?.().capture || {};
+    const valueOf = value => (value && typeof value === 'object')
+      ? (value.exact ?? value.ideal ?? value.max ?? value.min)
+      : value;
+
+    function externalActiveCamera() {
+      const status = capture();
+      const running = !!status.running && !status.paused;
+      return {
+        label: status.device ? `Python · ${status.device}` : 'Python backend camera',
+        deviceId: String(status.device ?? status.index ?? ''),
+        readyState: running ? 'live' : 'ended',
+        backend: 'python',
+      };
+    }
+
+    bridge.activeCamera = function (...args) {
+      return external() ? externalActiveCamera() : original.activeCamera?.apply(this, args);
+    };
+    bridge.cameraRunning = function (...args) {
+      if (external()) {
+        const status = capture();
+        return !!status.running && !status.paused;
+      }
+      return !!original.cameraRunning?.apply(this, args);
+    };
+    bridge.startNativeStreamer = async function (...args) {
+      if (!external()) return original.startNativeStreamer?.apply(this, args);
+      const result = await api().start();
+      XRA.events?.emit?.('camera-started', externalActiveCamera());
+      return externalActiveCamera();
+    };
+    bridge.restartNativeStreamer = async function (...args) {
+      if (!external()) return original.restartNativeStreamer?.apply(this, args);
+      const result = await api().resume();
+      XRA.events?.emit?.('camera-started', externalActiveCamera());
+      return externalActiveCamera();
+    };
+    bridge.stopNativeStreamer = async function (...args) {
+      if (!external()) return original.stopNativeStreamer?.apply(this, args);
+      await api().stop();
+      XRA.events?.emit?.('camera-stopped', { backend: 'python' });
+      return true;
+    };
+    bridge.enumerateCameras = async function (options = {}) {
+      if (!external()) return original.enumerateCameras?.call(this, options) || [];
+      // enumerateDevices does not acquire the camera. Never run the legacy
+      // permission probe (getUserMedia) while Python owns /dev/video*.
+      const devices = await navigator.mediaDevices?.enumerateDevices?.() || [];
+      const cameras = devices.filter(device => device.kind === 'videoinput');
+      deviceIndex.clear();
+      return cameras.map((device, index) => {
+        deviceIndex.set(device.deviceId, index);
+        return {
+          deviceId: device.deviceId || String(index),
+          groupId: device.groupId || '',
+          label: device.label || `Camera ${index + 1}`,
+          index,
+        };
+      });
+    };
+    async function configurePreference({ deviceId = '', label = '' } = {}, startAfter = false) {
+      const fallback = Number.parseInt(String(deviceId), 10);
+      const index = deviceIndex.has(deviceId)
+        ? deviceIndex.get(deviceId)
+        : (Number.isFinite(fallback) ? fallback : 0);
+      XRA.config.devices ||= {};
+      XRA.config.devices.camera_device_id = deviceId || String(index);
+      XRA.config.devices.camera_label = label || `Camera ${index + 1}`;
+      await XRA.profileService?.save?.(0);
+      await api().configure({ index });
+      if (startAfter) await api().start({ index });
+      return externalActiveCamera();
+    }
+    bridge.setCameraPreference = async function (preference = {}) {
+      return external()
+        ? configurePreference(preference, false)
+        : original.setCameraPreference?.call(this, preference);
+    };
+    bridge.switchCamera = async function (preference = {}) {
+      return external()
+        ? configurePreference(preference, true)
+        : original.switchCamera?.call(this, preference);
+    };
+    bridge.applyCameraConstraintsSafe = async function (constraints, options = {}) {
+      if (!external()) return original.applyCameraConstraintsSafe?.call(this, constraints, options);
+      // Browser-stream constraints (often 1920x1080/60) are unrelated to the
+      // Python capture path. Forwarding them silently overrode the lightweight
+      // 384x216/20 backend configuration and saturated the CPU.
+      return true;
+    };
+    bridge.ensureCameraHealthy = async function (options = {}) {
+      if (!external()) return original.ensureCameraHealthy?.call(this, options);
+      const status = capture();
+      return !!status.running && !status.paused && (status.available || Number(status.frames) > 0);
+    };
+    bridge.cameraHealth = function (...args) {
+      if (!external()) return original.cameraHealth?.apply(this, args);
+      const status = capture();
+      const live = !!status.running && !status.paused;
+      return {
+        healthy: live && (status.available || Number(status.frames) > 0),
+        live,
+        muted: false,
+        backend: 'python',
+        error: status.last_error || '',
+      };
+    };
+    Object.defineProperty(bridge, '__xraBackendRouteV5', { value: true });
+  }
+
+  install();
+})();
+

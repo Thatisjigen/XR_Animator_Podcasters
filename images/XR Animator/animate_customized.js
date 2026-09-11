@@ -30,6 +30,7 @@ MMD_SA_options.startup_screen = false;
     '00_core.js',
     '05_i18n.js',
     '10_performance.js',
+    '11_backend.js',
     '15_debug.js',
     '20_tracking.js',
     '30_background.js',

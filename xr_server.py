@@ -12,6 +12,46 @@ import subprocess
 import sys
 import os
 
+# XR Animator ONNX mocap backends (server-side, self-contained). Import is
+# defensive: a broken/missing runtime must never stop the static server.
+try:
+    from xra_backends import registry as backend_registry
+    from xra_backends import runtime as backend_runtime
+    from xra_backends import downloader as backend_downloader
+    from xra_backends import engine as backend_engine
+    from xra_backends import server as backend_server
+    from xra_backends import provision as backend_provision
+    BACKENDS_OK = True
+except Exception as _backend_exc:  # pragma: no cover - import guard
+    backend_registry = backend_runtime = None
+    backend_downloader = backend_engine = backend_server = None
+    backend_provision = None
+    BACKENDS_OK = False
+    _BACKENDS_IMPORT_ERROR = str(_backend_exc)
+
+
+def _start_backend_provisioning():
+    """Kick off first-boot ONNX backend provisioning exactly once.
+
+    Called at import time so it runs no matter the entry point (frozen
+    xr_launcher.py imports xr_server; running xr_server.py directly also
+    imports it). With the bundled build this is a pure no-op that just records
+    a ready state; otherwise it starts a background download thread.
+    """
+    global _BACKEND_PROVISION_STARTED
+    if not BACKENDS_OK or _BACKEND_PROVISION_STARTED:
+        return
+    _BACKEND_PROVISION_STARTED = True
+    try:
+        prov = backend_provision.autostart()
+        print(f"[XRA] Backend provisioning: {prov.get('phase')} — {prov.get('message','')}")
+    except Exception as exc:  # never block the server
+        print(f"[XRA] Backend provisioning failed to start: {exc}")
+
+
+_BACKEND_PROVISION_STARTED = False
+_start_backend_provisioning()
+
 if getattr(sys, 'frozen', False):
     ROOT = Path(sys.executable).resolve().parent
 else:
@@ -42,7 +82,7 @@ DEFAULT_CUSTOM = {
     "performance": {
         "preset": "CUSTOM", "master_preset": "CUSTOM", "tracking_pipeline": "FULL_BODY",
         "disable_postfx": False, "pose_fps": 30, "hand_fps": 20, "auto_last_result": None,
-        "runtime_adaptive": False, "diagnostics_hud": False,
+        "runtime_adaptive": False, "diagnostics_hud": False, "tracker_backend": "mediapipe",
     },
     "debug": {"session_enabled": False, "max_events": 12000},
     "body": {"anchor_strength": 0.80, "transition_ms": 450, "stable": False},
@@ -974,6 +1014,15 @@ def finalize_native_recording(video_info, audio_info=None):
 
 
 class Handler(SimpleHTTPRequestHandler):
+    # Required for the /__xra_backend/ws WebSocket upgrade: BaseHTTPRequestHandler
+    # defaults to HTTP/1.0, which marks the connection non-persistent and tears
+    # the socket down after the handshake response. The client's onopen still
+    # fires (so the bridge logs "connected"), but the server's subsequent
+    # {type:"pose"} frames never reach it -> lastPose stays null -> the ONNX
+    # branch is never taken and the rig shows nothing. HTTP/1.1 keeps the socket
+    # alive for the long-lived bidirectional WS frame stream.
+    protocol_version = "HTTP/1.1"
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
 
@@ -994,22 +1043,49 @@ class Handler(SimpleHTTPRequestHandler):
 
     def send_json(self, obj, status=200):
         data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass   # client reloaded / disconnected before we finished writing
 
     def send_js(self, text, status=200):
         data = text.encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/javascript; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/javascript; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def do_GET(self):
         path = urlparse(self.path).path
+
+        # ONNX mocap backend: WebSocket upgrade and JSON status routes.
+        if path == "/__xra_backend/ws":
+            if BACKENDS_OK and backend_server.maybe_upgrade(self):
+                return
+            self.send_error(404, "Backend websocket unavailable")
+            return
+
+        if path == "/__xra_backend/status":
+            self.send_json(self._backend_status())
+            return
+
+        if path == "/__xra_backend/list":
+            if not BACKENDS_OK:
+                self.send_json({"ok": False, "error": "backends module failed to import",
+                                "detail": _BACKENDS_IMPORT_ERROR}, status=500)
+                return
+            self.send_json({"ok": True, "backends": backend_registry.list_backends(),
+                            "runtime": backend_runtime.describe(),
+                            "active": backend_engine.ENGINE.status()})
+            return
 
         if path.startswith("/__xra_avatar/"):
             avatar = avatar_file(path.removeprefix("/__xra_avatar/"))
@@ -1098,6 +1174,26 @@ class Handler(SimpleHTTPRequestHandler):
 
         super().do_GET()
 
+    def _backend_status(self):
+        """Lightweight status payload for the Performance tab."""
+        if not BACKENDS_OK:
+            return {"ok": False, "error": "backends module failed to import",
+                    "detail": _BACKENDS_IMPORT_ERROR}
+        try:
+            from xra_backends import capture as backend_capture
+            capture_status = backend_capture.CAPTURE.status()
+        except Exception:
+            capture_status = {"running": False}
+        return {
+            "ok": True,
+            "runtime": backend_runtime.describe(),
+            "active": backend_engine.ENGINE.status(),
+            "capture": capture_status,
+            "provision": backend_provision.status(),
+            "installed": {mid: backend_registry.is_installed(mid)
+                          for mid in backend_registry.REGISTRY},
+        }
+
     def read_json_body(self, max_bytes=4 * 1024 * 1024):
         length = int(self.headers.get("Content-Length", "0"))
         if length <= 0 or length > max_bytes:
@@ -1110,6 +1206,68 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path
+
+        if path == "/__xra_backend/install-runtime":
+            if not BACKENDS_OK:
+                self.send_json({"ok": False, "error": "backends module failed to import"}, status=500)
+                return
+            try:
+                result = backend_runtime.bootstrap_install(force=False)
+                self.send_json(result)
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+
+        if path == "/__xra_backend/download":
+            if not BACKENDS_OK:
+                self.send_json({"ok": False, "error": "backends module failed to import"}, status=500)
+                return
+            try:
+                obj = self.read_json_body(64 * 1024)
+                model = str(obj.get("model") or "")
+                if model not in backend_registry.REGISTRY:
+                    raise ValueError(f"Unknown backend: {model}")
+                result = backend_downloader.ensure_model(model)
+                self.send_json(result)
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+
+        if path == "/__xra_backend/load":
+            if not BACKENDS_OK:
+                self.send_json({"ok": False, "error": "backends module failed to import"}, status=500)
+                return
+            try:
+                obj = self.read_json_body(64 * 1024)
+                model = str(obj.get("model") or "")
+                if model == backend_registry.MEDIAPIPE_ID or not model:
+                    backend_engine.ENGINE.unload()
+                    self.send_json({"ok": True, "active": backend_engine.ENGINE.status()})
+                    return
+                if model not in backend_registry.REGISTRY:
+                    raise ValueError(f"Unknown backend: {model}")
+                result = backend_engine.ENGINE.load(model)
+                self.send_json(result)
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+
+        if path == "/__xra_backend/uninstall":
+            if not BACKENDS_OK:
+                self.send_json({"ok": False, "error": "backends module failed to import"}, status=500)
+                return
+            try:
+                obj = self.read_json_body(64 * 1024)
+                model = str(obj.get("model") or "")
+                if model not in backend_registry.REGISTRY:
+                    raise ValueError(f"Unknown backend: {model}")
+                if backend_engine.ENGINE.model_id == model:
+                    backend_engine.ENGINE.unload()
+                result = backend_downloader.remove_model(model)
+                self.send_json(result)
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
 
         if path == "/__xra_debug/save":
             try:
@@ -1379,4 +1537,10 @@ if __name__ == "__main__":
     print(f"Profile: {PROFILE_FILE}")
     print(f"Backup:  {BACKUP_FILE}")
     print(f"Avatars: {AVATAR_DIR}")
+
+    # Backend provisioning already started at import time (see
+    # _start_backend_provisioning); nothing else to do here.
+    if not BACKENDS_OK:
+        print("[XRA] ONNX mocap backends unavailable (import failed)")
+
     server.serve_forever()

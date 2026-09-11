@@ -259,13 +259,23 @@
     return 'Full Body';
   }
 
-  // MediaPipe Vision full-body mocap engine is selected at startup for calibration,
-  // then restored to the user's saved pipeline after calibration completes.
+  // V7.81: the old "boot in MediaPipe Vision Full Body, calibrate, then restore
+  // the saved pipeline" workaround is retired. External engines (ONNX DWPose /
+  // native MediaPipe) now provide a full 3D structure and standard landmark
+  // casing from the first frame, so there is no reason to force the WASM engine
+  // at startup. We boot straight into the configured engine/pipeline.
+  //
+  // `startupCalibration` stays as a thin compatibility shim: it is marked
+  // completed immediately so every legacy guard (assertStartupNativeOptions,
+  // prepareStartupMocap, finishStartupNativeOverride) becomes a no-op and never
+  // overrides the user's saved mocap_type again.
   const startupCalibration = XRA.startupCalibration ||= {
-    active: true,
-    completed: false,
+    active: false,
+    completed: true,
     native: 'Full Body'
   };
+  startupCalibration.active = false;
+  startupCalibration.completed = true;
 
   function cleanRetiredSettings() {
     config.left_settings ||= {};

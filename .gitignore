@@ -34,3 +34,16 @@ __pycache__/
 /webview_app.spec
 /root_test*.log
 /package-lock.json
+
+# XR Animator ONNX mocap backends: keep the package code, ignore heavy payloads.
+# The runtime is bootstrapped from vendored wheels, models are downloaded on
+# demand and must never be committed (git-lfs territory).
+/xra_backends/models/
+/xra_backends/runtime/
+/xra_backends/runtime_state.json
+/xra_backends/provision_state.json
+# Vendored wheels are added deliberately by the maintainer; keep them tracked
+# only when intentionally committed. Ignore stray partially-downloaded wheels.
+/xra_backends/wheels/*.part
+# Scratch / test artifacts
+/tmp/
