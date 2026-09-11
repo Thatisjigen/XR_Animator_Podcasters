@@ -68,6 +68,9 @@ postMessageAT('OK')
 
   var facemesh_initialized;
   async function load_lib(options) {
+    // Native backend: bypass browser WASM inference completely
+    facemesh_initialized = true;
+    return;
 if (facemesh_initialized) {
   if (use_mediapipe_face_landmarker && (model_inference_device != options.model_inference_device)) {
     model_inference_device = options.model_inference_device;
@@ -533,6 +536,8 @@ return new ImageData(uint8,w,h)
 }
 */
 async function process_video_buffer(rgba, w,h, options) {
+  // Native backend: bypass browser frame processing
+  return;
   try {
     await load_lib(options)
   }
@@ -856,14 +861,23 @@ eyes.forEach((e)=>{e[2]=eye_x;e[3]=eye_y;})
   return faces
 }
 
+function is_wireframe_visible() {
+  if (!canvas) return false;
+  if (canvas.hidden || canvas.style.display === 'none') return false;
+  if (typeof window !== 'undefined' && window.MMD_SA_options?.user_camera?.display?.wireframe?.hidden) return false;
+  return true;
+}
+
 function draw(faces, w,h, options) {
+  if (!is_wireframe_visible()) return;
   if (canvas && options.draw_canvas) {
     if (RAF_timerID)
       cancelAnimationFrame(RAF_timerID)
     RAF_timerID = requestAnimationFrame(function () {
       RAF_timerID = null
+      if (!is_wireframe_visible()) return;
       draw_facemesh(faces, w,h);
-      draw_pose()
+      draw_pose();
     });
   }
 }
@@ -874,6 +888,10 @@ var canvas_camera;
 var facemesh_drawn;
 
 function draw_facemesh(faces, w_full,h_full, rgba) {
+  if (!is_wireframe_visible()) {
+    facemesh_drawn = false;
+    return;
+  }
   function distance(a,b) {
 return Math.sqrt(Math.pow(a[0]-b[0],2) + Math.pow(a[1]-b[1],2))
   }
@@ -908,10 +926,10 @@ return Math.sqrt(Math.pow(a[0]-b[0],2) + Math.pow(a[1]-b[1],2))
 
   facemesh_drawn = true
 
-  const bb = faces[0].bb
+  const bb = faces[0].bb || { x: 0, y: 0, w: w_full, h: h_full };
   if (canvas_camera) {
     context.globalAlpha = 1
-    context.drawImage(canvas_camera, bb.x/2, bb.y/2, bb.w/2, bb.h/2)
+    context.drawImage(canvas_camera, (bb.x || 0)/2, (bb.y || 0)/2, (bb.w || w_full)/2, (bb.h || h_full)/2)
 //    context.globalAlpha = 0.5
   }
 
@@ -1030,6 +1048,7 @@ var pose_connected_pairs = [
 ];
 
 function draw_pose() {
+  if (!is_wireframe_visible()) return;
   if (!posenet || (posenet.score < 0.1)) return;
 
   context.save()
@@ -1043,11 +1062,16 @@ function draw_pose() {
 
   var part = {}
   posenet.keypoints.forEach(function (p, idx) {
-    part[p.part] = p
+    // Backend keypoints expose .part (camelCase) set by xra_backend_bridge.js.
+    // Legacy MediaPipe keypoints use .part only. Support both.
+    var key = p.part || p.name;
+    if (!key) return;
+    part[key] = p;
 
 //    if (idx > 12) p.score = 0;
     if (p.score <= 0) return;
-    if (/nose|Eye|Ear/.test(p.part) && facemesh_drawn) return;
+    // Use key for the head-part filter so it works for both .part and .name.
+    if (/nose|Eye|Ear/i.test(key) && facemesh_drawn) return;
 
     const {y, x} = p.position;
 
@@ -1060,7 +1084,8 @@ function draw_pose() {
   pose_connected_pairs.forEach(function (pair) {
     var L = part[pair[0]]
     var R = part[pair[1]]
-    if ((L.score <= 0) || (R.score <= 0)) return;
+    // Guard: missing keypoints (e.g. partial ONNX detection) must not crash.
+    if (!L || !R || (L.score <= 0) || (R.score <= 0)) return;
 
     var ax = L.position.x, ay = L.position.y, bx = R.position.x, by = R.position.y;
     context.beginPath();
@@ -1076,6 +1101,7 @@ function draw_pose() {
   context.restore()
 }
 
+
 // https://github.com/tensorflow/tfjs-models/blob/master/handpose/demo/index.js
 var fingerLookupIndices = {
       thumb: [0, 1, 2, 3, 4],
@@ -1088,17 +1114,31 @@ var fingerLookupIndices = {
 function draw_hand() {
   if (!handpose || !handpose.length) return;
 
-  var scale = pose_w/cw*2
+  var scale = pose_w/cw*2;
 
+  context.save();
   context.strokeStyle = 'pink';
   context.fillStyle = 'pink';
+  context.lineWidth = 1.5;
 
   handpose.forEach(function (hand) {
-    const keypoints = hand.keypoints;//hand.landmarks||hand.keypoints;//
+    const keypoints = hand.keypoints;
+    if (!keypoints || !keypoints.length) return;
+
+    // Anchor connection from body wrist to hand root if available
+    const label = hand.label;
+    const wrist_key = (label === 'Left') ? 'rightWrist' : 'leftWrist';
+    const body_wrist = part && (part[wrist_key] || part[wrist_key.toLowerCase()]);
+    if (body_wrist && body_wrist.score > 0 && body_wrist.position) {
+      context.beginPath();
+      context.moveTo(body_wrist.position.x / scale, body_wrist.position.y / scale);
+      context.lineTo(keypoints[0][0] / scale, keypoints[0][1] / scale);
+      context.stroke();
+    }
 
     keypoints.forEach(function (p) {
       context.beginPath();
-      context.arc((p[0]-2)/scale, (p[1]-2)/scale, 3, 0, 2 * Math.PI);
+      context.arc(p[0]/scale, p[1]/scale, 1.8, 0, 2 * Math.PI);
       context.fill();
     });
 
@@ -1114,6 +1154,7 @@ function draw_hand() {
       context.stroke(region);
     });
   });
+  context.restore();
 }
 
 

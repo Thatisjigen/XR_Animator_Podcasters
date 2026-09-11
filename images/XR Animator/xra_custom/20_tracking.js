@@ -170,12 +170,12 @@
   let rightHandVisible = false;
   let leftHandLastSeen = 0;
   let rightHandLastSeen = 0;
-  const neutralLeftArmMMD = new Map();
-  const neutralRightArmMMD = new Map();
   let leftArmTransition = null;
   let rightArmTransition = null;
   const leftArmTransitionFrom = new Map();
   const rightArmTransitionFrom = new Map();
+  const leftArmVRMTransitionFrom = new Map();
+  const rightArmVRMTransitionFrom = new Map();
 
   const MMD_HEAD_BONES = ['首', '頭'];
   const VRM_HEAD_BONES = ['neck', 'head'];
@@ -295,6 +295,11 @@
   }
 
   function technicalFaceMeshEvidence(force = false) {
+    if (globalThis.XRA?.xraBackend?.active) {
+      const facePoints = globalThis.XRA?.xraBackend?.face?.landmarks?.length || 0;
+      technicalMeshSample = { available: true, present: facePoints > 0, source: 'native-backend' };
+      return technicalMeshSample;
+    }
     const now = performance.now();
     if (!force && now - technicalMeshSampleAt < 40) return technicalMeshSample;
     technicalMeshSampleAt = now;
@@ -411,6 +416,13 @@
     if (transform.position && bone.position) bone.position.copy(transform.position);
     if (transform.quaternion && bone.quaternion) bone.quaternion.copy(transform.quaternion);
     if (transform.scale && bone.scale) bone.scale.copy(transform.scale);
+    bone.updateMatrix?.();
+    bone.matrixWorldNeedsUpdate = true;
+  }
+
+  function restoreRotationOnly(bone, transform) {
+    if (!bone || !transform) return;
+    if (transform.quaternion && bone.quaternion) bone.quaternion.copy(transform.quaternion);
     bone.updateMatrix?.();
     bone.matrixWorldNeedsUpdate = true;
   }
@@ -553,8 +565,11 @@
     else vrmMap.clear();
   }
 
+  const MMD_FROZEN_ARM_BONES = MMD_ARM_BONES.filter(b => !['左肩', '右肩', '左肩P', '右肩P'].includes(b));
+  const VRM_FROZEN_ARM_BONES = VRM_ARM_BONES.filter(b => !['leftShoulder', 'rightShoulder'].includes(b));
+
   function captureFrozenArms() {
-    captureBones(MMD_ARM_BONES, frozenMMDBones, VRM_ARM_BONES, frozenVRMBones);
+    captureBones(MMD_FROZEN_ARM_BONES, frozenMMDBones, VRM_FROZEN_ARM_BONES, frozenVRMBones);
   }
 
   function hardLockArms() {
@@ -563,13 +578,13 @@
 
     const bones = getMMDMesh()?.bones_by_name;
     if (bones) {
-      for (const [name, transform] of frozenMMDBones) restoreTransform(bones[name], transform);
+      for (const [name, transform] of frozenMMDBones) restoreRotationOnly(bones[name], transform);
     }
 
     const modelX = getVRMModelX();
     if (modelX?.getBoneNode) {
       for (const [name, transform] of frozenVRMBones) {
-        try { restoreTransform(modelX.getBoneNode(name), transform); }
+        try { restoreRotationOnly(modelX.getBoneNode(name), transform); }
         catch (e) {}
       }
     }
@@ -821,28 +836,33 @@
     return setBodyStable(enabled, enabled ? recapture : false);
   }
 
-  function captureNeutralArms() {
-    const bones = getMMDMesh()?.bones_by_name;
-    if (!bones) return;
-    for (const name of MMD_LEFT_ARM) {
-      if (bones[name]) neutralLeftArmMMD.set(name, cloneTransform(bones[name]));
-    }
-    for (const name of MMD_RIGHT_ARM) {
-      if (bones[name]) neutralRightArmMMD.set(name, cloneTransform(bones[name]));
-    }
-  }
-
   function onHandStatusChange(side, isEntering) {
     const bones = getMMDMesh()?.bones_by_name;
-    if (!bones) return;
+    const modelX = getVRMModelX();
+    if (!bones && !modelX) return;
     const now = performance.now();
     const armList = side === 'Left' ? MMD_LEFT_ARM : MMD_RIGHT_ARM;
     const transFrom = side === 'Left' ? leftArmTransitionFrom : rightArmTransitionFrom;
 
     transFrom.clear();
-    for (const name of armList) {
-      const bone = bones[name];
-      if (bone) transFrom.set(name, cloneTransform(bone));
+    if (bones) {
+      for (const name of armList) {
+        const bone = bones[name];
+        if (bone) transFrom.set(name, cloneTransform(bone));
+      }
+    }
+
+    const vrmTransFrom = side === 'Left' ? leftArmVRMTransitionFrom : rightArmVRMTransitionFrom;
+    vrmTransFrom.clear();
+    if (modelX?.getBoneNode) {
+      const vrmPrefix = side.toLowerCase();
+      const vrmArmList = VRM_ARM_BONES.filter(b => b.startsWith(vrmPrefix));
+      for (const name of vrmArmList) {
+        try {
+          const bone = modelX.getBoneNode(name);
+          if (bone) vrmTransFrom.set(name, cloneTransform(bone));
+        } catch (e) {}
+      }
     }
 
     const duration = 280;
@@ -896,9 +916,8 @@
     if (!handsEnabled) return;
     const now = performance.now();
     const bones = getMMDMesh()?.bones_by_name;
-    if (!bones) return;
-
-    if (!neutralLeftArmMMD.size) captureNeutralArms();
+    const modelX = getVRMModelX();
+    if (!bones && !modelX) return;
 
     checkHandRuntimeEvidence(now);
 
@@ -912,56 +931,114 @@
     }
 
     if (leftArmTransition) {
-      const t = util.clamp((now - leftArmTransition.start) / leftArmTransition.duration, 0, 1);
+      const elapsed = now - leftArmTransition.start;
+      const t = util.clamp(elapsed / leftArmTransition.duration, 0, 1);
       const k = smoothStep01(t);
       if (leftArmTransition.type === 'enter') {
         const blendMix = 1 - k;
         if (t >= 1) {
           leftArmTransition = null;
+          leftArmTransitionFrom.clear();
+          leftArmVRMTransitionFrom.clear();
         } else {
-          for (const [name, transform] of leftArmTransitionFrom) {
-            const bone = bones[name];
-            if (bone) blendTransform(bone, transform, blendMix);
+          if (bones) {
+            for (const [name, transform] of leftArmTransitionFrom) {
+              const bone = bones[name];
+              if (bone) blendTransform(bone, transform, blendMix);
+            }
+          }
+          if (modelX?.getBoneNode) {
+            for (const [name, transform] of leftArmVRMTransitionFrom) {
+              try {
+                const bone = modelX.getBoneNode(name);
+                if (bone) blendTransform(bone, transform, blendMix);
+              } catch (e) {}
+            }
           }
         }
       } else {
-        const targetMap = neutralLeftArmMMD;
         if (t >= 1) {
           leftArmTransition = null;
+          leftArmTransitionFrom.clear();
+          leftArmVRMTransitionFrom.clear();
         } else {
-          for (const name of MMD_LEFT_ARM) {
-            const bone = bones[name];
-            const from = leftArmTransitionFrom.get(name);
-            const to = targetMap.get(name);
-            if (bone && from && to) blendInterpolateTransform(bone, from, to, k);
+          if (bones) {
+            for (const name of MMD_LEFT_ARM) {
+              const bone = bones[name];
+              const from = leftArmTransitionFrom.get(name);
+              if (bone && from) {
+                const live = cloneTransform(bone);
+                blendInterpolateTransform(bone, from, live, k);
+              }
+            }
+          }
+          if (modelX?.getBoneNode) {
+            for (const [name, from] of leftArmVRMTransitionFrom) {
+              try {
+                const bone = modelX.getBoneNode(name);
+                if (bone && from) {
+                  const live = cloneTransform(bone);
+                  blendInterpolateTransform(bone, from, live, k);
+                }
+              } catch (e) {}
+            }
           }
         }
       }
     }
 
     if (rightArmTransition) {
-      const t = util.clamp((now - rightArmTransition.start) / rightArmTransition.duration, 0, 1);
+      const elapsed = now - rightArmTransition.start;
+      const t = util.clamp(elapsed / rightArmTransition.duration, 0, 1);
       const k = smoothStep01(t);
       if (rightArmTransition.type === 'enter') {
         const blendMix = 1 - k;
         if (t >= 1) {
           rightArmTransition = null;
+          rightArmTransitionFrom.clear();
+          rightArmVRMTransitionFrom.clear();
         } else {
-          for (const [name, transform] of rightArmTransitionFrom) {
-            const bone = bones[name];
-            if (bone) blendTransform(bone, transform, blendMix);
+          if (bones) {
+            for (const [name, transform] of rightArmTransitionFrom) {
+              const bone = bones[name];
+              if (bone) blendTransform(bone, transform, blendMix);
+            }
+          }
+          if (modelX?.getBoneNode) {
+            for (const [name, transform] of rightArmVRMTransitionFrom) {
+              try {
+                const bone = modelX.getBoneNode(name);
+                if (bone) blendTransform(bone, transform, blendMix);
+              } catch (e) {}
+            }
           }
         }
       } else {
-        const targetMap = neutralRightArmMMD;
         if (t >= 1) {
           rightArmTransition = null;
+          rightArmTransitionFrom.clear();
+          rightArmVRMTransitionFrom.clear();
         } else {
-          for (const name of MMD_RIGHT_ARM) {
-            const bone = bones[name];
-            const from = rightArmTransitionFrom.get(name);
-            const to = targetMap.get(name);
-            if (bone && from && to) blendInterpolateTransform(bone, from, to, k);
+          if (bones) {
+            for (const name of MMD_RIGHT_ARM) {
+              const bone = bones[name];
+              const from = rightArmTransitionFrom.get(name);
+              if (bone && from) {
+                const live = cloneTransform(bone);
+                blendInterpolateTransform(bone, from, live, k);
+              }
+            }
+          }
+          if (modelX?.getBoneNode) {
+            for (const [name, from] of rightArmVRMTransitionFrom) {
+              try {
+                const bone = modelX.getBoneNode(name);
+                if (bone && from) {
+                  const live = cloneTransform(bone);
+                  blendInterpolateTransform(bone, from, live, k);
+                }
+              } catch (e) {}
+            }
           }
         }
       }
@@ -1312,16 +1389,16 @@
     const bones = getMMDMesh()?.bones_by_name;
     if (bones) for (const [name, neutral] of guardMMDBones) {
       const bone = bones[name]; if (!bone) continue;
-      if (MMD_DESK_TORSO.has(name)) { clampDeskRotation(bone, neutral); blendTransform(bone, neutral, torso); }
-      else if (MMD_DESK_HIPS.has(name)) blendTransform(bone, neutral, hips);
+      if (MMD_DESK_TORSO.has(name)) { clampDeskRotation(bone, neutral); blendRotationOnly(bone, neutral, torso); }
+      else if (MMD_DESK_HIPS.has(name)) blendRotationOnly(bone, neutral, hips);
       else if (MMD_DESK_LEGS.has(name)) blendTransform(bone, neutral, legs);
     }
     const modelX = getVRMModelX();
     if (modelX?.getBoneNode) for (const [name, neutral] of guardVRMBones) {
       try {
         const bone = modelX.getBoneNode(name); if (!bone) continue;
-        if (VRM_DESK_TORSO.has(name)) { clampDeskRotation(bone, neutral); blendTransform(bone, neutral, torso); }
-        else if (VRM_DESK_HIPS.has(name)) blendTransform(bone, neutral, hips);
+        if (VRM_DESK_TORSO.has(name)) { clampDeskRotation(bone, neutral); blendRotationOnly(bone, neutral, torso); }
+        else if (VRM_DESK_HIPS.has(name)) blendRotationOnly(bone, neutral, hips);
         else if (VRM_DESK_LEGS.has(name)) blendTransform(bone, neutral, legs);
       } catch (e) {}
     }
@@ -1937,14 +2014,17 @@
       const sy = coreXY.slice(0,2).reduce((a,v)=>a+v.y,0) / Math.min(2, coreXY.length);
       const size = poseVideoSize();
       const normalized = Math.abs(hy) <= 2.5 && Math.abs(sy) <= 2.5;
-      const margin = normalized ? .015 : Math.max(3, Number(size?.height || 480) * .015);
-      geometryGood = hy < sy - margin;
+      // Allow natural head and neck flexion (looking down/bowing head towards shoulders)
+      const allowedDown = normalized ? .12 : Math.max(30, Number(size?.height || 480) * .12);
+      geometryGood = hy < (sy + allowedDown);
     }
 
     const mostlyOutside = insideHead.length <= Math.max(1, Math.floor(head.length * .25));
     const weak = confidentHead.length < required || goodHead.length < required || !noseGood;
-    const hardLost = mostlyOutside || (!geometryGood && goodHead.length >= 1) || (weak && goodHead.length <= 1);
-    const strong = !hardLost && geometryGood && noseGood && goodHead.length >= required;
+    // When the nose is confidently tracked inside the frame or facemesh is active, the head is active even when tilted down!
+    const fmActive = !!(window.System?._browser?.camera?.facemesh?.enabled && window.System?._browser?.camera?.facemesh?.data_detected > 0);
+    const hardLost = !fmActive && (mostlyOutside || (!geometryGood && !noseGood) || (weak && goodHead.length <= 1));
+    const strong = !hardLost && (geometryGood || noseGood || fmActive) && goodHead.length >= required;
     const signature = head.map(v => {
       const c = Number(v.p?.visibility ?? v.p?.score ?? v.p?.presence);
       return v.xy ? `${Math.round(v.xy.x*1000)/1000},${Math.round(v.xy.y*1000)/1000},${Number.isFinite(c)?Math.round(c*100)/100:'n'}` : 'x';
@@ -2269,7 +2349,7 @@
   }
 
   const COLLIDER_PRESETS = {
-    OFF:    { mode: 0, head: 100, chest: 100, waist: 100, hip: 100, reaction: 'z_push' },
+    OFF:    { mode: 0, head: 0,   chest: 0,   waist: 0,   hip: 0,   reaction: 'sphere' },
     SOFT:   { mode: 2, head: 90,  chest: 85,  waist: 80,  hip: 85,  reaction: 'z_push' },
     NORMAL: { mode: 2, head: 100, chest: 105, waist: 95,  hip: 100, reaction: 'z_push' },
     STRONG: { mode: 2, head: 115, chest: 130, waist: 115, hip: 120, reaction: 'z_push' }
@@ -2290,6 +2370,21 @@
     if (!preset || !collider) return false;
 
     collider.mode = preset.mode;
+
+    // When OFF: zero out all sub-parts so enabled = !!size_percent evaluates to false.
+    if (name === 'OFF') {
+      collider.enabled = false;
+      for (const part of ['head', 'chest', 'waist', 'hip']) {
+        if (collider[part]) {
+          collider[part].size_percent = 0;
+          collider[part].enabled = false;
+        }
+      }
+      Object.assign(config.collider, { mode: 0, reaction: 'sphere', head: 0, chest: 0, waist: 0, hip: 0 });
+      events.emit('collider', name);
+      return true;
+    }
+
     if (collider.head) {
       collider.head.size_percent = preset.head;
       collider.head.reaction_type = preset.reaction;
@@ -2346,6 +2441,26 @@
         try { camera.poseNet.hide_avatar_on_tracking_loss = 0; } catch (e) {}
       }
       if ('avatar_loss_hide_mode' in config.tracking) config.tracking.avatar_loss_hide_mode = 0;
+    }
+
+    if (camera?.handpose) {
+      try {
+        const sArm = Number(config.tracking?.stabilize_arm ?? 0);
+        const sTime = Number(config.tracking?.stabilize_arm_time ?? 0);
+        camera.handpose.stabilize_arm = sArm;
+        camera.handpose.stabilize_arm_time = sTime;
+        if (config.tracking?.stabilize_hand_percent !== undefined) {
+          camera.handpose.stabilize_hand_percent = Number(config.tracking.stabilize_hand_percent);
+        }
+        if (config.tracking?.constrain_tracking_region !== undefined) {
+          camera.handpose.constrain_tracking_region = !!config.tracking.constrain_tracking_region;
+        }
+      } catch (e) {}
+    }
+    const mm = window.MMD_SA?.MMD?.motionManager;
+    if (mm?.para_SA?.motion_tracking) {
+      mm.para_SA.motion_tracking.hand_tracking = mm.para_SA.motion_tracking.hand_tracking || {};
+      mm.para_SA.motion_tracking.hand_tracking.stabilize_arm_disabled = !Number(config.tracking?.stabilize_arm ?? 0);
     }
 
     if (config.collider?.preset && config.collider.preset !== 'CUSTOM') {
@@ -2414,7 +2529,7 @@
 
   function savedStartupLocks() {
     return {
-      hands: config.tracking?.hands_enabled === false,
+      hands: false,
       body: !!config.body?.stable,
       hysteresis: !!config.tracking?.motion_hysteresis_enabled
     };
@@ -2509,9 +2624,9 @@
   events.on('avatar-changed', () => {
     clearGuardState();
     faceLossPoseMMD.clear(); faceLossPoseVRM.clear(); resetFaceLossState(true);
-    neutralLeftArmMMD.clear(); neutralRightArmMMD.clear();
     leftArmTransition = null; rightArmTransition = null;
     leftArmTransitionFrom.clear(); rightArmTransitionFrom.clear();
+    leftArmVRMTransitionFrom.clear(); rightArmVRMTransitionFrom.clear();
     setTimeout(restoreRuntime, 450);
     setTimeout(restoreRuntime, 1200);
   });

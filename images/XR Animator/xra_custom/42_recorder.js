@@ -101,7 +101,7 @@
   function chooseSourceMime(mode) {
     const candidates = mode === 'audio'
       ? ['audio/webm;codecs=opus', 'audio/webm']
-      : ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9', 'video/webm'];
+      : ['video/webm;codecs=vp8,opus', 'video/webm;codecs=h264,opus', 'video/webm;codecs=vp9,opus', 'video/webm'];
     for (const type of candidates) {
       if (!window.MediaRecorder?.isTypeSupported || MediaRecorder.isTypeSupported(type)) return type;
     }
@@ -360,7 +360,6 @@
       sourceRenderWidth = Number(specs.width || vc.target_width || 0);
       sourceRenderHeight = Number(specs.height || vc.target_height || 0);
       sourceWasUpscaled = false;
-      console.log(TAG, 'native XR recorder configured', { target_width: vc.target_width, target_height: vc.target_height, fps: vc.fps, target_mime_type: vc.target_mime_type, specs });
     } catch (e) {
       sourceRenderWidth = vc.target_width;
       sourceRenderHeight = vc.target_height;
@@ -390,7 +389,6 @@
       }
       nativeBlobResult = { blob, downloadName: downloadName || '', mimeType: blob.type || 'video/webm' };
       nativeBlobResolve?.(nativeBlobResult);
-      console.log(TAG, 'intercepted native XR video', { bytes: blob.size, type: blob.type, downloadName });
     } catch (e) {
       nativeBlobReject?.(e);
     }
@@ -583,7 +581,6 @@
     drawFrames = 0;
     drawStartedAt = performance.now();
 
-    console.log(TAG, 'classic recording source:', canvasLabel(sourceCanvas), sourceCanvas.width + 'x' + sourceCanvas.height, '=>', width + 'x' + height);
 
     recordingCanvas = document.createElement('canvas');
     recordingCanvas.width = width;
@@ -612,7 +609,6 @@
 
   function createVideoStream() {
     sourceCanvas = resolveSceneCanvas();
-    console.log(TAG, 'recording scene source:', canvasLabel(sourceCanvas), sourceCanvas.width + 'x' + sourceCanvas.height);
     const c = cfg();
     const width = Number(c.width || sourceCanvas.width || 1280);
     const height = Number(c.height || sourceCanvas.height || 720);

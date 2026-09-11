@@ -1,3 +1,4 @@
+# XRA_RUNTIME_BUILD_V8
 #!/usr/bin/env python3
 """Build a Linux package with its own NW.js/Chromium browser."""
 
@@ -6,6 +7,8 @@ from __future__ import annotations
 from pathlib import Path
 import shutil
 import subprocess
+import sys
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +16,41 @@ BASE_RELEASE = ROOT / "release" / "XR_Animator"
 TARGET = ROOT / "release" / "XR_Animator_Bundled"
 NW_RUNTIME = ROOT / "cache" / "nwjs-v0.115.0-linux-x64"
 NW_PACKAGE = ROOT / "packaging" / "nw"
+
+# These paths are created or edited by the packaged application.  A rebuild
+# replaces the bundle, but must not silently replace the user's local state.
+PERSISTENT_PATHS = (
+    "xra_profile.json",
+    "xra_profile.backup.json",
+    "avatars",
+    "backgrounds",
+    "recordings",
+    ".xra_recording_sessions",
+)
+
+
+def snapshot_user_data(staging: Path) -> None:
+    if not TARGET.is_dir():
+        return
+    for name in PERSISTENT_PATHS:
+        source = TARGET / name
+        destination = staging / name
+        if source.is_dir():
+            shutil.copytree(source, destination, symlinks=True)
+        elif source.is_file():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+
+
+def restore_user_data(staging: Path) -> None:
+    for name in PERSISTENT_PATHS:
+        source = staging / name
+        destination = TARGET / name
+        if source.is_dir():
+            shutil.copytree(source, destination, dirs_exist_ok=True, symlinks=True)
+        elif source.is_file():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
 
 
 def copy_runtime() -> None:
@@ -38,13 +76,18 @@ def main() -> int:
             "Scarica la build Linux x64 prima di creare il bundle."
         )
 
-    completed = subprocess.run(["python3", str(ROOT / "tools" / "build_release.py")], cwd=ROOT)
+    completed = subprocess.run([sys.executable, str(ROOT / "tools" / "build_release.py")], cwd=ROOT)
     if completed.returncode:
         return completed.returncode
 
-    if TARGET.exists():
-        shutil.rmtree(TARGET)
-    shutil.copytree(BASE_RELEASE, TARGET)
+    (ROOT / "release").mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="xra-user-data-", dir=ROOT / "release") as temporary:
+        staging = Path(temporary)
+        snapshot_user_data(staging)
+        if TARGET.exists():
+            shutil.rmtree(TARGET)
+        shutil.copytree(BASE_RELEASE, TARGET)
+        restore_user_data(staging)
 
     bundled_server = TARGET / "XR_Animator"
     bundled_server.rename(TARGET / "xra_server")

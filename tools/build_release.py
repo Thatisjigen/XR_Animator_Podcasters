@@ -1,3 +1,4 @@
+# XRA_RUNTIME_BUILD_V8
 #!/usr/bin/env python3
 """Build the Linux onedir release without packaging generated junk."""
 
@@ -13,22 +14,14 @@ SPEC = ROOT / "xr_animator_launcher.spec"
 
 
 def pyinstaller_command() -> list[str]:
-    candidates = [
-        ROOT / ".venv" / "bin" / "pyinstaller",
-        ROOT / ".venv" / "Scripts" / "pyinstaller.exe",
-    ]
-    for candidate in candidates:
-        if candidate.is_file():
-            return [str(candidate)]
+    """Always use PyInstaller from the interpreter running this build."""
     try:
         import PyInstaller  # noqa: F401
-    except ImportError:
+    except ImportError as exc:
         raise SystemExit(
-            "PyInstaller non trovato. Crea l'ambiente con `python3 -m venv .venv` "
-            "e installa `pyinstaller` al suo interno."
-        )
+            f"PyInstaller is missing from {sys.executable}. Run ./build.sh first."
+        ) from exc
     return [sys.executable, "-m", "PyInstaller"]
-
 
 def main() -> int:
     command = pyinstaller_command() + [

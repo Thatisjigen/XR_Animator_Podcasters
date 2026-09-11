@@ -9,7 +9,6 @@
 
   let root = null;
   let drawer = null;
-  let search = null;
   let nativeJson = null;
   let opened = false;
 
@@ -59,6 +58,12 @@
   }
   function snapshotPersistedLeftState() {
     config.left_settings ||= {};
+    // Settings removed or moved to another section used to remain forever in
+    // the profile. Besides being confusing during audits, some old profiles
+    // contained duplicate copies of wireframe, hand-camera and VRM controls.
+    for (const key of Object.keys(config.left_settings)) {
+      if (!persistedLeftControls.has(key)) delete config.left_settings[key];
+    }
     for (const [key, adapter] of persistedLeftControls) {
       try { config.left_settings[key] = clone(adapter.get()); }
       catch (e) { console.warn(TAG, 'snapshot left setting failed:', key, e); }
@@ -266,6 +271,7 @@
     const poseSelect = select([['', 'Loading poses…']]);
     let poseBusy = false;
     let poseRequestSequence = 0;
+    let restoringSavedPose = false;
 
     function poseList() {
       const useTracked = !!(
@@ -332,7 +338,7 @@
       }
     }
 
-    async function changePoseByKey(key) {
+    async function changePoseByKey(key, { remember = true } = {}) {
       const requestId = `pose-${Date.now().toString(36)}-${++poseRequestSequence}`;
       const started = performance.now();
       const item = window.MMD_SA_options?.Dungeon_options?.item_base?.pose;
@@ -411,6 +417,11 @@
           elapsed_ms:Math.round((performance.now() - started) * 10) / 10,
           context:debugContext()
         });
+        if (remember) {
+          config.avatar ||= {};
+          config.avatar.pose_key = poseKey(resolved.pose);
+          await XRA.profileService.save(0);
+        }
         return resolved.pose;
       }
       catch (error) {
@@ -428,30 +439,70 @@
       }
     }
 
+    let poseOptionsSignature = '';
+
+    async function restoreSavedPose() {
+      const key = String(config.avatar?.pose_key || '');
+      if (!key || restoringSavedPose || poseBusy) return false;
+      const resolved = resolvePoseByKey(key);
+      if (!resolved.pose) return false;
+      if (isCurrentPose(resolved.pose)) {
+        return true;
+      }
+
+      restoringSavedPose = true;
+      poseBusy = true;
+      poseSelect.disabled = true;
+      try {
+        await changePoseByKey(key, { remember: false });
+        return true;
+      }
+      catch (e) {
+        return false;
+      }
+      finally {
+        restoringSavedPose = false;
+        poseBusy = false;
+        refreshPoseList();
+      }
+    }
+
     function refreshPoseList() {
       const list = poseList();
       const filename = window.MMD_SA?.MMD?.motionManager?.filename || '';
       const selectedKey = poseSelect.value;
-      poseSelect.innerHTML = '';
-      if (!list.length) {
-        const o = document.createElement('option');
-        o.value = ''; o.textContent = 'Pose list not ready';
-        poseSelect.appendChild(o);
-      }
-      else {
-        let currentKey = '';
-        list.forEach(m => {
+      const entries = list.length
+        ? list.map(m => ({ value: poseKey(m), label: m.info || m.name, motionName: m.name }))
+        : [{ value: '', label: 'Pose list not ready', motionName: '' }];
+      const signature = entries.map(entry => `${entry.value}\u0000${entry.label}\u0000${entry.motionName}`).join('\u0001');
+
+      // XR Animator emits motionchange continuously while mocap is active. The
+      // pose catalogue normally stays identical, so rebuilding all 32 OPTIONs
+      // on every event only creates thousands of detached Blink nodes and event
+      // wrappers for the garbage collector. Rebuild solely when the catalogue
+      // itself changes; selecting the current pose remains a cheap value update.
+      if (signature !== poseOptionsSignature) {
+        const fragment = document.createDocumentFragment();
+        entries.forEach(entry => {
           const o = document.createElement('option');
-          o.value = poseKey(m);
-          o.textContent = m.info || m.name;
-          o.dataset.motionName = m.name;
-          poseSelect.appendChild(o);
-          if (isCurrentPose(m)) currentKey = o.value;
+          o.value = entry.value;
+          o.textContent = entry.label;
+          if (entry.motionName) o.dataset.motionName = entry.motionName;
+          fragment.appendChild(o);
         });
-        if (currentKey) poseSelect.value = currentKey;
-        else if (selectedKey && [...poseSelect.options].some(o => o.value === selectedKey)) poseSelect.value = selectedKey;
+        poseSelect.replaceChildren(fragment);
+        poseOptionsSignature = signature;
       }
-      current.textContent = `Current pose: ${filename || 'not ready'}`;
+
+      if (list.length) {
+        const currentPose = list.find(isCurrentPose);
+        const currentKey = currentPose ? poseKey(currentPose) : '';
+        if (currentKey) poseSelect.value = currentKey;
+        else if (selectedKey && entries.some(entry => entry.value === selectedKey)) poseSelect.value = selectedKey;
+      }
+
+      const currentText = `Current pose: ${filename || 'not ready'}`;
+      if (current.textContent !== currentText) current.textContent = currentText;
       poseSelect.disabled = poseBusy || !list.length;
     }
 
@@ -552,8 +603,21 @@
       sub: 'La correzione delle spalle è nativa; per pose già caricate può richiedere un riavvio.'
     });
 
-    const onMotionChange = () => setTimeout(refreshPoseList, 0);
+    const onMotionChange = () => setTimeout(() => {
+      refreshPoseList();
+      restoreSavedPose();
+    }, 0);
     window.addEventListener('SA_MMD_model0_onmotionchange', onMotionChange);
+    events.on('camera-started', () => {
+      // Starting mocap swaps from the idle pose catalogue to the tracked one
+      // and can select its own neutral pose. Restore again against that final
+      // catalogue even if the idle pose was already restored before START.
+      for (const delay of [250, 900, 1800]) setTimeout(restoreSavedPose, delay);
+    });
+    events.on('profile-loaded', () => {
+      setTimeout(restoreSavedPose, 250);
+    });
+    for (const delay of [0, 500, 1500, 3000]) setTimeout(restoreSavedPose, delay);
     box.details.addEventListener('toggle', () => {
       if (box.details.open) refreshPoseList();
     });
@@ -635,30 +699,29 @@
     });
     box.body.appendChild(status);
 
-    const mirror = document.createElement('input');
-    mirror.type = 'checkbox';
-    bindRefresh(() => { mirror.checked = !!config.devices?.mirror_preview; XRA.nativeBridge.applyWebcamMirror?.(); });
-    mirror.onchange = async () => { await XRA.nativeBridge.setWebcamMirror(mirror.checked); refreshAll(); };
-    row(box.body, 'Mirror webcam preview', mirror, {
-      reset: async () => XRA.nativeBridge.setWebcamMirror(!!defaults.devices?.mirror_preview),
-      isDefault: () => !!config.devices?.mirror_preview === !!defaults.devices?.mirror_preview,
-      sub: 'Preview only: tracking coordinates are not mirrored.'
-    });
 
     const selfie = document.createElement('input');
     selfie.type = 'checkbox';
-    bindRefresh(() => { selfie.checked = !!config.devices?.selfie_mode; XRA.nativeBridge.applyWebcamSelfie?.(); });
+    // The native XR Animator flag uses the opposite convention from the label
+    // exposed here. Keep that quirk at the UI boundary instead of stacking
+    // multiple CSS/backend flips throughout the camera pipeline.
+    bindRefresh(() => { selfie.checked = !config.devices?.selfie_mode; XRA.nativeBridge.applyWebcamSelfie?.(); });
     selfie.onchange = async () => {
       selfie.disabled = true;
-      try { await XRA.nativeBridge.setWebcamSelfie(!!selfie.checked); }
+      try { await XRA.nativeBridge.setWebcamSelfie(!selfie.checked); }
       catch (e) { XRA.toast('Selfie mode: ' + e.message, 'error', 4000); }
       finally { selfie.disabled = false; refreshAll(); }
     };
     row(box.body, 'Selfie mode', selfie, {
       reset: async () => XRA.nativeBridge.setWebcamSelfie(!!defaults.devices?.selfie_mode),
       isDefault: () => !!config.devices?.selfie_mode === !!defaults.devices?.selfie_mode,
-      sub: 'Native webcam selfie flip (user_camera.video_flipped). This is not the Hand Camera selfie setting.'
+      sub: 'Inverte orizzontalmente il tracking della webcam. Non modifica la modalità selfie della Hand Camera.'
     });
+
+    addToggle(box.body, 'Show mocap wireframe',
+      () => XRA.nativeBridge?.getPreviewVisibility?.('wireframe') ?? !window.MMD_SA_options?.user_camera?.display?.wireframe?.hidden,
+      value => XRA.nativeBridge?.setPreviewVisibility?.('wireframe', value),
+      'Mostra lo scheletro di tracciamento sopra la scena.');
 
     const actions = el('div', 'xra-inline-grid xra-three-actions');
     const startButton = button('▶ Start webcam');
@@ -770,7 +833,7 @@
     addRange(box.body, 'Arm horizontal offset',
       () => Number(pose()?.arm_horizontal_offset_percent || 0),
       value => { const p = pose(); if (p) p.arm_horizontal_offset_percent = value; },
-      { min: -100, max: 100, step: 1 });
+      { min: -200, max: 200, step: 1 });
 
     addRange(box.body, 'Arm vertical offset',
       () => Number(pose()?.arm_vertical_offset_percent || 0),
@@ -806,40 +869,9 @@
   function addHands(content) {
     const box = details(content, '🖐 Native hand tracking');
 
-    addSelect(box.body, 'Hand recovery', [['off', 'Off'], ['normal', 'Normal'], ['aggressive', 'Aggressive']],
-      () => String(config.tracking?.hand_recovery_mode || 'normal'),
-      value => {
-        config.tracking ||= {};
-        config.tracking.hand_recovery_mode = String(value || 'normal');
-        XRA.tracking?.broadcastHands?.();
-      },
-      'When a wrist is lost, periodically runs a full-frame hand search instead of waiting for body tracking to rediscover the wrist.');
-
-    addSelect(box.body, 'Hand detection sensitivity', [['normal', 'Normal'], ['high', 'High']],
-      () => String(config.tracking?.hand_detection_sensitivity || 'high'),
-      value => {
-        config.tracking ||= {};
-        config.tracking.hand_detection_sensitivity = String(value || 'high');
-        XRA.tracking?.broadcastHands?.();
-      },
-      'High uses the lower-confidence MediaPipe Hand Landmarker path to reacquire difficult hands more easily.');
-
-    addRange(box.body, 'Hand stabilization',
-      () => Number(hands()?.stabilize_hand_percent || 0),
-      value => { const h = hands(); if (h) h.stabilize_hand_percent = value; },
-      { min: 0, max: 100, step: 1 });
-
-    addSelect(box.body, 'Arm stabilization', [[0, 'Off'], [1, 'Upper-body mocap'], [2, 'On']],
-      () => Number(hands()?.stabilize_arm || 0),
-      value => { const h = hands(); if (h) h.stabilize_arm = Number(value); });
-
-    addSelect(box.body, 'Time to stabilize', [[0, '0'], [1, '1 frame'], [100, '100 ms'], [200, '200 ms']],
-      () => Number(hands()?.stabilize_arm_time || 0),
-      value => { const h = hands(); if (h) h.stabilize_arm_time = Number(value); });
-
-    addSelect(box.body, 'Hands worker', [[0, 'Off'], [1, 'Parallel'], [2, 'Synced']],
-      () => Number(hands()?.use_hands_worker || 0),
-      value => { const h = hands(); if (h) h.use_hands_worker = Number(value); });
+    const note = el('div', 'xra-note');
+    note.textContent = 'Le impostazioni di stabilizzazione, sensibilità e recupero mani sono configurabili nel pannello principale «🖐️ Arms & Hands».';
+    box.body.appendChild(note);
 
     addRange(box.body, 'Depth adjustment',
       () => Number(handOptions()?.depth_adjustment_percent || 0),
@@ -855,10 +887,6 @@
       () => Number(handOptions()?.depth_scale_percent || 50),
       value => { const h = handOptions(); if (h) h.depth_scale_percent = value; },
       { min: 10, max: 90, step: 1 });
-
-    addToggle(box.body, 'Constrain tracking region',
-      () => !!hands()?.constrain_tracking_region,
-      value => { const h = hands(); if (h) h.constrain_tracking_region = value; });
 
     const handCameraButton = button('Toggle Hand Camera');
     bindRefresh(() => {
@@ -890,10 +918,6 @@
 
   function addFace(content) {
     const box = details(content, '🙂 Face tracking');
-
-    addSelect(box.body, 'AI inference device', [['GPU', 'GPU'], ['CPU', 'CPU']],
-      () => face()?.model_inference_device || 'GPU',
-      value => { const f = face(); if (f) f.model_inference_device = String(value); });
 
     addToggle(box.body, 'Eye tracking',
       () => !!face()?.eye_tracking,
@@ -940,22 +964,6 @@
       { min: 0, max: 200, step: 5, sub: 'Peso nativo facemesh; il mix microfono/camera resta nel pannello a destra.' });
   }
 
-  function addDisplay(content) {
-    const box = details(content, '🖥 Preview / debug');
-
-    addToggle(box.body, 'Show webcam video',
-      () => XRA.nativeBridge?.getPreviewVisibility?.('video') ?? (window.MMD_SA_options?.user_camera?.display?.video?.hidden === false),
-      value => XRA.nativeBridge?.setPreviewVisibility?.('video', value),
-      'Mostra una preview del flusso webcam già usato dal tracking, senza aprire una seconda cattura.');
-
-    addToggle(box.body, 'Show mocap wireframe',
-      () => XRA.nativeBridge?.getPreviewVisibility?.('wireframe') ?? !window.MMD_SA_options?.user_camera?.display?.wireframe?.hidden,
-      value => XRA.nativeBridge?.setPreviewVisibility?.('wireframe', value));
-
-    addToggle(box.body, 'Portrait mode',
-      () => !!window.MMD_SA_options?.user_camera?.portrait_mode,
-      value => { if (window.MMD_SA_options?.user_camera) MMD_SA_options.user_camera.portrait_mode = value; });
-  }
 
   function addCaptureVMC(content) {
     const capture = details(content, '🎬 Recording / capture', { open: true });
@@ -1062,7 +1070,7 @@
       isDefault: () => (rc().width || defaults.recorder.width) === defaults.recorder.width && (rc().height || defaults.recorder.height) === defaults.recorder.height
     });
 
-    const recFps = select([[24, '24 FPS'], [30, '30 FPS'], [60, '60 FPS']]);
+    const recFps = select([[24, '24 FPS'], [30, '30 FPS'], [60, '60 FPS'], [90, '90 FPS']]);
     bindRefresh(() => { recFps.value = String(rc().fps || 30); });
     recFps.onchange = () => {
       rc().fps = Number(recFps.value); rc().preset = 'CUSTOM';
@@ -1112,110 +1120,9 @@
       isDefault: () => (rc().audio_bps || defaults.recorder.audio_bps) === defaults.recorder.audio_bps
     });
 
-    const audioProfile = select([['podcast', 'Podcast / Natural'], ['call', 'Voice / Call']]);
-    bindRefresh(() => { audioProfile.value = rc().audio_profile || 'podcast'; });
-    audioProfile.onchange = () => saveRec('audio_profile', audioProfile.value, false);
-    row(recorderBox.body, 'Audio profile', audioProfile, {
-      reset: () => saveRec('audio_profile', defaults.recorder.audio_profile, false),
-      isDefault: () => (rc().audio_profile || defaults.recorder.audio_profile) === defaults.recorder.audio_profile,
-      sub: 'Podcast disables browser echo cancellation/noise suppression/AGC. Voice/Call enables them.'
-    });
-
-    const gate = document.createElement('input'); gate.type = 'checkbox';
-    bindRefresh(() => { gate.checked = !!rc().noise_gate; });
-    gate.onchange = () => saveRec('noise_gate', gate.checked, false);
-    row(recorderBox.body, 'Noise gate', gate, {
-      reset: () => saveRec('noise_gate', defaults.recorder.noise_gate, false),
-      isDefault: () => !!rc().noise_gate === defaults.recorder.noise_gate,
-      sub: 'Closes the mic below the threshold with hold/release smoothing to reduce steady background noise.'
-    });
-
-    const GATE_MIN_DB = -55;
-    const GATE_MAX_DB = -5;
-    const gateWrap = el('div', 'xra-stack-control');
-    const gateRange = document.createElement('input'); gateRange.type = 'range'; gateRange.min = String(GATE_MIN_DB); gateRange.max = String(GATE_MAX_DB); gateRange.step = '0.25';
-    const gateValue = el('div', 'xra-sub'); gateWrap.append(gateRange, gateValue);
-    const renderGateThreshold = () => {
-      const value = Number(rc().gate_threshold_db ?? -48);
-      gateRange.value = String(Math.max(GATE_MIN_DB, Math.min(GATE_MAX_DB, value)));
-      gateValue.textContent = `${Number(gateRange.value).toFixed(2)} dB`;
-    };
-    bindRefresh(renderGateThreshold);
-    gateRange.oninput = () => {
-      rc().gate_threshold_db = Number(gateRange.value);
-      gateValue.textContent = `${Number(gateRange.value).toFixed(2)} dB`;
-      updateGateMeterThreshold?.();
-    };
-    gateRange.onchange = () => XRA.profileService.save();
-    row(recorderBox.body, 'Gate threshold', gateWrap, {
-      reset: () => {
-        rc().gate_threshold_db = defaults.recorder.gate_threshold_db;
-        renderGateThreshold();
-        updateGateMeterThreshold?.();
-        XRA.profileService.save();
-        refreshAll();
-      },
-      isDefault: () => (rc().gate_threshold_db ?? defaults.recorder.gate_threshold_db) === defaults.recorder.gate_threshold_db,
-      sub: 'Focused voice-gate range -55 to -5 dB, in 0.25 dB steps. This trades extreme low-end range for much finer control around normal room noise and quiet speech.'
-    });
-
-    const gateMeterWrap = el('div', 'xra-stack-control');
-    const gateMeter = el('div', 'xra-gate-meter');
-    const gateMeterFill = el('div', 'xra-gate-meter-fill');
-    const gateMeterThreshold = el('div', 'xra-gate-meter-threshold');
-    gateMeter.append(gateMeterFill, gateMeterThreshold);
-    const gateScale = el('div', 'xra-gate-scale');
-    for (const label of ['-55', '-45', '-35', '-25', '-15', '-5 dB']) gateScale.appendChild(el('span', '', label));
-    const gateLive = el('div', 'xra-sub', 'Mic level: — dB');
-    const gateMonitorActions = el('div', 'xra-actions');
-    const monitorStart = button('🎙 Monitor mic');
-    const monitorStop = button('Stop monitor'); monitorStop.disabled = true;
-    gateMonitorActions.append(monitorStart, monitorStop);
-    gateMeterWrap.append(gateMeter, gateScale, gateLive, gateMonitorActions);
-    row(recorderBox.body, 'Live gate level', gateMeterWrap, {
-      sub: 'The meter is zoomed to -55 to -5 dB, with 10 dB reference marks, so room noise, quiet speech and the threshold are easier to compare.'
-    });
-    const gatePct = db => Math.max(0, Math.min(100, (Number(db) - GATE_MIN_DB) / (GATE_MAX_DB - GATE_MIN_DB) * 100));
-    const updateGateMeterThreshold = () => {
-      gateMeterThreshold.style.left = `${gatePct(Number(rc().gate_threshold_db ?? -48))}%`;
-    };
-    const updateGateMeter = data => {
-      const db = Number(data?.db);
-      if (!Number.isFinite(db)) return;
-      gateMeterFill.style.width = `${gatePct(db)}%`;
-      updateGateMeterThreshold();
-      const threshold = Number(rc().gate_threshold_db ?? -48);
-      const tr = key => XRA.i18n?.t?.(key) || key;
-      gateLive.textContent = `${tr('Mic level')}: ${db.toFixed(1)} dB · ${tr('threshold')} ${threshold.toFixed(1)} dB · ${tr(data.open ? 'OPEN' : 'CLOSED')}`;
-    };
-    monitorStart.onclick = async () => {
-      monitorStart.disabled = true;
-      try { await XRA.recorder.startGateMonitor(); monitorStop.disabled = false; }
-      catch (e) { monitorStart.disabled = false; XRA.toast('Mic monitor: ' + e.message, 'error', 5000); }
-    };
-    monitorStop.onclick = async () => { await XRA.recorder.stopGateMonitor(); monitorStart.disabled = false; monitorStop.disabled = true; gateLive.textContent = `${XRA.i18n?.t?.('Mic level') || 'Mic level'}: — dB`; gateMeterFill.style.width = '0%'; updateGateMeterThreshold(); };
-    events.on('recording-gate-monitor', updateGateMeter);
-    events.on('recording-gate', updateGateMeter);
-    events.on('recording-gate-monitor-stop', () => { if (!XRA.recorder.status().active) { monitorStart.disabled = false; monitorStop.disabled = true; } });
-
-    const gateCalibrate = button('🎚 Auto calibrate gate (3 s)');
-    const gateCalibrationInfo = el('div', 'xra-sub');
-    bindRefresh(() => {
-      const floor = Number(rc().gate_noise_floor_db);
-      gateCalibrationInfo.textContent = Number.isFinite(floor) ? `Saved room noise floor: ${floor.toFixed(1)} dB` : 'Noise floor not calibrated yet.';
-    });
-    gateCalibrate.onclick = async () => {
-      gateCalibrate.disabled = true;
-      try {
-        const result = await XRA.recorder.calibrateNoiseGate(3);
-        gateCalibrationInfo.textContent = `Noise floor ${result.noise_floor_db.toFixed(1)} dB → threshold ${result.threshold_db} dB`;
-        XRA.toast(`Gate calibrated: ${result.threshold_db} dB`);
-        refreshAll();
-      } catch (e) { XRA.toast('Gate calibration: ' + e.message, 'error', 5000); }
-      finally { gateCalibrate.disabled = false; }
-    };
-    const gateCalWrap = el('div', 'xra-stack-control'); gateCalWrap.append(gateCalibrate, gateCalibrationInfo);
-    row(recorderBox.body, 'Gate calibration', gateCalWrap, { sub: 'Stay silent for 3 seconds. Uses the median room-noise level plus about 5 dB and rounds to 0.25 dB, avoiding brief noise spikes while matching the finer gate slider.' });
+    const audioNote = el('div', 'xra-note');
+    audioNote.textContent = 'Profilo microfono e Noise Gate sono configurabili nel pannello principale «🎙️ Audio & Lip-sync».';
+    recorderBox.body.appendChild(audioNote);
 
     const rawBackup = document.createElement('input'); rawBackup.type = 'checkbox';
     bindRefresh(() => { rawBackup.checked = !!rc().raw_audio_backup; rawBackup.disabled = (rc().mode || 'video_audio') === 'video'; });
@@ -1536,19 +1443,6 @@
     }
   }
 
-  function filterRows() {
-    if (!drawer || !search) return;
-    const query = search.value.trim().toLowerCase();
-    drawer.querySelectorAll('.xra-native-row, .xra-command-wrap').forEach(rowNode => {
-      rowNode.hidden = !!query && !rowNode.textContent.toLowerCase().includes(query);
-    });
-    drawer.querySelectorAll('.xra-details').forEach(section => {
-      if (!query) return;
-      const hasVisible = [...section.querySelectorAll('.xra-native-row, .xra-command-wrap')].some(r => !r.hidden);
-      if (hasVisible) section.open = true;
-    });
-  }
-
   function setOpen(value) {
     opened = !!value;
     root?.classList.toggle('open', opened);
@@ -1557,7 +1451,7 @@
       // The drawer already has an explicit × close button. Hide the launcher
       // while open instead of showing a redundant ‹ arrow beside the panel.
       launcher.hidden = opened;
-      launcher.textContent = '⚙ XR SETTINGS';
+      launcher.textContent = '⚙ IMPOSTAZIONI XRP';
     }
     if (opened) {
       refreshAll();
@@ -1573,23 +1467,17 @@
     root.id = 'XRA_NATIVE_SETTINGS';
     UI.registerHideable(root);
 
-    const launcher = button('⚙ XR SETTINGS', 'xra-native-launcher');
+    const launcher = button('⚙ IMPOSTAZIONI XRP', 'xra-native-launcher');
     launcher.dataset.xraNativeLauncher = '1';
     launcher.onclick = () => setOpen(!opened);
 
     drawer = el('div', 'xra-native-drawer');
     const header = el('div', 'xra-native-header');
-    header.appendChild(el('div', 'xra-native-title', '⚙ XR SETTINGS'));
+    header.appendChild(el('div', 'xra-native-title', '⚙ IMPOSTAZIONI XRP'));
     const close = button('×', 'xra-native-close');
     close.title = 'Close panel';
     close.onclick = () => setOpen(false);
     header.appendChild(close);
-
-    search = stopInputPropagation(document.createElement('input'));
-    search.type = 'search';
-    search.className = 'xra-native-search';
-    search.placeholder = 'Search settings…';
-    search.oninput = filterRows;
 
     const content = el('div', 'xra-native-content');
     content.appendChild(el('div', 'xra-note', 'XR SETTINGS includes advanced avatar and scene settings not present in the quick panel.'));
@@ -1600,12 +1488,11 @@
     addMotion(content);
     addHands(content);
     addFace(content);
-    addDisplay(content);
     addCaptureVMC(content);
     addMiscNative(content);
     addAdvanced(content);
 
-    drawer.append(header, search, content);
+    drawer.append(header, content);
     root.append(launcher, drawer);
     document.body.appendChild(root);
 

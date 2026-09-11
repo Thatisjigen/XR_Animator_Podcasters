@@ -1,3 +1,4 @@
+# XRA_UNIVERSAL_RUNTIME_V9
 #!/usr/bin/env python3
 """One-click launcher for the HTTP version of XR Animator.
 
@@ -9,6 +10,11 @@ custom UI depend on that origin.
 from __future__ import annotations
 
 import argparse
+import json
+import multiprocessing
+import os
+from pathlib import Path
+import subprocess
 import threading
 import time
 import urllib.error
@@ -38,7 +44,50 @@ def is_xr_server(port: int) -> bool:
 def open_browser_when_ready(port: int, chat: bool) -> None:
     for _ in range(40):
         if is_xr_server(port):
-            webbrowser.open(app_url(port, chat), new=2)
+            url = app_url(port, chat)
+            root_dir = Path(__file__).resolve().parent
+            nw_bin = root_dir / "dist_nwjs" / "nw"
+            if nw_bin.exists() and os.access(nw_bin, os.X_OK):
+                # Read profile for GPU preference
+                gpu_pref = "default"
+                prof_file = root_dir / "xra_profile.json"
+                if prof_file.exists():
+                    try:
+                        with open(prof_file, "r", encoding="utf-8") as f:
+                            pdata = json.load(f)
+                            gpu_pref = pdata.get("custom", {}).get("performance", {}).get("gpu_preference", "default")
+                    except Exception:
+                        pass
+
+                env = os.environ.copy()
+                nw_cmd = [
+                    str(nw_bin),
+                    f"--url={url}",
+                    "--enable-webaudio-input",
+                    "--auto-accept-camera-and-microphone-capture",
+                    "--autoplay-policy=no-user-gesture-required",
+                ]
+
+                if gpu_pref == "high-performance":
+                    print("[XRA] Avvio runtime NW.js con GPU Dedicata (NVIDIA RTX Offload)")
+                    env["__NV_PRIME_RENDER_OFFLOAD"] = "1"
+                    env["__GLX_VENDOR_LIBRARY_NAME"] = "nvidia"
+                    env["__VK_LAYER_NV_optimus"] = "NVIDIA_only"
+                    nw_cmd.extend(["--ignore-gpu-blocklist", "--enable-gpu-rasterization"])
+                else:
+                    print(f"[XRA] Avvio runtime NW.js con GPU di Sistema / Integrata ({gpu_pref})")
+                    env["DRI_PRIME"] = "0"
+                    env.pop("__NV_PRIME_RENDER_OFFLOAD", None)
+                    env.pop("__GLX_VENDOR_LIBRARY_NAME", None)
+                    env.pop("__VK_LAYER_NV_optimus", None)
+
+                try:
+                    subprocess.Popen(nw_cmd, cwd=str(root_dir / "dist_nwjs"), env=env)
+                    return
+                except Exception as e:
+                    print(f"[XRA] Avvio NW.js fallito ({e}), fallback su browser predefinito.")
+
+            webbrowser.open(url, new=2)
             return
         time.sleep(0.1)
     print("[XRA] Il server non ha risposto in tempo; apri manualmente:")
@@ -118,4 +167,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     raise SystemExit(main())

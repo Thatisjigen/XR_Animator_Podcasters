@@ -101,18 +101,47 @@
     if (!active) return;
 
     const fill = panel?.querySelector('[data-xra="meter-fill"]');
-    const gate = panel?.querySelector('[data-xra="meter-gate"]');
-    if (!fill || !gate) return;
+    const gateLip = panel?.querySelector('[data-xra="meter-gate-lip"]') || panel?.querySelector('[data-xra="meter-gate"]');
+    const gateRec = panel?.querySelector('[data-xra="meter-gate-rec"]');
+    const legend = panel?.querySelector('[data-xra="meter-legend"]');
+    if (!fill) return;
 
     let last = 0;
+    const maxLinear = 0.08;
     const draw = t => {
       if (!(config.lip?.meter_visible && !UI.hidden && !body?.hidden && lipDetails?.open)) return;
-      if (t - last >= 66) {
+      if (t - last >= 45) {
         last = t;
         const envelope = Number(window.XR_LIP?.status?.().envelope || 0);
-        const max = 0.08;
-        fill.style.width = Math.min(100, envelope / max * 100) + '%';
-        gate.style.left = Math.min(100, Number(config.lip.threshold || .018) / max * 100) + '%';
+        const fillPct = Math.min(100, Math.max(0, (envelope / maxLinear) * 100));
+        fill.style.width = fillPct.toFixed(1) + '%';
+
+        const lipThresh = Number(config.lip?.threshold || 0.018);
+        if (gateLip) {
+          const lipPct = Math.min(100, Math.max(0, (lipThresh / maxLinear) * 100));
+          gateLip.style.left = lipPct.toFixed(1) + '%';
+        }
+
+        const recGateOn = config.recorder?.noise_gate !== false;
+        const recThreshDb = Number(config.recorder?.gate_threshold_db ?? -48);
+        const recThreshLinear = Math.pow(10, recThreshDb / 20);
+        if (gateRec) {
+          if (!recGateOn) {
+            gateRec.style.display = 'none';
+          } else {
+            gateRec.style.display = 'block';
+            const recPct = Math.min(100, Math.max(0, (recThreshLinear / maxLinear) * 100));
+            gateRec.style.left = recPct.toFixed(1) + '%';
+          }
+        }
+
+        if (legend) {
+          const lipSpeaking = envelope >= lipThresh;
+          const recPassing = !recGateOn || (envelope >= recThreshLinear);
+          legend.innerHTML =
+            `<span style="color:${lipSpeaking ? '#68d391' : '#a0aec0'}">🟢 Lip-sync: <b>${lipThresh.toFixed(3)}</b> (${lipSpeaking ? 'VOCE' : 'MUTED'})</span>` +
+            `<span style="color:${recPassing ? '#f6ad55' : '#718096'}">🟠 Gate REC: <b>${recGateOn ? `${recThreshDb.toFixed(1)} dB` : 'OFF'}</b> (${!recGateOn ? 'OFF' : (recPassing ? 'APERTO' : 'CHIUSO')})</span>`;
+        }
       }
       meterRAF = requestAnimationFrame(draw);
     };
@@ -353,13 +382,17 @@
     });
   }
 
-  function installLip(parent) {
-    const box = details(parent, '🎙 Lip sync', { open: true });
+  function installAudio(parent) {
+    const box = details(parent, '🎙️ Audio & Lip-sync', { open: true });
     lipDetails = box.details;
     lipDetails.addEventListener('toggle', () => {
       if (lipDetails.open) refreshMicrophones();
       updateMeterLoop();
     });
+
+    const note = el('div', 'xra-note');
+    note.textContent = 'Gestione unificata microfono per la sincronizzazione labiale dell\'avatar e per la registrazione audio con soppressione rumore.';
+    box.body.appendChild(note);
 
     micSelect = select([['', 'Default microphone']]);
     bindRefresh(() => {
@@ -374,14 +407,44 @@
       await refreshMicrophones();
       refreshAll();
     };
-    row(box.body, 'Microphone', micSelect, {
+    row(box.body, 'Dispositivo microfono', micSelect, {
       reset: async () => {
         config.devices.mic_device_id = '';
         await restartLip();
         await refreshMicrophones();
       },
-      isDefault: () => !(config.devices?.mic_device_id)
+      isDefault: () => !(config.devices?.mic_device_id),
+      sub: 'Microfono comune sia per la sincronizzazione labiale dell\'avatar sia per la registrazione.'
     });
+
+    const audioProfile = select([
+      ['podcast', 'Podcast / Voce naturale (massima qualità)'],
+      ['call', 'Chiamata / Call (filtri eco/rumore browser)']
+    ]);
+    bindRefresh(() => {
+      audioProfile.value = config.recorder?.audio_profile || 'podcast';
+    });
+    audioProfile.onchange = async () => {
+      config.recorder ||= {};
+      config.recorder.audio_profile = audioProfile.value;
+      await XRA.profileService.save();
+      refreshAll();
+    };
+    row(box.body, 'Profilo audio registrazione', audioProfile, {
+      reset: async () => {
+        config.recorder ||= {};
+        config.recorder.audio_profile = defaults.recorder?.audio_profile || 'podcast';
+        await XRA.profileService.save();
+        refreshAll();
+      },
+      isDefault: () => (config.recorder?.audio_profile || 'podcast') === (defaults.recorder?.audio_profile || 'podcast'),
+      sub: 'Podcast disattiva l\'elaborazione aggressiva del browser preservando il timbro naturale; Call attiva AGC ed eco-cancellation.'
+    });
+
+    // --- Sezione Lip-sync avatar ---
+    const lipSecTitle = el('div', 'xra-section-title', '👄 Parametri Lip-sync (Bocca avatar)');
+    lipSecTitle.style.cssText = 'margin:12px 0 6px;font-size:12px;font-weight:600;color:#88c0d0;';
+    box.body.appendChild(lipSecTitle);
 
     const mixWrap = el('div', 'xra-stack-control');
     const mix = document.createElement('input');
@@ -397,9 +460,10 @@
       mixText.textContent = `Mic ${mix.value}% · Camera ${100 - Number(mix.value)}%`;
     };
     mix.onchange = () => XRA.profileService.save();
-    row(box.body, 'Mic / camera mix', mixWrap, {
+    row(box.body, 'Mix microfono / camera', mixWrap, {
       reset: async () => { config.lip.mic_mix = defaults.lip.mic_mix; },
-      isDefault: () => Math.abs((config.lip.mic_mix ?? .6) - defaults.lip.mic_mix) < 1e-9
+      isDefault: () => Math.abs((config.lip.mic_mix ?? .6) - defaults.lip.mic_mix) < 1e-9,
+      sub: 'Bilanciamento tra volume microfono e movimento rilevato dalla camera per l\'apertura della bocca.'
     });
 
     const responseWrap = el('div', 'xra-stack-control');
@@ -412,10 +476,10 @@
     });
     response.oninput = () => { config.lip.response_gain = Number(response.value) / 100; responseText.textContent = `${response.value}%`; };
     response.onchange = () => XRA.profileService.save();
-    row(box.body, 'Mouth response', responseWrap, {
+    row(box.body, 'Risposta bocca (Volume)', responseWrap, {
       reset: async () => { config.lip.response_gain = defaults.lip.response_gain; },
       isDefault: () => Math.abs((config.lip.response_gain ?? 1) - defaults.lip.response_gain) < 1e-9,
-      sub: 'Quanto il volume sopra la soglia apre la bocca. Aumentalo se parli ma la bocca reagisce poco.'
+      sub: 'Sensibilità all\'apertura della bocca quando parli ad intensità normale.'
     });
 
     const vowelWrap = el('div', 'xra-stack-control');
@@ -428,10 +492,10 @@
     });
     vowel.oninput = () => { config.lip.vowel_emphasis = Number(vowel.value) / 100; vowelText.textContent = `${vowel.value}%`; };
     vowel.onchange = () => XRA.profileService.save();
-    row(box.body, 'Vowel emphasis', vowelWrap, {
+    row(box.body, 'Enfasi vocali (AA/OU/EE)', vowelWrap, {
       reset: async () => { config.lip.vowel_emphasis = defaults.lip.vowel_emphasis; },
       isDefault: () => Math.abs((config.lip.vowel_emphasis ?? 1) - defaults.lip.vowel_emphasis) < 1e-9,
-      sub: 'Esagera AA / IH / OU / EE / OH senza cambiare la soglia del microfono.'
+      sub: 'Esagera le forme delle vocali sulla bocca dell\'avatar.'
     });
 
     const gateWrap = el('div', 'xra-stack-control');
@@ -448,11 +512,104 @@
       gateText.textContent = config.lip.threshold.toFixed(3);
     };
     gate.onchange = () => XRA.profileService.save();
-    row(box.body, 'Voice gate', gateWrap, {
+    row(box.body, 'Soglia attivazione Lip-sync', gateWrap, {
       reset: async () => { config.lip.threshold = defaults.lip.threshold; },
-      isDefault: () => Math.abs((config.lip.threshold ?? .018) - defaults.lip.threshold) < 1e-9
+      isDefault: () => Math.abs((config.lip.threshold ?? .018) - defaults.lip.threshold) < 1e-9,
+      sub: 'Volume minimo del microfono per muovere la bocca. Rappresentata dalla linea verde 🟢 sul VU-meter.'
     });
 
+    // --- Sezione Noise Gate Registrazione ---
+    const recSecTitle = el('div', 'xra-section-title', '🔇 Noise Gate (Registrazione audio)');
+    recSecTitle.style.cssText = 'margin:14px 0 6px;font-size:12px;font-weight:600;color:#88c0d0;';
+    box.body.appendChild(recSecTitle);
+
+    const recGateToggle = document.createElement('input');
+    recGateToggle.type = 'checkbox';
+    bindRefresh(() => {
+      recGateToggle.checked = config.recorder?.noise_gate !== false;
+    });
+    recGateToggle.onchange = async () => {
+      config.recorder ||= {};
+      config.recorder.noise_gate = recGateToggle.checked;
+      await XRA.profileService.save();
+      refreshAll();
+    };
+    row(box.body, 'Attiva Noise Gate registrazione', recGateToggle, {
+      reset: async () => {
+        config.recorder ||= {};
+        config.recorder.noise_gate = defaults.recorder?.noise_gate ?? true;
+        await XRA.profileService.save();
+        refreshAll();
+      },
+      isDefault: () => (config.recorder?.noise_gate ?? true) === (defaults.recorder?.noise_gate ?? true),
+      sub: 'Silenzia il microfono durante le pause per eliminare ronzii, respiro o rumori della stanza.'
+    });
+
+    const GATE_MIN_DB = -55;
+    const GATE_MAX_DB = -5;
+    const recGateWrap = el('div', 'xra-stack-control');
+    const recGateSlider = document.createElement('input');
+    recGateSlider.type = 'range';
+    recGateSlider.min = String(GATE_MIN_DB);
+    recGateSlider.max = String(GATE_MAX_DB);
+    recGateSlider.step = '0.5';
+    const recGateValue = el('div', 'xra-sub');
+    recGateWrap.append(recGateSlider, recGateValue);
+    const renderRecGate = () => {
+      const val = Number(config.recorder?.gate_threshold_db ?? -48);
+      recGateSlider.value = String(Math.max(GATE_MIN_DB, Math.min(GATE_MAX_DB, val)));
+      recGateValue.textContent = `${Number(recGateSlider.value).toFixed(1)} dB`;
+    };
+    bindRefresh(renderRecGate);
+    recGateSlider.oninput = () => {
+      config.recorder ||= {};
+      config.recorder.gate_threshold_db = Number(recGateSlider.value);
+      recGateValue.textContent = `${Number(recGateSlider.value).toFixed(1)} dB`;
+    };
+    recGateSlider.onchange = async () => {
+      config.recorder ||= {};
+      config.recorder.gate_threshold_db = Number(recGateSlider.value);
+      await XRA.profileService.save();
+      refreshAll();
+    };
+    row(box.body, 'Soglia Noise Gate registrazione', recGateWrap, {
+      reset: async () => {
+        config.recorder ||= {};
+        config.recorder.gate_threshold_db = defaults.recorder?.gate_threshold_db ?? -48;
+        renderRecGate();
+        await XRA.profileService.save();
+        refreshAll();
+      },
+      isDefault: () => (config.recorder?.gate_threshold_db ?? -48) === (defaults.recorder?.gate_threshold_db ?? -48),
+      sub: 'Soglia in dB per il passaggio voce. Rappresentata dalla linea arancione 🟠 sul VU-meter.'
+    });
+
+    const gateCalibrateBtn = button('🎚 Calibra rumore stanza (3s)');
+    const gateCalInfo = el('div', 'xra-sub');
+    bindRefresh(() => {
+      const floor = Number(config.recorder?.gate_noise_floor_db);
+      gateCalInfo.textContent = Number.isFinite(floor) ? `Rumore stanza memorizzato: ${floor.toFixed(1)} dB` : 'Resta in silenzio per 3 secondi per calibrare.';
+    });
+    gateCalibrateBtn.onclick = async () => {
+      gateCalibrateBtn.disabled = true;
+      try {
+        const result = await XRA.recorder.calibrateNoiseGate(3);
+        gateCalInfo.textContent = `Rumore fondo ${result.noise_floor_db.toFixed(1)} dB → Soglia ${result.threshold_db} dB`;
+        XRA.toast(`Noise Gate calibrato a ${result.threshold_db} dB`, 'success');
+        refreshAll();
+      } catch (e) {
+        XRA.toast('Calibrazione fallita: ' + e.message, 'error', 4500);
+      } finally {
+        gateCalibrateBtn.disabled = false;
+      }
+    };
+    const calWrap = el('div', 'xra-stack-control');
+    calWrap.append(gateCalibrateBtn, gateCalInfo);
+    row(box.body, 'Auto-calibrazione soglia', calWrap, {
+      sub: 'Misura il rumore di fondo della stanza e imposta automaticamente la soglia ideale.'
+    });
+
+    // --- Indicatore di livello unificato ---
     const meterToggle = document.createElement('input');
     meterToggle.type = 'checkbox';
     bindRefresh(() => { meterToggle.checked = !!config.lip.meter_visible; });
@@ -462,19 +619,36 @@
       updateMeterLoop();
       refreshAll();
     };
-    row(box.body, 'Show VU meter', meterToggle, {
+    row(box.body, 'Mostra indicatore livello audio', meterToggle, {
       reset: async () => { config.lip.meter_visible = defaults.lip.meter_visible; updateMeterLoop(); },
-      isDefault: () => !!config.lip.meter_visible === !!defaults.lip.meter_visible
+      isDefault: () => !!config.lip.meter_visible === !!defaults.lip.meter_visible,
+      sub: 'Unico indicatore di livello audio per verificare in tempo reale il volume e le soglie di attivazione.'
     });
 
     const meter = el('div', 'xra-meter');
     const fill = el('div', 'xra-meter-fill'); fill.dataset.xra = 'meter-fill';
-    const gateLine = el('div', 'xra-meter-gate'); gateLine.dataset.xra = 'meter-gate';
-    meter.append(fill, gateLine);
-    box.body.appendChild(meter);
+    const gateLip = el('div', 'xra-meter-gate');
+    gateLip.dataset.xra = 'meter-gate-lip';
+    gateLip.style.background = '#48bb78';
+    gateLip.style.zIndex = '2';
+    gateLip.title = 'Soglia Lip-sync';
+
+    const gateRec = el('div', 'xra-meter-gate');
+    gateRec.dataset.xra = 'meter-gate-rec';
+    gateRec.style.background = '#ed8936';
+    gateRec.style.zIndex = '3';
+    gateRec.title = 'Soglia Noise Gate REC';
+
+    meter.append(fill, gateLip, gateRec);
+
+    const meterLegend = el('div', 'xra-sub');
+    meterLegend.dataset.xra = 'meter-legend';
+    meterLegend.style.cssText = 'display:flex;justify-content:space-between;font-size:11px;margin:3px 0 8px;';
+    meterLegend.innerHTML = '<span>🟢 Lip-sync</span><span>🟠 Gate REC</span>';
+
+    box.body.append(meter, meterLegend);
 
     const lipAdvanced = details(box.body, 'Advanced');
-
     const lightLip = document.createElement('input');
     lightLip.type = 'checkbox';
     bindRefresh(() => { lightLip.checked = !!config.lip.optimized; });
@@ -719,17 +893,17 @@
     const adaptiveSmooth = document.createElement('input'); adaptiveSmooth.type = 'checkbox';
     bindRefresh(() => {
       adaptiveSmooth.checked = config.tracking?.adaptive_smoothing !== false;
-      adaptiveSmooth.disabled = !XRA.tracking.motionHysteresis;
     });
     adaptiveSmooth.onchange = async () => {
       config.tracking ||= {}; config.tracking.adaptive_smoothing = adaptiveSmooth.checked;
       await XRA.profileService.save();
+      refreshAll();
     };
     row(advanced.body, 'Adaptive smoothing', adaptiveSmooth, {
       sub: 'Adds extra torso rotation smoothing when movement is small. It does not alter hips translation.'
     });
     trackingSlider(advanced.body, 'Adaptive smoothing strength', 'adaptive_smoothing_strength',
-      { min: 0, max: 100, step: 1, scale: 100, suffix: '%', defaultValue: .45 });
+      { min: 0, max: 100, step: 1, scale: 100, suffix: '%', defaultValue: .45, disabledWhenOff: false });
 
     const confidenceStatus = el('div', 'xra-status', 'Tracking confidence: —');
     advanced.body.appendChild(confidenceStatus);
@@ -784,6 +958,227 @@
       setTimeout(() => { calibrate.textContent = '🎯 CALIBRATE (3s)'; calibrate.disabled = false; }, 1000);
     };
     advanced.body.appendChild(calibrate);
+  }
+
+  function installArmsAndHands(parent) {
+    const box = details(parent, '🖐️ Arms & Hands');
+    const nativeHands = () => nativeCamera()?.handpose || null;
+
+    // 1. Smart arm and hand sync
+    const smartArmSync = document.createElement('input');
+    smartArmSync.type = 'checkbox';
+    bindRefresh(() => {
+      smartArmSync.checked = config.tracking?.smart_arm_sync !== false;
+    });
+    smartArmSync.onchange = async () => {
+      config.tracking ||= {};
+      config.tracking.smart_arm_sync = smartArmSync.checked;
+      XRA.performance?.sendConfidenceThresholds?.();
+      await XRA.profileService.save();
+      refreshAll();
+    };
+    row(box.body, 'Smart arm and hand sync', smartArmSync, {
+      reset: async () => {
+        config.tracking ||= {};
+        config.tracking.smart_arm_sync = defaults.tracking?.smart_arm_sync !== false;
+        XRA.performance?.sendConfidenceThresholds?.();
+      },
+      isDefault: () => (config.tracking?.smart_arm_sync !== false) === (defaults.tracking?.smart_arm_sync !== false),
+      sub: 'Naturally aligns forearm and hands downwards in a realistic neutral rest pose, and extends arms when raised even without visible fingers.'
+    });
+
+    // 2. Desk wrist occlusion guard
+    const deskWristGuard = document.createElement('input');
+    deskWristGuard.type = 'checkbox';
+    bindRefresh(() => {
+      deskWristGuard.checked = config.tracking?.desk_wrist_guard !== false;
+    });
+    deskWristGuard.onchange = async () => {
+      config.tracking ||= {};
+      config.tracking.desk_wrist_guard = deskWristGuard.checked;
+      XRA.performance?.sendConfidenceThresholds?.();
+      await XRA.profileService.save();
+      refreshAll();
+    };
+    row(box.body, 'Desk wrist occlusion guard', deskWristGuard, {
+      reset: async () => {
+        config.tracking ||= {};
+        config.tracking.desk_wrist_guard = defaults.tracking?.desk_wrist_guard !== false;
+        XRA.performance?.sendConfidenceThresholds?.();
+      },
+      isDefault: () => (config.tracking?.desk_wrist_guard !== false) === (defaults.tracking?.desk_wrist_guard !== false),
+      sub: 'Filters phantom wrists when hands are covered by the desk or out of frame, preventing forearms from staying locked.'
+    });
+
+    // 3. Desk arm steady hold
+    const armSteadyHold = document.createElement('input');
+    armSteadyHold.type = 'checkbox';
+    bindRefresh(() => {
+      armSteadyHold.checked = !!config.tracking?.arm_steady_hold;
+    });
+    armSteadyHold.onchange = async () => {
+      config.tracking ||= {};
+      config.tracking.arm_steady_hold = armSteadyHold.checked;
+      XRA.performance?.sendConfidenceThresholds?.();
+      await XRA.profileService.save();
+      refreshAll();
+    };
+    row(box.body, 'Desk arm steady hold', armSteadyHold, {
+      reset: async () => {
+        config.tracking ||= {};
+        config.tracking.arm_steady_hold = !!defaults.tracking?.arm_steady_hold;
+        XRA.performance?.sendConfidenceThresholds?.();
+      },
+      isDefault: () => !!config.tracking?.arm_steady_hold === !!defaults.tracking?.arm_steady_hold,
+      sub: 'Keeps forearms anchored and visible while elbows and shoulders remain still at the desk. Releases naturally when moving elbows.'
+    });
+
+    // 4. Hand stabilization (slider 0..100)
+    const handStabWrap = el('div', 'xra-stack-control');
+    const handStab = document.createElement('input');
+    handStab.type = 'range'; handStab.min = '0'; handStab.max = '100'; handStab.step = '1';
+    const handStabText = el('div', 'xra-sub');
+    handStabWrap.append(handStab, handStabText);
+    bindRefresh(() => {
+      const val = Number(nativeHands()?.stabilize_hand_percent ?? config.tracking?.stabilize_hand_percent ?? 0);
+      handStab.value = String(val);
+      handStabText.textContent = `${val}%`;
+    });
+    handStab.oninput = () => {
+      const val = Number(handStab.value);
+      handStabText.textContent = `${val}%`;
+      const h = nativeHands(); if (h) h.stabilize_hand_percent = val;
+      config.tracking ||= {}; config.tracking.stabilize_hand_percent = val;
+    };
+    handStab.onchange = async () => {
+      const val = Number(handStab.value);
+      const h = nativeHands(); if (h) h.stabilize_hand_percent = val;
+      config.tracking ||= {}; config.tracking.stabilize_hand_percent = val;
+      await XRA.profileService.save();
+      refreshAll();
+    };
+    row(box.body, 'Hand stabilization', handStabWrap, {
+      reset: async () => {
+        const h = nativeHands(); if (h) h.stabilize_hand_percent = 0;
+        if (config.tracking) config.tracking.stabilize_hand_percent = 0;
+      },
+      isDefault: () => Number(nativeHands()?.stabilize_hand_percent ?? config.tracking?.stabilize_hand_percent ?? 0) === 0,
+      sub: 'Anti-jitter stabilization filter for finger joints and palm.'
+    });
+
+    // 5. Arm stabilization (select: Off, Upper-body mocap, On)
+    const armStab = select([[0, 'Off'], [1, 'Upper-body mocap'], [2, 'On']]);
+    bindRefresh(() => {
+      armStab.value = String(nativeHands()?.stabilize_arm ?? config.tracking?.stabilize_arm ?? 0);
+    });
+    armStab.onchange = async () => {
+      const val = Number(armStab.value);
+      const h = nativeHands(); if (h) h.stabilize_arm = val;
+      config.tracking ||= {}; config.tracking.stabilize_arm = val;
+      const mm = window.MMD_SA?.MMD?.motionManager;
+      if (mm?.para_SA?.motion_tracking?.hand_tracking) {
+        mm.para_SA.motion_tracking.hand_tracking.stabilize_arm_disabled = !val;
+      }
+      await XRA.profileService.save();
+      refreshAll();
+    };
+    row(box.body, 'Arm stabilization', armStab, {
+      reset: async () => {
+        const h = nativeHands(); if (h) h.stabilize_arm = 0;
+        if (config.tracking) config.tracking.stabilize_arm = 0;
+        const mm = window.MMD_SA?.MMD?.motionManager;
+        if (mm?.para_SA?.motion_tracking?.hand_tracking) {
+          mm.para_SA.motion_tracking.hand_tracking.stabilize_arm_disabled = true;
+        }
+      },
+      isDefault: () => Number(nativeHands()?.stabilize_arm ?? config.tracking?.stabilize_arm ?? 0) === 0,
+      sub: 'Stabilizes arm movement and extension based on body kinematics.'
+    });
+
+    // 6. Time to stabilize (select: 0, 1 frame, 100 ms, 200 ms)
+    const armStabTime = select([[0, '0'], [1, '1 frame'], [100, '100 ms'], [200, '200 ms']]);
+    bindRefresh(() => {
+      armStabTime.value = String(nativeHands()?.stabilize_arm_time ?? config.tracking?.stabilize_arm_time ?? 0);
+    });
+    armStabTime.onchange = async () => {
+      const val = Number(armStabTime.value);
+      const h = nativeHands(); if (h) h.stabilize_arm_time = val;
+      config.tracking ||= {}; config.tracking.stabilize_arm_time = val;
+      await XRA.profileService.save();
+      refreshAll();
+    };
+    row(box.body, 'Time to stabilize', armStabTime, {
+      reset: async () => {
+        const h = nativeHands(); if (h) h.stabilize_arm_time = 0;
+        if (config.tracking) config.tracking.stabilize_arm_time = 0;
+      },
+      isDefault: () => Number(nativeHands()?.stabilize_arm_time ?? config.tracking?.stabilize_arm_time ?? 0) === 0,
+      sub: 'Response time or latency window to apply arm stabilization.'
+    });
+
+    // 7. Hand detection sensitivity (select: Normal, High)
+    const handSens = select([['normal', 'Normal'], ['high', 'High']]);
+    bindRefresh(() => {
+      handSens.value = String(config.tracking?.hand_detection_sensitivity || 'high');
+    });
+    handSens.onchange = async () => {
+      config.tracking ||= {};
+      config.tracking.hand_detection_sensitivity = String(handSens.value || 'high');
+      XRA.tracking?.broadcastHands?.();
+      await XRA.profileService.save();
+      refreshAll();
+    };
+    row(box.body, 'Hand detection sensitivity', handSens, {
+      reset: async () => {
+        config.tracking.hand_detection_sensitivity = defaults.tracking?.hand_detection_sensitivity || 'high';
+        XRA.tracking?.broadcastHands?.();
+      },
+      isDefault: () => (config.tracking?.hand_detection_sensitivity || 'high') === (defaults.tracking?.hand_detection_sensitivity || 'high'),
+      sub: 'High uses the lower-confidence detector path to reacquire difficult hands more easily.'
+    });
+
+    // 8. Hand recovery (select: Off, Normal, Aggressive)
+    const handRec = select([['off', 'Off'], ['normal', 'Normal'], ['aggressive', 'Aggressive']]);
+    bindRefresh(() => {
+      handRec.value = String(config.tracking?.hand_recovery_mode || 'normal');
+    });
+    handRec.onchange = async () => {
+      config.tracking ||= {};
+      config.tracking.hand_recovery_mode = String(handRec.value || 'normal');
+      XRA.tracking?.broadcastHands?.();
+      await XRA.profileService.save();
+      refreshAll();
+    };
+    row(box.body, 'Hand recovery', handRec, {
+      reset: async () => {
+        config.tracking.hand_recovery_mode = defaults.tracking?.hand_recovery_mode || 'normal';
+        XRA.tracking?.broadcastHands?.();
+      },
+      isDefault: () => (config.tracking?.hand_recovery_mode || 'normal') === (defaults.tracking?.hand_recovery_mode || 'normal'),
+      sub: 'When a wrist is lost, periodically runs a full-frame hand search instead of waiting for body tracking.'
+    });
+
+    // 9. Constrain tracking region
+    const constrainRegion = document.createElement('input');
+    constrainRegion.type = 'checkbox';
+    bindRefresh(() => {
+      constrainRegion.checked = !!(nativeHands()?.constrain_tracking_region ?? config.tracking?.constrain_tracking_region);
+    });
+    constrainRegion.onchange = async () => {
+      const val = constrainRegion.checked;
+      const h = nativeHands(); if (h) h.constrain_tracking_region = val;
+      config.tracking ||= {}; config.tracking.constrain_tracking_region = val;
+      await XRA.profileService.save();
+      refreshAll();
+    };
+    row(box.body, 'Constrain tracking region', constrainRegion, {
+      reset: async () => {
+        const h = nativeHands(); if (h) h.constrain_tracking_region = false;
+        if (config.tracking) config.tracking.constrain_tracking_region = false;
+      },
+      isDefault: () => !(nativeHands()?.constrain_tracking_region ?? config.tracking?.constrain_tracking_region),
+      sub: 'Restricts hand search area around the body to prevent background false positives.'
+    });
   }
 
   function installCollider(parent) {
@@ -889,10 +1284,188 @@
     });
     box.body.appendChild(status);
 
-    const perfAdvanced = details(box.body, 'Advanced');
+    const perfAdvanced = details(box.body, 'Advanced', { open: true });
+
+    // -------------------------------------------------------------------------
+    // 1. 📹 Acquisizione Webcam
+    // -------------------------------------------------------------------------
+    const secWebcam = details(perfAdvanced.body, '📹 Acquisizione Webcam', { open: true });
+
+    const OPTIMAL_RESOLUTIONS = [
+      ['640x360', '640×360 (Consigliata · 30 FPS fluidi)'],
+      ['640x480', '640×480 (Formato standard 4:3)'],
+      ['1280x720', '1280×720 (HD 720p · Alta precisione)']
+    ];
+
+    const res = select(OPTIMAL_RESOLUTIONS);
+    const updateDynamicResolutions = () => {
+      const snap = XRA.xraBackend?.snapshot?.();
+      const hwCam = snap?.hardware?.camera || snap?.capture?.hardware?.camera;
+      const supported = hwCam?.supported_resolutions;
+      let opts = [];
+      if (Array.isArray(supported) && supported.length > 0) {
+        // Filter out extreme sub-mocap (<300p) or saturating (>1080p) resolutions, keeping all valid hardware modes
+        const valid = supported.filter(([w, h]) => w >= 480 && h >= 300 && w <= 1920 && h <= 1080);
+        const list = valid.length > 0 ? valid : supported;
+        const sorted = [...list].sort((a, b) => (a[0] * a[1]) - (b[0] * b[1]));
+        opts = sorted.map(([w, h]) => {
+          const key = `${w}x${h}`;
+          let label = `${w}×${h}`;
+          if (w === 640 && h === 360) label += ' (Consigliata · 30 FPS fluidi)';
+          else if (w === 640 && h === 480) label += ' (Formato standard 4:3)';
+          else if (w === 1280 && h === 720) label += ' (HD 720p · Alta precisione)';
+          else if (w >= 1920) label += ' (Full HD 1080p · Pesante)';
+          return [key, label];
+        });
+      } else {
+        opts = OPTIMAL_RESOLUTIONS;
+      }
+      const existingKeys = [...res.options].map(o => o.value).join(',');
+      const newKeys = opts.map(o => o[0]).join(',');
+      if (existingKeys !== newKeys) {
+        res.innerHTML = '';
+        for (const [v, l] of opts) {
+          const opt = document.createElement('option');
+          opt.value = v; opt.textContent = l;
+          res.appendChild(opt);
+        }
+      }
+      const current = `${config.camera.width}x${config.camera.height}`;
+      res.value = [...res.options].some(o => o.value === current) ? current : (res.options[0]?.value || '640x360');
+    };
+    bindRefresh(updateDynamicResolutions);
+
+    res.onchange = async () => {
+      const [w, h] = res.value.split('x').map(Number);
+      config.camera.width = w;
+      config.camera.height = h;
+      markCustomPreset();
+      XRA.performance.apply();
+      await XRA.profileService.save();
+      refreshAll();
+    };
+    row(secWebcam.body, 'Webcam resolution', res, {
+      reset: async () => {
+        config.camera.width = defaults.camera.width;
+        config.camera.height = defaults.camera.height;
+        XRA.performance.apply();
+      },
+      isDefault: () => config.camera.width === defaults.camera.width && config.camera.height === defaults.camera.height,
+      sub: 'Risoluzione hardware della webcam. Valori selezionati vengono applicati direttamente al sensore.'
+    });
+
+    const inferRes = select([
+      ['native', 'Nativa (uguale alla webcam)'],
+      ['640x360', '640×360 (Consigliata per iGPU/CPU)'],
+      ['512x288', '512×288 (Ultra-leggera · Basso consumo CPU)'],
+      ['424x240', '424×240 (Massimo risparmio CPU · Sistemi leggeri)'],
+      ['640x480', '640×480 (Formato standard 4:3)']
+    ]);
+    inferRes.value = String(config.performance?.infer_mode || 'native');
+    inferRes.onchange = async () => {
+      if (!config.performance) config.performance = {};
+      config.performance.infer_mode = inferRes.value;
+      markCustomPreset();
+      XRA.performance.apply();
+      await XRA.profileService.save();
+      refreshAll();
+    };
+    row(secWebcam.body, 'MediaPipe AI resolution', inferRes, {
+      reset: async () => {
+        if (!config.performance) config.performance = {};
+        config.performance.infer_mode = defaults.performance?.infer_mode || 'native';
+        XRA.performance.apply();
+      },
+      isDefault: () => (config.performance?.infer_mode || 'native') === (defaults.performance?.infer_mode || 'native'),
+      sub: 'Risoluzione elaborata dal motore MediaPipe. Valori ridotti (es. 640×360) risparmiano fino al 65% di CPU.'
+    });
+
+    const frameSkip = document.createElement('input'); frameSkip.type = 'checkbox';
+    bindRefresh(() => { frameSkip.checked = !!config.performance?.adaptive_frame_skip; });
+    frameSkip.onchange = async () => {
+      config.performance ||= {};
+      config.performance.adaptive_frame_skip = frameSkip.checked;
+      markCustomPreset();
+      XRA.performance.apply();
+      await XRA.profileService.save();
+    };
+    row(secWebcam.body, 'Salta frame su sovraccarico', frameSkip, {
+      sub: 'Se l\'inferenza subisce un picco che buca la deadline, riutilizza la posa precedente per 1 frame evitando accumulo di ritardi.'
+    });
+
+    const cpuAffinity = document.createElement('input'); cpuAffinity.type = 'checkbox';
+    bindRefresh(() => { cpuAffinity.checked = config.performance?.cpu_affinity !== false; });
+    cpuAffinity.onchange = async () => {
+      config.performance ||= {};
+      config.performance.cpu_affinity = cpuAffinity.checked;
+      markCustomPreset();
+      XRA.performance.apply();
+      await XRA.profileService.save();
+    };
+    row(secWebcam.body, 'Ottimizzazione CPU P-Core', cpuAffinity, {
+      sub: 'Vincola MediaPipe ai core ad alte prestazioni su Linux, eliminando jitter e picchi di latenza dovuti a E-core o Hyper-Threading.'
+    });
+
+    const fps = select([[20, '20 FPS'], [24, '24 FPS'], [30, '30 FPS']]);
+    let webcamFpsRow = null;
+    const updateDynamicFps = () => {
+      const snap = XRA.xraBackend?.snapshot?.();
+      const hwCam = snap?.hardware?.camera || snap?.capture?.hardware?.camera;
+      const maxHwFps = Math.max(15, Number(hwCam?.max_hardware_fps || 30));
+      const candidates = [15, 20, 24, 30, 60, 90].filter(f => f <= maxHwFps);
+      const existingKeys = [...fps.options].map(o => o.value).join(',');
+      const newKeys = candidates.join(',');
+      if (existingKeys !== newKeys) {
+        fps.innerHTML = '';
+        for (const f of candidates) {
+          const opt = document.createElement('option');
+          opt.value = String(f);
+          opt.textContent = `${f} FPS` + (f === maxHwFps ? ' (Max Hardware)' : '');
+          fps.appendChild(opt);
+        }
+      }
+      if (Number(config.camera.fps) > maxHwFps) {
+        config.camera.fps = maxHwFps;
+      }
+      fps.value = String(config.camera.fps);
+      if (webcamFpsRow) webcamFpsRow.hidden = XRA.xraBackend?.active === true;
+    };
+    bindRefresh(updateDynamicFps);
+
+    fps.onchange = async () => {
+      config.camera.fps = Number(fps.value);
+      markCustomPreset();
+      XRA.performance.apply();
+      await XRA.profileService.save();
+      refreshAll();
+    };
+    webcamFpsRow = row(secWebcam.body, 'Webcam FPS', fps, {
+      reset: async () => { config.camera.fps = defaults.camera.fps; XRA.performance.apply(); },
+      isDefault: () => Number(config.camera.fps) === defaults.camera.fps
+    });
+
+    const cameraTelemetry = el('div', 'xra-sub');
+    cameraTelemetry.style.margin = '4px 0 10px 12px';
+    cameraTelemetry.style.fontSize = '11px';
+    cameraTelemetry.style.color = '#a0aec0';
+    bindRefresh(() => {
+      const snap = XRA.xraBackend?.snapshot?.();
+      const cap = snap?.capture || {};
+      const reqFps = Math.round(Number(config.performance?.pose_fps || cap.target_fps || 30));
+      const negFps = Math.round(Number(cap.effective_fps || cap.target_fps || 30));
+      const measFps = Number(cap.measured_fps) > 0 ? Number(cap.measured_fps).toFixed(1) : '—';
+      const resStr = cap.capture_geometry && cap.capture_geometry[0] ? ` · Hardware: ${cap.capture_geometry[0]}×${cap.capture_geometry[1]}` : '';
+      cameraTelemetry.textContent = `Richiesto: ${reqFps} FPS · Camera negoziata: ${negFps} FPS · Tracking reale: ${measFps} FPS${resStr}`;
+    });
+    secWebcam.body.appendChild(cameraTelemetry);
+
+    // -------------------------------------------------------------------------
+    // 2. 🤖 Motore Tracking (MediaPipe Tasks)
+    // -------------------------------------------------------------------------
+    const secTracking = details(perfAdvanced.body, '🤖 Motore Tracking (MediaPipe Tasks)', { open: true });
 
     const pipeline = select([
-      ['Full Body', 'Full body (MediaPipe Vision)'],
+      ['Full Body', 'Full body'],
       ['Face', 'Face only']
     ]);
     bindRefresh(() => {
@@ -908,83 +1481,191 @@
     });
     pipeline.onchange = async () => {
       pipeline.disabled = true;
-      try { await XRA.performance.setMocapMode(pipeline.value); }
+      try {
+        await XRA.performance.setMocapMode(pipeline.value);
+        rowHardware.style.display = (pipeline.value === 'Face') ? '' : 'none';
+      }
       finally { pipeline.disabled = false; refreshAll(); }
     };
-    row(perfAdvanced.body, 'Tracking / mocap mode', pipeline, {
-      sub: 'Only useful combined modes are shown here. Startup/LOAD never changes this automatically.'
+    row(secTracking.body, 'Tracking / mocap mode', pipeline, {
+      sub: 'In Full Body il tracking completo calcola corpo, viso e mani su CPU (XNNPACK). In Face Only è attiva l\'accelerazione GPU.'
     });
 
-    const camOpt = document.createElement('input');
-    camOpt.type = 'checkbox';
-    bindRefresh(() => { camOpt.checked = !!config.camera.optimized; });
-    camOpt.onchange = async () => {
-      config.camera.optimized = camOpt.checked;
-      markCustomPreset();
-      XRA.performance.apply();
-      await XRA.profileService.save();
-      refreshAll();
-    };
-    row(perfAdvanced.body, 'Limit webcam', camOpt, {
-      reset: async () => { config.camera.optimized = defaults.camera.optimized; XRA.performance.apply(); },
-      isDefault: () => config.camera.optimized === defaults.camera.optimized
-    });
-
-    const res = select([
-      ['424x240', '424×240'], ['640x360', '640×360'], ['640x480', '640×480'],
-      ['1280x720', '1280×720'], ['1280x960', '1280×960'], ['1920x1080', '1920×1080']
+    const hardware = select([
+      ['Auto', 'Auto (Default)'],
+      ['high-performance', 'GPU Dedicata (High Performance · RTX)'],
+      ['low-power', 'GPU Integrata (Low Power · iGPU)'],
+      ['cpu', 'Disattivata / CPU (XNNPACK)']
     ]);
-    bindRefresh(() => { res.value = `${config.camera.width}x${config.camera.height}`; });
-    res.onchange = async () => {
-      const [w, h] = res.value.split('x').map(Number);
-      config.camera.width = w;
-      config.camera.height = h;
-      config.camera.optimized = true;
+
+    const updateDynamicHardwareGpus = () => {
+      const snap = XRA.xraBackend?.snapshot?.();
+      const hwGpus = snap?.hardware?.gpus || snap?.capture?.hardware?.gpus || [];
+      const hasDedicated = hwGpus.some(g => g.is_dedicated);
+      const isDual = hwGpus.length > 1 && hasDedicated;
+
+      let opts = [];
+      if (isDual) {
+        const dedicated = hwGpus.find(g => g.is_dedicated);
+        const integrated = hwGpus.find(g => !g.is_dedicated);
+        opts = [
+          ['Auto', 'Auto / Sistema (default)'],
+          ['high-performance', `GPU Dedicata (${dedicated?.name || 'RTX'})`],
+          ['low-power', `GPU Integrata (${integrated?.name || 'iGPU · Risparmio'})`],
+          ['cpu', 'Disattivata / CPU (XNNPACK)']
+        ];
+      } else if (hwGpus.length >= 1) {
+        const single = hwGpus[0];
+        opts = [
+          ['Auto', 'Auto (Default)'],
+          ['low-power', `GPU (${single?.name || 'Hardware'})`],
+          ['cpu', 'Disattivata / CPU (XNNPACK)']
+        ];
+      } else {
+        opts = [
+          ['Auto', 'Auto (Default)'],
+          ['high-performance', 'GPU Dedicata (High Performance · RTX)'],
+          ['low-power', 'GPU Integrata (Low Power · iGPU)'],
+          ['cpu', 'Disattivata / CPU (XNNPACK)']
+        ];
+      }
+
+      const existingKeys = [...hardware.options].map(o => o.value).join(',');
+      const newKeys = opts.map(o => o[0]).join(',');
+      if (existingKeys !== newKeys) {
+        hardware.innerHTML = '';
+        for (const [val, label] of opts) {
+          const opt = document.createElement('option');
+          opt.value = val;
+          opt.textContent = label;
+          hardware.appendChild(opt);
+        }
+      }
+      const curPref = String(config.performance?.hardware_mode || config.performance?.ai_gpu_preference || 'Auto');
+      hardware.value = [...hardware.options].some(o => o.value === curPref) ? curPref : 'Auto';
+    };
+    bindRefresh(updateDynamicHardwareGpus);
+
+    hardware.onchange = async () => {
+      config.performance = config.performance || {};
+      config.performance.hardware_mode = hardware.value;
+      config.performance.ai_gpu_preference = hardware.value;
+      if (typeof XRA.backend?.setHardwareMode === 'function') {
+        XRA.backend.setHardwareMode(hardware.value);
+      }
       markCustomPreset();
-      XRA.performance.apply();
       await XRA.profileService.save();
       refreshAll();
+      XRA.promptRestart("La modifica dell'accelerazione hardware/GPU per MediaPipe richiede il riavvio dell'applicazione per essere applicata.");
     };
-    row(perfAdvanced.body, 'Webcam resolution', res, {
+
+    const activeHardwareGpuText = () => {
+      const snap = XRA.xraBackend?.snapshot?.();
+      const name = snap?.gpuName;
+      const mode = String(config.performance?.hardware_mode || 'Auto').toLowerCase();
+      if (name && name !== 'Unknown GPU' && mode !== 'cpu') {
+        return `GPU attiva: ${name}. `;
+      }
+      return '';
+    };
+
+    const rowHardware = row(secTracking.body, 'Hardware Acceleration', hardware, {
       reset: async () => {
-        config.camera.width = defaults.camera.width;
-        config.camera.height = defaults.camera.height;
-        XRA.performance.apply();
+        config.performance = config.performance || {};
+        config.performance.hardware_mode = 'Auto';
+        config.performance.ai_gpu_preference = 'Auto';
+        if (typeof XRA.backend?.setHardwareMode === 'function') XRA.backend.setHardwareMode('Auto');
+        markCustomPreset();
+        await XRA.profileService.save();
+        refreshAll();
       },
-      isDefault: () => config.camera.width === defaults.camera.width && config.camera.height === defaults.camera.height
+      isDefault: () => (config.performance?.hardware_mode || 'Auto') === 'Auto',
+      sub: `${activeHardwareGpuText()}Seleziona la GPU dedicata o integrata per l'accelerazione MediaPipe, o disattiva per usare la CPU (richiede riavvio app).`
     });
 
-    const fps = select([[20, '20 FPS'], [24, '24 FPS'], [30, '30 FPS'], [60, '60 FPS']]);
-    bindRefresh(() => { fps.value = String(config.camera.fps); });
-    fps.onchange = async () => {
-      config.camera.fps = Number(fps.value);
-      config.camera.optimized = true;
-      markCustomPreset();
-      XRA.performance.apply();
-      await XRA.profileService.save();
-      refreshAll();
+    const isPipelineFace = () => {
+      const current = XRA.performance.currentNativeType?.() || pipeline.value || 'Full Body';
+      return current === 'Face';
     };
-    row(perfAdvanced.body, 'Webcam FPS', fps, {
-      reset: async () => { config.camera.fps = defaults.camera.fps; XRA.performance.apply(); },
-      isDefault: () => Number(config.camera.fps) === defaults.camera.fps
+    rowHardware.style.display = isPipelineFace() ? '' : 'none';
+
+    bindRefresh(() => {
+      rowHardware.style.display = isPipelineFace() ? '' : 'none';
+      const sub = rowHardware.querySelector?.('.xra-sub');
+      if (sub) {
+        sub.textContent = `${activeHardwareGpuText()}Seleziona la GPU dedicata o integrata per l'accelerazione MediaPipe, o disattiva per usare la CPU (richiede riavvio app).`;
+      }
     });
 
-    const pose = select([['Lite', 'Lite'], ['Normal', 'Normal'], ['Best', 'Best']]);
-    bindRefresh(() => { pose.value = config.pose_model || 'Normal'; });
-    pose.onchange = async () => {
-      config.pose_model = pose.value;
-      markCustomPreset();
-      XRA.performance.apply();
-      await XRA.profileService.save();
-      refreshAll();
+    XRA.events?.on?.('backend_status_changed', (msg) => {
+      const sub = rowHardware.querySelector?.('.xra-sub');
+      if (sub) {
+        sub.textContent = `${activeHardwareGpuText()}Seleziona la GPU dedicata o integrata per l'accelerazione MediaPipe, o disattiva per usare la CPU (richiede riavvio app).`;
+      }
+      if (msg && msg.gpuAvailable === false) {
+        for (const opt of hardware.options) {
+          if (opt.value !== 'cpu') opt.disabled = true;
+        }
+        hardware.parentElement.title = "L'accelerazione GPU non è supportata dal sistema host.";
+      } else {
+        for (const opt of hardware.options) {
+          opt.disabled = false;
+        }
+        hardware.parentElement.title = "";
+      }
+      if (msg && msg.hardwareMode && !hardware.value) {
+        hardware.value = msg.hardwareMode;
+      }
+    });
+
+    const backendLabel = (id) => {
+      const mode = String(XRA.config?.performance?.tracking_pipeline || '').toUpperCase();
+      const isFace = mode === 'FACE';
+      const names = {
+        'mediapipe-tasks-landmarker': isFace ? 'MediaPipe Tasks Face · native (52 blendshapes)' : 'MediaPipe Tasks Holistic · native (52 blendshapes)',
+      };
+      return names[id] || id;
     };
-    row(perfAdvanced.body, 'Pose quality', pose, {
-      reset: async () => { config.pose_model = defaults.pose_model; XRA.performance.apply(); },
-      isDefault: () => config.pose_model === defaults.pose_model,
-      sub: 'Usa il Pose Landmarker standalone quando la pipeline lo supporta.'
-    });
 
-    const poseHz = select([[15, '15 Hz'], [20, '20 Hz'], [24, '24 Hz'], [30, '30 Hz'], [60, '60 Hz']]);
+    const initialBackend = 'mediapipe-tasks-landmarker';
+    const backendStatus = el('div', 'xra-sub', `Backend: ${backendLabel(initialBackend)}`);
+
+    const renderBackendStatus = () => {
+      const snapshot = XRA.xraBackend?.snapshot?.();
+      if (!snapshot) {
+        backendStatus.textContent = 'Backend: non disponibile';
+        return;
+      }
+      if (snapshot.selected === 'mediapipe') {
+        backendStatus.textContent = 'Backend: MediaPipe (built-in, WASM) — attivo';
+        return;
+      }
+      const provider = snapshot.providerHuman || snapshot.provider || '—';
+
+      const cap = snapshot.capture || {};
+      const frames = Number(snapshot.framesReceived || 0);
+      let phase;
+      if (!snapshot.connected) phase = 'connessione…';
+      else if (!snapshot.ready) phase = 'caricamento modello…';
+      else if (cap.running && (cap.available || frames > 0)) phase = 'attivo';
+      else if (cap.running) phase = 'camera in avvio…';
+      else phase = 'pronto';
+
+      const cam = cap.device ? ` · ${cap.device}` : '';
+      const fps = cap.target_fps ? ` · ${Math.round(cap.target_fps)} fps` : '';
+      backendStatus.textContent =
+        `Backend: ${backendLabel(snapshot.selected)} — ${phase} · ${provider}${cam}${fps}` +
+        (cap.last_error ? ` · ${cap.last_error}` : '') +
+        (snapshot.lastError ? ` · errore: ${snapshot.lastError}` : '');
+    };
+
+    if (XRA.xraBackend?.onStatus) {
+      XRA.xraBackend.onStatus(() => { renderBackendStatus(); });
+    }
+    bindRefresh(() => { renderBackendStatus(); });
+    secTracking.body.appendChild(backendStatus);
+
+    const poseHz = select([[15, '15 Hz (Eco)'], [20, '20 Hz (Risparmio CPU)'], [24, '24 Hz (Bilanciato)'], [30, '30 Hz (Consigliato / Max Webcam)'], [60, '60 Hz (Sensori High-FPS)']]);
     bindRefresh(() => { poseHz.value = String(config.performance.pose_fps || 30); });
     poseHz.onchange = async () => {
       config.performance.pose_fps = Number(poseHz.value);
@@ -993,13 +1674,84 @@
       await XRA.profileService.save();
       refreshAll();
     };
-    row(perfAdvanced.body, 'Pose inference', poseHz, {
+    row(secTracking.body, 'Tracking inference', poseHz, {
       reset: async () => { config.performance.pose_fps = defaults.performance.pose_fps; XRA.performance.sendInferenceRates(); },
-      isDefault: () => Number(config.performance.pose_fps) === defaults.performance.pose_fps
+      isDefault: () => Number(config.performance.pose_fps) === defaults.performance.pose_fps,
+      sub: 'Frequenza MediaPipe nativa. La webcam USB opera a 30 FPS hardware.'
     });
 
-    const handHz = select([[10, '10 Hz'], [15, '15 Hz'], [20, '20 Hz'], [30, '30 Hz'], [60, '60 Hz']]);
-    bindRefresh(() => { handHz.value = String(config.performance.hand_fps || 20); });
+    function confidenceSlider(parent, labelText, key, defVal = 0.50, min = 30, max = 90, step = 5) {
+      const wrap = el('div', 'xra-stack-control');
+      const input = document.createElement('input');
+      input.type = 'range'; input.min = String(min); input.max = String(max); input.step = String(step);
+      const text = el('div', 'xra-sub');
+      wrap.append(input, text);
+      let resetBtn = null;
+      const isDefault = () => Math.abs(Number(config.performance?.[key] ?? defVal) - defVal) < 1e-4;
+      bindRefresh(() => {
+        const val = Number(config.performance?.[key] ?? defVal);
+        input.value = String(Math.round(val * 100));
+        text.textContent = `${input.value}%`;
+        if (resetBtn) resetBtn.disabled = isDefault();
+      });
+      input.oninput = () => {
+        config.performance ||= {};
+        config.performance[key] = Number(input.value) / 100;
+        text.textContent = `${input.value}%`;
+        if (resetBtn) resetBtn.disabled = isDefault();
+      };
+      input.onchange = async () => {
+        config.performance ||= {};
+        config.performance[key] = Number(input.value) / 100;
+        markCustomPreset();
+        XRA.performance.sendConfidenceThresholds?.();
+        await XRA.profileService.save();
+        refreshAll();
+      };
+      const r = row(parent, labelText, wrap, {
+        reset: async () => {
+          config.performance ||= {};
+          config.performance[key] = defVal;
+          markCustomPreset();
+          XRA.performance.sendConfidenceThresholds?.();
+          await XRA.profileService.save();
+        },
+        isDefault,
+        sub: `Soglia di confidenza minima (default ${Math.round(defVal * 100)}%). Valori più alti aumentano la stabilità ma richiedono migliore visibilità.`
+      });
+      resetBtn = r.querySelector('.xra-reset');
+      return r;
+    }
+
+    const pose = select([
+      ['Lite', 'Lite (veloce)'],
+      ['Normal', 'Normal (bilanciato)'],
+      ['Best', 'Best (alta precisione)']
+    ]);
+    let qualityRow = null;
+    bindRefresh(() => {
+      pose.value = config.pose_model || 'Normal';
+      if (qualityRow) qualityRow.hidden = XRA.xraBackend?.active === true;
+    });
+    pose.onchange = async () => {
+      config.pose_model = pose.value;
+      markCustomPreset();
+      XRA.performance.apply();
+      await XRA.profileService.save();
+      refreshAll();
+    };
+    qualityRow = row(secTracking.body, 'Tracking quality', pose, {
+      reset: async () => { config.pose_model = defaults.pose_model; XRA.performance.apply(); },
+      isDefault: () => config.pose_model === defaults.pose_model,
+      sub: 'Qualità ed accuratezza del modello di tracking (Lite per CPU leggere, Best per massima precisione).'
+    });
+
+    const handHz = select([[10, '10 Hz'], [15, '15 Hz'], [20, '20 Hz'], [30, '30 Hz'], [60, '60 Hz'], [90, '90 Hz']]);
+    let handRateRow = null;
+    bindRefresh(() => {
+      handHz.value = String(config.performance.hand_fps || 20);
+      if (handRateRow) handRateRow.hidden = XRA.xraBackend?.active === true;
+    });
     handHz.onchange = async () => {
       config.performance.hand_fps = Number(handHz.value);
       markCustomPreset();
@@ -1007,10 +1759,258 @@
       await XRA.profileService.save();
       refreshAll();
     };
-    row(perfAdvanced.body, 'Hands inference', handHz, {
+    handRateRow = row(secTracking.body, 'Hands inference', handHz, {
       reset: async () => { config.performance.hand_fps = defaults.performance.hand_fps; XRA.performance.sendInferenceRates(); },
       isDefault: () => Number(config.performance.hand_fps) === defaults.performance.hand_fps
     });
+
+    // -------------------------------------------------------------------------
+    // Sottosezione: 🎯 Soglie di Confidenza AI
+    // -------------------------------------------------------------------------
+    const secConfidence = details(secTracking.body, '🎯 Soglie di Confidenza AI', { open: false });
+
+    confidenceSlider(secConfidence.body, 'Min joint confidence', 'min_joint_confidence', 0.25, 5, 50, 1);
+    confidenceSlider(secConfidence.body, 'Min tracking confidence', 'min_tracking_confidence', 0.50, 30, 90, 5);
+    confidenceSlider(secConfidence.body, 'Min pose detection confidence', 'min_pose_confidence', 0.50, 30, 90, 5);
+    confidenceSlider(secConfidence.body, 'Min face detection confidence', 'min_face_confidence', 0.50, 30, 90, 5);
+
+    // -------------------------------------------------------------------------
+    // 3. 🎮 Rendering Grafico & GPU
+    // -------------------------------------------------------------------------
+    const secRendering = details(perfAdvanced.body, '🎮 Rendering Grafico & GPU', { open: true });
+
+    const renderFps = select([[30, '30 FPS'], [60, '60 FPS'], [90, '90 FPS'], [120, '120 FPS'], [144, '144 FPS'], [0, 'Unlimited / Monitor']]);
+    bindRefresh(() => { renderFps.value = String(config.performance.render_fps ?? 60); });
+    renderFps.onchange = async () => {
+      config.performance.render_fps = Number(renderFps.value);
+      window.XRA_render_fps_limit = config.performance.render_fps;
+      markCustomPreset();
+      await XRA.profileService.save();
+      refreshAll();
+    };
+    row(secRendering.body, 'Render FPS', renderFps, {
+      reset: async () => {
+        config.performance.render_fps = defaults.performance.render_fps || 60;
+        window.XRA_render_fps_limit = config.performance.render_fps;
+        markCustomPreset();
+        await XRA.profileService.save();
+        refreshAll();
+      },
+      isDefault: () => Number(config.performance.render_fps ?? 60) === (defaults.performance.render_fps || 60),
+      sub: 'Limita la frequenza di rendering della viewport 3D per ridurre calore e ventole su monitor ad alto refresh.'
+    });
+
+    const renderRes = select([
+      ['1080p', '1080p (Full HD - Consigliato)'],
+      ['720p', '720p (HD - Risparmio GPU)'],
+      ['auto', 'Auto (Risoluzione display)'],
+      ['1440p', '1440p (2K - Alta risoluzione)']
+    ]);
+    bindRefresh(() => { renderRes.value = String(config.performance.render_resolution || '1080p'); });
+    renderRes.onchange = async () => {
+      config.performance.render_resolution = renderRes.value;
+      XRA.performance.applyRenderResolution(renderRes.value);
+      markCustomPreset();
+      await XRA.profileService.save();
+      refreshAll();
+    };
+    row(secRendering.body, 'Qualità di uscita (Render & Rec)', renderRes, {
+      reset: async () => {
+        config.performance.render_resolution = defaults.performance.render_resolution || '1080p';
+        XRA.performance.applyRenderResolution(config.performance.render_resolution);
+        markCustomPreset();
+        await XRA.profileService.save();
+        refreshAll();
+      },
+      isDefault: () => (config.performance.render_resolution || '1080p') === (defaults.performance.render_resolution || '1080p'),
+      sub: 'Risoluzione interna del motore 3D e della registrazione. 1080p garantisce il Full HD nativo, 720p riduce drasticamente il consumo della scheda video.'
+    });
+
+    const gpuSelect = select([
+      ['default', 'Auto / Sistema (default)'],
+      ['high-performance', 'GPU Dedicata (High Performance · RTX)'],
+      ['low-power', 'GPU Integrata (Low Power · iGPU Risparmio Calore)']
+    ]);
+    const updateDynamicGpus = () => {
+      const snap = XRA.xraBackend?.snapshot?.();
+      const hwGpus = snap?.hardware?.gpus || snap?.capture?.hardware?.gpus || [];
+      const hasDedicated = hwGpus.some(g => g.is_dedicated);
+      const isDual = hwGpus.length > 1 && hasDedicated;
+
+      let opts = [];
+      if (isDual) {
+        const dedicated = hwGpus.find(g => g.is_dedicated);
+        const integrated = hwGpus.find(g => !g.is_dedicated);
+        opts = [
+          ['default', 'Auto / Sistema (default)'],
+          ['high-performance', `GPU Dedicata (${dedicated?.name || 'RTX'})`],
+          ['low-power', `GPU Integrata (${integrated?.name || 'iGPU · Risparmio calore'})`]
+        ];
+      } else if (hwGpus.length >= 1) {
+        const single = hwGpus[0];
+        opts = [
+          ['default', `GPU Sistema (${single?.name || 'Standard'})`]
+        ];
+      } else {
+        opts = [
+          ['default', 'Auto / Sistema (default)'],
+          ['high-performance', 'GPU Dedicata (High Performance · RTX)'],
+          ['low-power', 'GPU Integrata (Low Power · iGPU Risparmio Calore)']
+        ];
+      }
+      const existingKeys = [...gpuSelect.options].map(o => o.value).join(',');
+      const newKeys = opts.map(o => o[0]).join(',');
+      if (existingKeys !== newKeys) {
+        gpuSelect.innerHTML = '';
+        for (const [val, label] of opts) {
+          const opt = document.createElement('option');
+          opt.value = val;
+          opt.textContent = label;
+          gpuSelect.appendChild(opt);
+        }
+      }
+      const curPref = String(config.performance.gpu_preference || 'default');
+      gpuSelect.value = [...gpuSelect.options].some(o => o.value === curPref) ? curPref : 'default';
+    };
+    bindRefresh(updateDynamicGpus);
+
+    gpuSelect.onchange = async () => {
+      config.performance.gpu_preference = gpuSelect.value;
+      window.XRA_gpu_preference = gpuSelect.value;
+      markCustomPreset();
+      await XRA.profileService.save();
+      refreshAll();
+      XRA.promptRestart('Il cambio di scheda video (GPU) richiede il riavvio dell\'applicazione per essere applicato dal runtime.');
+    };
+    const activeGpuText = () => window.XRA_DETECTED_GPU ? `GPU attiva: ${window.XRA_DETECTED_GPU}. ` : '';
+    const gpuRow = row(secRendering.body, 'Scheda video (GPU)', gpuSelect, {
+      reset: async () => {
+        config.performance.gpu_preference = 'default';
+        window.XRA_gpu_preference = 'default';
+        markCustomPreset();
+        await XRA.profileService.save();
+        refreshAll();
+      },
+      isDefault: () => (config.performance.gpu_preference || 'default') === 'default',
+      sub: `${activeGpuText()}Selezionare la GPU integrata riduce calore e ventole su laptop con doppia scheda video (richiede riavvio app).`
+    });
+    bindRefresh(() => {
+      const sub = gpuRow.querySelector?.('.xra-sub');
+      if (sub) {
+        sub.textContent = `${activeGpuText()}Selezionare la GPU integrata riduce calore e ventole su laptop con doppia scheda video (richiede riavvio app).`;
+      }
+    });
+
+    const shadowsSelect = select([
+      ['auto', 'Auto (Spente su Green Screen · Risparmio)'],
+      ['off', 'Disattivate (Risparmio GPU massimo)'],
+      ['on', 'Attive (Per stage 3D con pavimento)']
+    ]);
+    bindRefresh(() => { shadowsSelect.value = String(config.performance.shadows || 'auto'); });
+    shadowsSelect.onchange = async () => {
+      config.performance.shadows = shadowsSelect.value;
+      XRA.performance.applyShadows(shadowsSelect.value);
+      markCustomPreset();
+      await XRA.profileService.save();
+      refreshAll();
+    };
+    row(secRendering.body, 'Ombre dinamiche 3D', shadowsSelect, {
+      reset: async () => {
+        config.performance.shadows = defaults.performance.shadows || 'auto';
+        XRA.performance.applyShadows(config.performance.shadows);
+        markCustomPreset();
+        await XRA.profileService.save();
+        refreshAll();
+      },
+      isDefault: () => (config.performance.shadows || 'auto') === (defaults.performance.shadows || 'auto'),
+      sub: 'Disattivare le ombre elimina il calcolo della mappa di profondità (2048×2048), risparmiando fino al 30% di GPU. Su sfondo green screen sono inutili.'
+    });
+
+    const springBoneSelect = select([
+      ['full', 'Full (ogni frame)'],
+      ['half', 'Half (1 frame su 2 · Risparmio)'],
+      ['off', 'Off']
+    ]);
+    bindRefresh(() => {
+      springBoneSelect.value = String(config.performance.spring_bone || 'full');
+    });
+    springBoneSelect.onchange = async () => {
+      config.performance.spring_bone = springBoneSelect.value;
+      XRA.performance.applySpringBone(springBoneSelect.value);
+      markCustomPreset();
+      await XRA.profileService.save();
+      refreshAll();
+    };
+    row(secRendering.body, 'Fisica capelli/vestiti (Spring Bone)', springBoneSelect, {
+      reset: async () => {
+        config.performance.spring_bone = defaults.performance.spring_bone || 'full';
+        XRA.performance.applySpringBone(config.performance.spring_bone);
+        markCustomPreset();
+        await XRA.profileService.save();
+        refreshAll();
+      },
+      isDefault: () => (config.performance.spring_bone || 'full') === (defaults.performance.spring_bone || 'full'),
+      sub: 'Half aggiorna soltanto la fisica secondaria a frame alterni; volto, corpo ed espressioni restano fluidi.'
+    });
+
+    const aaSelect = select([
+      ['auto', 'Attivo (MSAA Hardware · Consigliato)'],
+      ['off', 'Disattivato (Risparmio GPU)']
+    ]);
+    bindRefresh(() => {
+      aaSelect.value = String(config.performance.antialias || 'auto');
+    });
+    aaSelect.onchange = async () => {
+      config.performance.antialias = aaSelect.value;
+      window.XRA_antialias = aaSelect.value !== 'off';
+      markCustomPreset();
+      await XRA.profileService.save();
+      refreshAll();
+      XRA.promptRestart('La modifica dell\'Anti-Aliasing (MSAA hardware) richiede il riavvio dell\'applicazione per ricreare il contesto grafico WebGL.');
+    };
+    row(secRendering.body, 'Anti-Aliasing (AA)', aaSelect, {
+      reset: async () => {
+        config.performance.antialias = 'auto';
+        window.XRA_antialias = true;
+        markCustomPreset();
+        await XRA.profileService.save();
+        refreshAll();
+      },
+      isDefault: () => (config.performance.antialias || 'auto') === 'auto',
+      sub: 'Smussa i bordi geometrici dell\'avatar 3D. Disattivarlo alleggerisce i pixel shader della scheda video (richiede riavvio app).'
+    });
+
+    const preserveBufSelect = select([
+      ['true', 'Attivo (Default · Compatibile REC & Screenshot)'],
+      ['false', 'Disattivato (Risparmio banda memoria GPU)']
+    ]);
+    bindRefresh(() => {
+      preserveBufSelect.value = config.performance.preserve_drawing_buffer !== false ? 'true' : 'false';
+    });
+    preserveBufSelect.onchange = async () => {
+      config.performance.preserve_drawing_buffer = preserveBufSelect.value === 'true';
+      window.XRA_preserve_drawing_buffer = config.performance.preserve_drawing_buffer;
+      markCustomPreset();
+      await XRA.profileService.save();
+      refreshAll();
+      XRA.promptRestart('La modifica del buffer GPU (preserveDrawingBuffer) richiede il riavvio dell\'applicazione per ricreare il contesto grafico WebGL.');
+    };
+    row(secRendering.body, 'Buffer disegno GPU (preserveDrawingBuffer)', preserveBufSelect, {
+      reset: async () => {
+        config.performance.preserve_drawing_buffer = true;
+        window.XRA_preserve_drawing_buffer = true;
+        markCustomPreset();
+        await XRA.profileService.save();
+        refreshAll();
+      },
+      isDefault: () => config.performance.preserve_drawing_buffer !== false,
+      sub: 'Disattivare preserveDrawingBuffer riduce il carico memoria VRAM e calore GPU. Verifica che registrazione video e screenshot continuino a funzionare correttamente.'
+    });
+
+    // -------------------------------------------------------------------------
+    // 4. 📊 Diagnostica & Ottimizzazione
+    // -------------------------------------------------------------------------
+    const secDiagnostics = details(perfAdvanced.body, '📊 Diagnostica & Ottimizzazione', { open: false });
 
     const runtimeAdaptive = document.createElement('input'); runtimeAdaptive.type = 'checkbox';
     bindRefresh(() => { runtimeAdaptive.checked = !!config.performance?.runtime_adaptive; });
@@ -1019,7 +2019,7 @@
       await XRA.profileService.save();
       refreshAll();
     };
-    row(perfAdvanced.body, 'Runtime adaptive performance', runtimeAdaptive, {
+    row(secDiagnostics.body, 'Runtime adaptive performance', runtimeAdaptive, {
       reset: async () => {
         config.performance.runtime_adaptive = false;
         await XRA.profileService.save();
@@ -1036,7 +2036,7 @@
       await XRA.profileService.save();
       refreshAll();
     };
-    row(perfAdvanced.body, 'Performance / REC HUD', diagnosticsHud, {
+    row(secDiagnostics.body, 'Performance / REC HUD', diagnosticsHud, {
       reset: async () => {
         XRA.performance.setDiagnosticsHud(false);
         await XRA.profileService.save();
@@ -1067,7 +2067,7 @@
       await XRA.profileService.save(0);
       refreshAll();
     };
-    row(perfAdvanced.body, 'Debug session', debugSessionWrap, {
+    row(secDiagnostics.body, 'Debug session', debugSessionWrap, {
       reset: async () => {
         XRA.debug?.setEnabled(false);
         refreshDebugStatus();
@@ -1107,7 +2107,7 @@
     };
     debugActions.append(exportDebug, clearDebug);
     debugWrap.append(debugTitle, debugSub, debugActions);
-    perfAdvanced.body.appendChild(debugWrap);
+    secDiagnostics.body.appendChild(debugWrap);
 
     const post = document.createElement('input');
     post.type = 'checkbox';
@@ -1119,24 +2119,26 @@
       await XRA.profileService.save();
       refreshAll();
     };
-    row(perfAdvanced.body, 'Disable heavy post FX', post, {
+    row(secDiagnostics.body, 'Disable heavy post FX', post, {
       reset: async () => { config.performance.disable_postfx = defaults.performance.disable_postfx; XRA.performance.apply(); },
       isDefault: () => !!config.performance.disable_postfx === !!defaults.performance.disable_postfx
     });
 
     // Native visual-effect fine tuning belongs here because Performance already
     // owns the quick "Disable heavy post FX" shortcut. Keep one logical home.
-    const fxAdvanced = details(perfAdvanced.body, 'Visual effects');
+    const fxAdvanced = details(secDiagnostics.body, 'Visual effects');
 
     const audioViz = document.createElement('input');
     audioViz.type = 'checkbox';
     bindRefresh(() => {
       audioViz.checked = !!window.MMD_SA_options?.use_CircularSpectrum;
     });
-    audioViz.onchange = () => {
+    audioViz.onchange = async () => {
       if (window.MMD_SA_options) {
         MMD_SA_options.use_CircularSpectrum = !!audioViz.checked;
       }
+      await XRA.profileService.save();
+      refreshAll();
     };
     row(fxAdvanced.body, 'Audio visualizer', audioViz, {
       reset: async () => {
@@ -1317,19 +2319,6 @@
   function installProfile(parent) {
     const box = details(parent, '💾 Profile');
 
-    const actions = el('div', 'xra-actions');
-    const save = button('💾 SAVE');
-    save.onclick = async () => XRA.toast(await XRA.profileService.save(0) ? 'Profile saved' : 'Save failed');
-    const load = button('↻ LOAD');
-    load.onclick = async () => {
-      const ok = await XRA.profileService.load();
-      XRA.toast(ok ? 'Profile loaded' : 'Load failed', ok ? 'info' : 'error');
-      backgroundsLoaded = false;
-      refreshAll();
-    };
-    actions.append(save, load);
-    box.body.appendChild(actions);
-
     const transfer = el('div', 'xra-actions');
     const exp = button('EXPORT');
     exp.onclick = async () => {
@@ -1431,10 +2420,11 @@
     panel.id = 'XRA_CUSTOM_PANEL';
 
     const header = el('div', 'xra-right-header');
-    const hands = button('🖐 HANDS ON', 'xra-hands');
+    const hands = button('🖐 ON', 'xra-hands');
     bindRefresh(() => {
-      hands.textContent = XRA.tracking.handsEnabled ? '🖐 HANDS ON' : '🧊 HANDS OFF';
+      hands.textContent = XRA.tracking.handsEnabled ? '🖐 ON' : '🧊 OFF';
       hands.classList.toggle('off', !XRA.tracking.handsEnabled);
+      hands.title = XRA.tracking.handsEnabled ? 'Mani attive (clicca per disattivare)' : 'Mani disattivate (clicca per attivare)';
     });
     hands.onclick = () => XRA.tracking.setHands(!XRA.tracking.handsEnabled);
 
@@ -1579,8 +2569,9 @@
     installHealth(content);
     installStudioLink(content);
     installCameraView(content);
-    installLip(content);
+    installAudio(content);
     installBody(content);
+    installArmsAndHands(content);
     installCollider(content);
     installPerformance(content);
     installBackground(content);

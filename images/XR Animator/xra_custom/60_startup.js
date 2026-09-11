@@ -1,3 +1,4 @@
+/* XRA_BACKEND_CONTROL_V5 */
 (() => {
   'use strict';
 
@@ -46,13 +47,7 @@
     head.className = 'xra-start-head';
     const heading = document.createElement('div');
     heading.innerHTML = `<h2>XR Animator</h2><div class="xra-sub">${tr('Quick setup · changes apply immediately.')}</div>`;
-    const close = document.createElement('button');
-    close.type = 'button';
-    close.className = 'xra-start-close';
-    close.textContent = '×';
-    close.title = tr('Close');
-    close.setAttribute('aria-label', tr('Close'));
-    head.append(heading, close);
+    head.append(heading);
 
     const grid = document.createElement('div');
     grid.className = 'xra-start-grid';
@@ -212,25 +207,36 @@
     async function closeOverlay(autoStartCamera = false) {
       if (closing) return;
       closing = true;
-      document.removeEventListener('keydown', onKeyDown);
-      config.ui.show_startup = true;
+      start.disabled = true;
+      start.textContent = 'Avvio in corso…';
       try { await XRA.profileService.save(0); } catch (e) {}
       overlay.remove();
       XRA.ui?.refresh?.();
-      if (autoStartCamera && !XRA.nativeBridge?.cameraRunning?.()) {
-        try { await XRA.nativeBridge?.startNativeStreamer?.(); }
-        catch (e) { console.warn('Auto-starting camera on START failed', e); }
+      if (autoStartCamera) {
+        try {
+          if (typeof XRA.whenNativeReady === 'function') {
+            await XRA.whenNativeReady(15000);
+          }
+          if (XRA.xraBackend?.waitUntilReady) {
+            await XRA.xraBackend.waitUntilReady(6000).catch(() => {});
+          }
+          await XRA.nativeBridge?.startNativeStreamer?.();
+        } catch (e) {
+          if (!globalThis.XRA_CAMERA_OWNERSHIP?.isOwnershipError?.(e)) {
+            console.warn(TAG, 'Auto-starting camera on START failed', e);
+          }
+        }
       }
     }
-    function onKeyDown(event) {
-      if (event.key === 'Escape') { event.preventDefault(); closeOverlay(false); }
-    }
-    close.onclick = () => closeOverlay(false);
     start.onclick = () => closeOverlay(true);
-    overlay.addEventListener('pointerdown', event => {
-      if (event.target === overlay) closeOverlay(false);
-    });
-    document.addEventListener('keydown', onKeyDown);
+
+    try {
+      const bStatus = window.XRA_BACKEND_CAMERA?.status?.();
+      const cam = window.System?._browser?.camera;
+      if (bStatus?.backend?.capture?.running && !cam?.running) {
+        window.XRA_BACKEND_CAMERA?.stop?.().catch(() => {});
+      }
+    } catch (_) {}
 
     card.append(head, grid, status, camera, bg, avatar, foot);
     overlay.appendChild(card);
