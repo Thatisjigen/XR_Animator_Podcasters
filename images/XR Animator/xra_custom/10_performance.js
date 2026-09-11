@@ -1,3 +1,4 @@
+// XRA_UNIVERSAL_RUNTIME_V9
 (() => {
   'use strict';
 
@@ -8,22 +9,26 @@
   const PRESETS = {
     // ECO is the real low-end profile. MINIMAL remains as a legacy alias so old
     // profiles continue to load, but the UI now exposes ECO instead.
-    ECO:      { cam: [424, 240, 20], pose: 'Lite',   lip: [512, 20],  post: true,  native: 'Full Body', rates: [15, 10] },
-    MINIMAL:  { cam: [424, 240, 20], pose: 'Lite',   lip: [512, 20],  post: true,  native: 'Full Body', rates: [15, 10] },
-    LOW:      { cam: [640, 360, 24], pose: 'Lite',   lip: [512, 20],  post: true,  native: 'Full Body', rates: [20, 12] },
-    BALANCED: { cam: [640, 480, 30], pose: 'Normal', lip: [512, 30],  post: false, native: 'Full Body', rates: [30, 20] },
-    QUALITY:  { cam: [1280,720, 30], pose: 'Normal', lip: [1024, 30], post: false, native: 'Full Body', rates: [30, 30] },
-    HIGH:     { cam: [1280,720, 30], pose: 'Best',   lip: [1024, 30], post: false, native: 'Full Body', rates: [60, 30] },
-    MAX:      { cam: [1280,720, 60], pose: 'Best',   lip: [2048, 60], post: false, native: 'Full Body', rates: [60, 60] }
+    ECO:      { cam: [640, 360, 20], infer: '424x240', pose: 'Lite',   lip: [512, 20],  post: true,  native: 'Full Body', rates: [15, 10], spring: 'half', frame_skip: true },
+    MINIMAL:  { cam: [640, 360, 20], infer: '424x240', pose: 'Lite',   lip: [512, 20],  post: true,  native: 'Full Body', rates: [15, 10], spring: 'half', frame_skip: true },
+    LOW:      { cam: [640, 360, 24], infer: '512x288', pose: 'Lite',   lip: [512, 20],  post: true,  native: 'Full Body', rates: [20, 12], spring: 'half', frame_skip: true },
+    BALANCED: { cam: [640, 480, 30], infer: '640x360', pose: 'Normal', lip: [512, 30],  post: false, native: 'Full Body', rates: [30, 20], spring: 'full', frame_skip: false },
+    QUALITY:  { cam: [1280,720, 30], infer: 'native',  pose: 'Normal', lip: [1024, 30], post: false, native: 'Full Body', rates: [30, 30], spring: 'full', frame_skip: false },
+    HIGH:     { cam: [1280,720, 30], infer: 'native',  pose: 'Best',   lip: [1024, 30], post: false, native: 'Full Body', rates: [30, 30], spring: 'full', frame_skip: false },
+    MAX:      { cam: [1280,720, 30], infer: 'native',  pose: 'Best',   lip: [2048, 30], post: false, native: 'Full Body', rates: [30, 30], spring: 'full', frame_skip: false }
   };
 
-  // MediaPipe Vision Full Body mocap engine is selected at startup for native calibration,
-  // then restored to the user's saved pipeline after calibration completes.
+  // V7.81: the startup "MediaPipe Vision Full Body" calibration boost is
+  // retired (see 00_core.js). External backends ship full 3D landmarks + standard
+  // casing, so we boot straight into the configured engine. Keep the object as a
+  // thin shim marked completed so the legacy guards below are inert.
   const startupCalibration = XRA.startupCalibration ||= {
-    active: true,
-    completed: false,
+    active: false,
+    completed: true,
     native: 'Full Body'
   };
+  startupCalibration.active = false;
+  startupCalibration.completed = true;
 
   let postFXBaseline = null;
   let controlChannel = null;
@@ -34,22 +39,38 @@
     const opts = window.MMD_SA_options?.user_camera;
     if (!opts) return false;
 
-    if (config.camera.optimized) {
-      opts.pixel_limit ||= {};
-      opts.pixel_limit.disabled = false;
-      opts.pixel_limit.current = [config.camera.width, config.camera.height];
-      opts.fps = { ideal: config.camera.fps };
-    }
-    else {
-      const saved = XRA.profile?.XR_Animator_settings?.user_camera;
-      opts.pixel_limit ||= {};
-      opts.pixel_limit.disabled = saved?.pixel_limit?.disabled !== false;
-      opts.pixel_limit.current = saved?.pixel_limit?.current || null;
-      opts.fps = saved?.fps || null;
-    }
+    opts.pixel_limit ||= {};
+    opts.pixel_limit.disabled = false;
+    opts.pixel_limit.current = [Number(config.camera.width) || 640, Number(config.camera.height) || 360];
+    opts.fps = { ideal: Number(config.camera.fps) || 30 };
 
     if (opts.ML_models?.pose) {
       opts.ML_models.pose.model_quality = config.pose_model;
+    }
+
+    // In external mode Python owns the real webcam and runs one Holistic
+    // inference for body, face and hands. Explicitly forward the user's
+    // geometry and the single effective inference rate.
+    if (XRA.xraBackend?.active === true && window.XRA_BACKEND_CAMERA?.configure) {
+      const fps = effectivePoseFps();
+      const inferMode = config.performance?.infer_mode || 'native';
+      let inferW = null, inferH = null;
+      if (inferMode !== 'native') {
+        const [w, h] = inferMode.split('x').map(Number);
+        if (w > 0 && h > 0) { inferW = w; inferH = h; }
+      }
+      window.XRA_BACKEND_CAMERA.configure({
+        width: Number(config.camera.width) || 640,
+        height: Number(config.camera.height) || 360,
+        fps,
+        mocap_mode: config.performance?.tracking_pipeline === 'FACE' ? 'face' : 'holistic',
+        infer_mode: inferMode,
+        infer_width: inferW,
+        infer_height: inferH,
+        adaptive_frame_skip: !!config.performance?.adaptive_frame_skip,
+        cpu_affinity: config.performance?.cpu_affinity !== false
+      }).catch(e => console.warn(TAG, 'external camera configuration failed', e));
+      return true;
     }
 
     const camera = window.System?._browser?.camera;
@@ -115,6 +136,24 @@
   let diagnosticsHud = null;
   let diagnosticsLastPaint = 0;
   const diagnostics = { fps: 0, frame_ms: 0, long_pct: 0 };
+  let renderTickLast = 0;
+  let renderTickFrames = 0;
+  let renderTickLong = 0;
+  let renderTickSum = 0;
+
+  window.XRA_render_frame_tick = function(now) {
+    if (!renderTickLast) {
+      renderTickLast = now;
+      return;
+    }
+    const dt = now - renderTickLast;
+    renderTickLast = now;
+    if (dt > 0 && dt < 1000) {
+      renderTickFrames++;
+      renderTickSum += dt;
+      if (dt > 34) renderTickLong++;
+    }
+  };
 
   if (controlChannel) {
     controlChannel.onmessage = event => {
@@ -129,6 +168,9 @@
   }
 
   function effectiveHandFps() {
+    // The external Holistic task emits hand landmarks in the same inference as
+    // the pose. A separate hand rate would be a misleading duplicate control.
+    if (XRA.xraBackend?.active === true) return effectivePoseFps();
     return Number(runtimeHandFps ?? config.performance.hand_fps ?? 20);
   }
 
@@ -136,8 +178,19 @@
     controlChannel?.postMessage({
       type: 'mocap_rates',
       pose_fps: effectivePoseFps(),
-      hand_fps: effectiveHandFps()
+      hand_fps: effectiveHandFps(),
+      camera: {
+        width: Number(config.camera.width || 640),
+        height: Number(config.camera.height || 480),
+        fps: effectivePoseFps()
+      }
     });
+    if (XRA.xraBackend?.active === true && window.XRA_BACKEND_CAMERA?.configure) {
+      const fps = effectivePoseFps();
+      window.XRA_BACKEND_CAMERA.configure({ fps }).catch(e => {
+        console.warn(TAG, 'external inference rate configuration failed', e);
+      });
+    }
   }
 
   function resetAdaptiveRates() {
@@ -149,46 +202,84 @@
   }
 
   function adaptiveStep(fps, longPct) {
-    if (!config.performance?.runtime_adaptive) {
-      if (runtimePoseFps != null || runtimeHandFps != null) resetAdaptiveRates();
-      return;
-    }
-    const basePose = Number(config.performance.pose_fps || 30);
-    const baseHand = Number(config.performance.hand_fps || 20);
-    runtimePoseFps ??= basePose;
-    runtimeHandFps ??= baseHand;
-    runtimePoseFps = Math.min(runtimePoseFps, basePose);
-    runtimeHandFps = Math.min(runtimeHandFps, baseHand);
-
-    monitorBaselineFps = Math.max(monitorBaselineFps * .995, fps);
-    const baseline = Math.max(24, monitorBaselineFps || fps);
-    const stressed = fps < baseline * .82 || longPct > 18;
-    const healthy = fps > baseline * .93 && longPct < 8;
-
-    if (stressed) {
-      stableWindows = 0;
-      if (runtimeHandFps > Math.max(8, baseHand - 10)) {
-        runtimeHandFps = Math.max(8, runtimeHandFps - 5);
-        adaptiveState = `hands ${runtimeHandFps} Hz`;
+      if (!config.performance?.runtime_adaptive) {
+        if (runtimePoseFps != null || runtimeHandFps != null) resetAdaptiveRates();
+        return;
       }
-      else if (runtimePoseFps > Math.max(15, basePose - 10)) {
-        runtimePoseFps = Math.max(15, runtimePoseFps - 5);
-        adaptiveState = `pose ${runtimePoseFps} Hz`;
+
+      const basePose = Math.max(5, Number(config.performance.pose_fps || 30));
+      const baseHand = Math.max(5, Number(config.performance.hand_fps || 20));
+      const backend = XRA.xraBackend?.snapshot?.() || {};
+      const external = backend.active === true;
+      const inferMs = Number(backend.capture?.last_infer_ms || 0);
+
+      runtimePoseFps ??= basePose;
+      runtimeHandFps ??= baseHand;
+      runtimePoseFps = Math.min(runtimePoseFps, basePose);
+      runtimeHandFps = Math.min(runtimeHandFps, baseHand);
+
+      if (external && Number.isFinite(inferMs) && inferMs > 0) {
+        // 25% headroom: inference should not own the whole frame budget.
+        let safePose = Math.floor(1000 / Math.max(1, inferMs * 1.25));
+        safePose = Math.max(5, Math.min(basePose, safePose));
+        if (fps < Math.max(20, monitorBaselineFps * .80) || longPct > 18) {
+          safePose = Math.max(5, safePose - 2);
+        }
+
+        const previous = runtimePoseFps;
+        if (safePose <= runtimePoseFps - 2) {
+          runtimePoseFps = safePose;
+          stableWindows = 0;
+        }
+        else if (safePose > runtimePoseFps) {
+          stableWindows++;
+          if (stableWindows >= 2) {
+            runtimePoseFps = Math.min(safePose, runtimePoseFps + 2);
+            stableWindows = 0;
+          }
+        }
+        else {
+          stableWindows = Math.min(2, stableWindows + 1);
+        }
+
+        // External wholebody models produce hands in the same inference pass.
+        runtimeHandFps = runtimePoseFps;
+        adaptiveState = runtimePoseFps === basePose
+          ? 'backend base'
+          : `backend ${runtimePoseFps} Hz (${inferMs.toFixed(0)} ms)`;
+        if (previous !== runtimePoseFps) sendInferenceRates();
+        return;
       }
-      sendInferenceRates();
-    }
-    else if (healthy) {
-      stableWindows++;
-      if (stableWindows >= 2) {
+
+      // Browser/native fallback keeps the existing render-pressure behaviour.
+      monitorBaselineFps = Math.max(monitorBaselineFps * .995, fps);
+      const baseline = Math.max(24, monitorBaselineFps || fps);
+      const stressed = fps < baseline * .82 || longPct > 18;
+      const healthy = fps > baseline * .93 && longPct < 8;
+      if (stressed) {
         stableWindows = 0;
-        const oldPose = runtimePoseFps, oldHand = runtimeHandFps;
-        if (runtimePoseFps < basePose) runtimePoseFps = Math.min(basePose, runtimePoseFps + 5);
-        else if (runtimeHandFps < baseHand) runtimeHandFps = Math.min(baseHand, runtimeHandFps + 5);
-        adaptiveState = runtimePoseFps === basePose && runtimeHandFps === baseHand ? 'base' : 'recovering';
-        if (oldPose !== runtimePoseFps || oldHand !== runtimeHandFps) sendInferenceRates();
+        if (runtimeHandFps > Math.max(8, baseHand - 10)) {
+          runtimeHandFps = Math.max(8, runtimeHandFps - 5);
+          adaptiveState = `hands ${runtimeHandFps} Hz`;
+        }
+        else if (runtimePoseFps > Math.max(10, basePose - 15)) {
+          runtimePoseFps = Math.max(10, runtimePoseFps - 5);
+          adaptiveState = `pose ${runtimePoseFps} Hz`;
+        }
+        sendInferenceRates();
+      }
+      else if (healthy) {
+        stableWindows++;
+        if (stableWindows >= 2) {
+          stableWindows = 0;
+          const oldPose = runtimePoseFps, oldHand = runtimeHandFps;
+          if (runtimePoseFps < basePose) runtimePoseFps = Math.min(basePose, runtimePoseFps + 5);
+          else if (runtimeHandFps < baseHand) runtimeHandFps = Math.min(baseHand, runtimeHandFps + 5);
+          adaptiveState = runtimePoseFps === basePose && runtimeHandFps === baseHand ? 'base' : 'recovering';
+          if (oldPose !== runtimePoseFps || oldHand !== runtimeHandFps) sendInferenceRates();
+        }
       }
     }
-  }
 
   function ensureDiagnosticsHud() {
     if (diagnosticsHud?.isConnected) return diagnosticsHud;
@@ -207,14 +298,21 @@
     if (!visible || now - diagnosticsLastPaint < 450) return;
     diagnosticsLastPaint = now;
     const rec = XRA.recorder?.status?.() || {};
+    const backend = XRA.xraBackend?.snapshot?.() || {};
+    const provider = String(
+      backend.provider || backend.serverStatus?.active?.provider || ''
+    ).toLowerCase();
+    const backendName = provider.includes('face')
+      ? 'MediaPipe Face (Native)'
+      : 'MediaPipe Holistic (Native)';
     const gate = Number.isFinite(Number(rec.gate_db)) ? `${Number(rec.gate_db).toFixed(1)} dB ${rec.gate_open ? 'OPEN' : 'CLOSED'}` : '—';
     const worker = telemetry
       ? `${Number(telemetry.inference_ms || 0).toFixed(1)} ms · ${Number(telemetry.fps || 0).toFixed(1)} fps`
       : '—';
     node.textContent =
       `Render ${diagnostics.fps.toFixed(1)} FPS · ${diagnostics.frame_ms.toFixed(1)} ms · long ${diagnostics.long_pct.toFixed(1)}%\n` +
-      `Pose ${effectivePoseFps()} Hz · Hands ${effectiveHandFps()} Hz · Adaptive ${config.performance?.runtime_adaptive ? adaptiveState : 'OFF'}\n` +
-      `Worker ${worker}\n` +
+      `Backend ${XRA.xraBackend?.active ? backendName : 'MediaPipe WASM'} · Adaptive ${config.performance?.runtime_adaptive ? adaptiveState : 'OFF'}\n` +
+      `Pose ${effectivePoseFps()} Hz · Hands ${effectiveHandFps()} Hz · Worker ${worker}\n` +
       `REC ${rec.active ? `${Number(rec.draw_fps || 0).toFixed(1)} fps · dropped≈${Number(rec.dropped_frames_estimate || 0)}` : 'OFF'} · Mic ${gate}\n` +
       `Torso confidence ${Number(XRA.tracking?.guardConfidence ?? 1).toFixed(2)}`;
   }
@@ -235,16 +333,23 @@
     }
 
     if (now - monitorWindowStart >= 2000) {
-      diagnostics.frame_ms = monitorFrames ? monitorSum / monitorFrames : 0;
-      diagnostics.fps = diagnostics.frame_ms ? 1000 / diagnostics.frame_ms : 0;
-      diagnostics.long_pct = monitorFrames ? 100 * monitorLong / monitorFrames : 0;
+      if (renderTickFrames > 0) {
+        diagnostics.frame_ms = renderTickSum / renderTickFrames;
+        diagnostics.fps = diagnostics.frame_ms ? 1000 / diagnostics.frame_ms : 0;
+        diagnostics.long_pct = 100 * renderTickLong / renderTickFrames;
+      } else {
+        diagnostics.frame_ms = monitorFrames ? monitorSum / monitorFrames : 0;
+        diagnostics.fps = diagnostics.frame_ms ? 1000 / diagnostics.frame_ms : 0;
+        diagnostics.long_pct = monitorFrames ? 100 * monitorLong / monitorFrames : 0;
+      }
       adaptiveStep(diagnostics.fps, diagnostics.long_pct);
       monitorFrames = monitorLong = 0;
       monitorSum = 0;
+      renderTickFrames = renderTickLong = renderTickSum = 0;
       monitorWindowStart = now;
     }
     paintDiagnostics(now);
-    monitorRAF = requestAnimationFrame(runtimeMonitorFrame);
+    monitorRAF = setTimeout(() => runtimeMonitorFrame(performance.now()), 250);
   }
 
   function ensureRuntimeMonitor() {
@@ -252,11 +357,12 @@
     controlChannel?.postMessage({ type: 'benchmark_telemetry', value: !!config.performance?.diagnostics_hud });
     if (enabled && !monitorRAF) {
       monitorWindowStart = monitorFrames = monitorLong = monitorSum = 0;
-      monitorLastFrame = 0;
-      monitorRAF = requestAnimationFrame(runtimeMonitorFrame);
+      renderTickFrames = renderTickLong = renderTickSum = 0;
+      monitorLastFrame = renderTickLast = 0;
+      monitorRAF = setTimeout(() => runtimeMonitorFrame(performance.now()), 250);
     }
     else if (!enabled) {
-      if (monitorRAF) cancelAnimationFrame(monitorRAF);
+      if (monitorRAF) clearTimeout(monitorRAF);
       monitorRAF = 0;
       ensureDiagnosticsHud().hidden = true;
       resetAdaptiveRates();
@@ -278,10 +384,135 @@
     events.emit('diagnostics-hud', !!enabled);
   }
 
+  window.XRA_calculatePixelRatio = function(overrideRatio) {
+    const mode = config.performance?.render_resolution || '1080p';
+    const screenPR = window.devicePixelRatio || 1;
+    const currentH = window.innerHeight || 1080;
+    if (mode === 'auto') {
+      return typeof overrideRatio === 'number' ? overrideRatio : screenPR;
+    }
+    if (mode === '720p') {
+      return Math.min(screenPR, Math.max(0.35, 720 / currentH));
+    }
+    if (mode === '1440p') {
+      return Math.min(2.5, Math.max(0.67, 1440 / currentH));
+    }
+    // Default '1080p' Full HD
+    return Math.min(screenPR, Math.max(0.5, 1080 / currentH));
+  };
+
+  function applyRenderResolution(mode) {
+    const m = mode || config.performance?.render_resolution || '1080p';
+    config.performance.render_resolution = m;
+
+    if (m === '720p') {
+      if (config.recorder) { config.recorder.width = 1280; config.recorder.height = 720; }
+    } else if (m === '1440p') {
+      if (config.recorder) { config.recorder.width = 2560; config.recorder.height = 1440; }
+    } else if (m === '1080p') {
+      if (config.recorder) { config.recorder.width = 1920; config.recorder.height = 1080; }
+    }
+
+    const thx = window.MMD_SA?.THREEX?.renderer;
+    const renderer = thx?.obj || thx || window.MMD_SA?._renderer;
+    if (!renderer) return;
+
+    try {
+      const pr = typeof window.XRA_calculatePixelRatio === 'function'
+        ? window.XRA_calculatePixelRatio()
+        : 1.0;
+      if (typeof renderer.setPixelRatio === 'function') {
+        renderer.setPixelRatio(pr);
+      } else if (thx && 'devicePixelRatio' in thx) {
+        thx.devicePixelRatio = pr;
+      }
+      const canvas = renderer.domElement || thx?.domElement;
+      if (canvas && typeof renderer.setSize === 'function') {
+        const logicalW = canvas.clientWidth || window.innerWidth || 1920;
+        const logicalH = canvas.clientHeight || window.innerHeight || 1080;
+        renderer.setSize(logicalW, logicalH, false);
+      }
+    } catch (e) {
+      console.warn(TAG, 'applyRenderResolution failed', e);
+    }
+  }
+
+  function resolveAutoShadows() {
+    const pref = config.performance?.shadows || 'auto';
+    if (pref === 'off') return false;
+    if (pref === 'on') return true;
+
+    // In 'auto' mode:
+    // If background mode is flat color (e.g. green screen #00ff00 or #202020),
+    // shadows are unnecessary and only waste GPU cycles.
+    if (config.background?.mode === 'color') return false;
+
+    // If an explicit 3D stage or objects are present with ground, enable shadows
+    const has3DStage = !!(window.MMD_SA_options?.x_object?.length > 0 || window.MMD_SA_options?.stage_para);
+    if (has3DStage) return true;
+
+    // Realistic VRMs or default floating avatar without 3D floor: disable shadows
+    return false;
+  }
+
+  function applyShadows(mode) {
+    const pref = mode || config.performance?.shadows || 'auto';
+    config.performance.shadows = pref;
+    const enabled = resolveAutoShadows();
+
+    if (window.MMD_SA_options) {
+      window.MMD_SA_options.use_shadowMap = enabled;
+    }
+
+    const renderer = window.MMD_SA?.THREEX?.renderer || window.MMD_SA?.THREEX?._renderer || window.MMD_SA?._renderer;
+    if (renderer && renderer.shadowMap) {
+      renderer.shadowMap.enabled = enabled;
+      renderer.shadowMap.autoUpdate = enabled;
+    }
+
+    if (typeof window.MMD_SA?.toggle_shadowMap === 'function') {
+      try { window.MMD_SA.toggle_shadowMap(enabled); } catch (e) {}
+    }
+  }
+
+  function applySpringBone(mode) {
+    const normalized = ['full', 'half', 'off'].includes(String(mode))
+      ? String(mode)
+      : 'full';
+    config.performance.spring_bone = normalized;
+    window.XRA_springbone_rate = normalized === 'off' ? 0 : (normalized === 'half' ? 2 : 1);
+    return window.XRA_springbone_rate;
+  }
+
+  function sendConfidenceThresholds() {
+    if (XRA.xraBackend?.sendControl) {
+      const p = config.performance || {};
+      const t = config.tracking || {};
+      XRA.xraBackend.sendControl({
+        type: 'confidence',
+        min_tracking_confidence: Number(p.min_tracking_confidence ?? 0.50),
+        min_pose_confidence: Number(p.min_pose_confidence ?? 0.50),
+        min_face_confidence: Number(p.min_face_confidence ?? 0.50),
+        min_joint_confidence: Number(p.min_joint_confidence ?? 0.25),
+        arm_steady_hold: !!t.arm_steady_hold,
+        smart_arm_sync: t.smart_arm_sync !== false,
+        desk_wrist_guard: t.desk_wrist_guard !== false,
+        desk_wrist_thresh: Number(t.desk_wrist_thresh ?? 0.50),
+      });
+    }
+  }
+
   function apply({ camera = true, postfx = true, rates = true } = {}) {
     if (camera) applyCameraSettings();
     if (postfx) setPostFXDisabled(!!config.performance.disable_postfx);
-    if (rates) sendInferenceRates();
+    if (rates) {
+      sendInferenceRates();
+      sendConfidenceThresholds();
+    }
+    window.XRA_render_fps_limit = Number(config.performance?.render_fps ?? 60);
+    applyRenderResolution();
+    applyShadows();
+    applySpringBone(config.performance?.spring_bone);
     events.emit('performance-applied', config.performance);
   }
 
@@ -297,6 +528,39 @@
       MMD_SA_options.user_camera.streamer_mode.mocap_type = type;
     }
     return type;
+  }
+
+  // V7.81: pre-allocate the body/pose solver structures at boot regardless of
+  // the initially selected mode. Historically, booting directly into "Face"
+  // only enabled the facemesh path, leaving the pose worker, IK state and
+  // landmark buffers unallocated; switching to Full Body at runtime then failed
+  // to track the body because the one-time allocation had been skipped.
+  //
+  // We therefore run init_mocap('Full Body') exactly once (which allocates the
+  // poseNet solver + IK + landmark filters), then immediately re-apply the
+  // configured mode. This is a no-op if the configured mode IS Full Body.
+  let trackingStructuresPreallocated = false;
+  function preallocateTrackingStructures() {
+    if (trackingStructuresPreallocated) return false;
+    const camera = window.System?._browser?.camera;
+    const sm = camera?.streamer_mode;
+    if (!camera?.initialized || !sm?.init_mocap) return false;
+
+    const target = config.performance?.tracking_pipeline === 'FACE' ? 'Face' : 'Full Body';
+    try {
+      // Allocate ALL body/pose structures + IK state + landmark buffers.
+      initNative('Full Body');
+      // Restore the user's configured mode (no-op when it is Full Body).
+      if (target !== 'Full Body') initNative(target);
+      trackingStructuresPreallocated = true;
+      events.emit('tracking-structures-ready', { target });
+      XRA.debug?.record?.('startup.tracking-structures-preallocated', { target });
+      return true;
+    }
+    catch (e) {
+      console.warn(TAG, 'tracking structure pre-allocation failed', e);
+      return false;
+    }
   }
 
   function pipelineNameFromNative(native) {
@@ -406,10 +670,29 @@
         }
       }
 
-      return origCalculateNeckData.call(this, t);
+      // Native XR Animator queues a one-shot calibration listener from inside
+      // calculate_neck_data even though the calibration event for this frame
+      // has already fired. With an external whole-body payload that creates a
+      // fresh listener/closure every frame and delays the sample until the next
+      // frame. The callback ignores the event object, so consume it immediately
+      // while this synchronous native call is active.
+      const nativeAddEventListener = window.addEventListener;
+      window.addEventListener = function (type, listener, options) {
+        if (type === 'SA_camera_facemesh_calibrating' && options?.once && typeof listener === 'function') {
+          try { listener.call(window, { type, target: window, currentTarget: window }); }
+          catch (error) { console.warn(TAG, 'neck calibration sample failed', error); }
+          return;
+        }
+        return nativeAddEventListener.call(window, type, listener, options);
+      };
+      try {
+        return origCalculateNeckData.call(this, t);
+      }
+      finally {
+        window.addEventListener = nativeAddEventListener;
+      }
     };
 
-    console.log(TAG, 'Neck calibration bridge installed successfully');
     return true;
   }
 
@@ -467,7 +750,6 @@
     // changing mocap_type updates the menu but does not create the Full Body
     // MediaPipe workers, which is why a manual selection + restart was needed.
     try {
-      console.log(TAG, 'Selecting startup mocap engine: Full Body (MediaPipe Vision)...');
       initNative('Full Body');
       startupMocapTriggered = true;
     }
@@ -500,8 +782,6 @@
     const savedNative = nativeFromPipeline(savedPipeline);
     config.performance.tracking_pipeline = pipelineNameFromNative(savedNative);
 
-    console.log(TAG, `Startup calibration complete! Restoring saved mocap: ${savedNative} (${savedPipeline})`);
-
     XRA.profileService?.finishStartupNativeOverride?.();
     apply();
 
@@ -510,6 +790,9 @@
         initNative(savedNative);
         if (window.MMD_SA?.MMD?.motionManager && !window.MMD_SA.MMD.motionManager.para_SA?.motion_tracking_enabled) {
           window.MMD_SA_options?.Dungeon_options?.item_base?.pose?._change_motion_?.(0, true);
+        }
+        if (window.XRA_BACKEND_CAMERA?.configure) {
+          window.XRA_BACKEND_CAMERA.configure({ mocap_mode: savedNative === 'Face' ? 'face' : 'holistic' }).catch(() => {});
         }
       }
       else if (window.MMD_SA_options?.user_camera?.streamer_mode) {
@@ -562,6 +845,13 @@
       [config.performance.pose_fps, config.performance.hand_fps] = preset.rates;
       runtimePoseFps = runtimeHandFps = null;
     }
+    config.performance.spring_bone = preset.spring || 'full';
+    if (Object.prototype.hasOwnProperty.call(preset, 'frame_skip')) {
+      config.performance.adaptive_frame_skip = Boolean(preset.frame_skip);
+    }
+    if (preset.infer) {
+      config.performance.infer_mode = preset.infer;
+    }
     return true;
   }
 
@@ -595,11 +885,13 @@
     const pose = await ensurePoseQuality(preset.pose);
     copyPresetValues(name, pose);
     config.performance.master_preset = name;
+    if (switchPipeline) {
+      config.performance.tracking_pipeline = pipelineNameFromNative(preset.native);
+    }
     apply();
 
     if (switchPipeline) {
       initNative(preset.native);
-      config.performance.tracking_pipeline = pipelineNameFromNative(preset.native);
       await util.sleep(1200);
     }
 
@@ -700,8 +992,16 @@
     if (native === 'Full Body Holistic' || native === 'Face+Body') native = 'Full Body';
     const allowed = new Set(['Face', 'Full Body']);
     if (!allowed.has(native)) throw new Error('Unsupported mocap mode: ' + native);
-    initNative(native);
+    preallocateTrackingStructures();
     config.performance.tracking_pipeline = pipelineNameFromNative(native);
+    initNative(native);
+    const mocapMode = native === 'Face' ? 'face' : 'holistic';
+    if (window.XRA_BACKEND_CAMERA?.configure) {
+      await window.XRA_BACKEND_CAMERA.configure({ mocap_mode: mocapMode });
+    }
+    if (XRA.xraBackend?.sendControl) {
+      XRA.xraBackend.sendControl({ type: 'mode', mode: mocapMode });
+    }
     await util.sleep(900);
     await XRA.profileService.save();
     events.emit('pipeline', { native, name: config.performance.tracking_pipeline });
@@ -710,8 +1010,16 @@
 
   async function setPipeline(name) {
     const native = nativeFromPipeline(name);
-    initNative(native);
+    preallocateTrackingStructures();
     config.performance.tracking_pipeline = pipelineNameFromNative(native);
+    initNative(native);
+    const mocapMode = native === 'Face' ? 'face' : 'holistic';
+    if (window.XRA_BACKEND_CAMERA?.configure) {
+      await window.XRA_BACKEND_CAMERA.configure({ mocap_mode: mocapMode });
+    }
+    if (XRA.xraBackend?.sendControl) {
+      XRA.xraBackend.sendControl({ type: 'mode', mode: mocapMode });
+    }
     await util.sleep(900);
     await XRA.profileService.save();
     events.emit('pipeline', { native, name: config.performance.tracking_pipeline });
@@ -721,9 +1029,14 @@
   XRA.performance = {
     PRESETS,
     apply,
+    applyRenderResolution,
+    applyShadows,
+    applySpringBone,
+    resolveAutoShadows,
     applyCameraSettings,
     setPostFXDisabled,
     sendInferenceRates,
+    sendConfidenceThresholds,
     setRuntimeAdaptive,
     setDiagnosticsHud,
     ensureRuntimeMonitor,
@@ -739,6 +1052,7 @@
     prepareStartupMocap,
     installStartupMocapStartGuard,
     installNeckCalibrationBridge,
+    preallocateTrackingStructures,
     applyPresetSafe,
     applyMasterPreset,
     benchmarkHardwareOnly,
@@ -797,22 +1111,29 @@
     apply();
     ensureRuntimeMonitor();
     installNeckCalibrationBridge();
+    preallocateTrackingStructures();
     watchForStartupCamera();
   });
 
   events.on('camera-started', () => {
     installNeckCalibrationBridge();
+    preallocateTrackingStructures();
     selectStartupMocap();
   });
 
+  events.on('background-mode', () => applyShadows());
+  events.on('avatar-loaded', () => applyShadows());
+
   window.addEventListener('MMDStarted', () => {
     installNeckCalibrationBridge();
+    preallocateTrackingStructures();
     setTimeout(() => apply(), 500);
     setTimeout(sendInferenceRates, 1200);
     watchForStartupCamera();
   });
 
   installNeckCalibrationBridge();
+  preallocateTrackingStructures();
   watchForStartupCamera();
   setTimeout(sendInferenceRates, 1500);
   setTimeout(ensureRuntimeMonitor, 1700);

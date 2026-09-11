@@ -3219,8 +3219,17 @@ this._mesh.scale.set(1,1,1).multiplyScalar(this.scale * scale * ((is_landscape &
 //this.pos_base.copy(this._mesh.position).sub(this.pos_base_ref.character_pos_ref)
    };
 
-    SB.prototype.update_placement = function (enforced) {
+    var placement_update_pending = false
+    var placement_update_enforced = false
+
 function update_placement() {
+  if (!placement_update_pending)
+    return
+
+  placement_update_pending = false
+  var enforced = placement_update_enforced
+  placement_update_enforced = false
+
   if (bb_list.some(b=>b._pos_fixed)) {
     MMD_SA._trackball_camera.object.updateMatrixWorld();
   }
@@ -3228,11 +3237,15 @@ function update_placement() {
   bb_list.forEach(b=>{b._update_placement(enforced)});
 }
 
+window.addEventListener('SA_MMD_before_render', update_placement);
+
+    SB.prototype.update_placement = function (enforced) {
+
 if (!MMD_SA_options.use_speech_bubble)
   return
 
-window.removeEventListener('SA_MMD_before_render', update_placement);
-window.addEventListener('SA_MMD_before_render', update_placement, {once:true});
+placement_update_pending = true
+placement_update_enforced = placement_update_enforced || !!enforced
     };
 
     SB.prototype._update_placement = function (enforced) {
@@ -8317,17 +8330,29 @@ if (!threeX.enabled) {
 }
 
 data.scene = new THREE.Scene();
+const xra_gpu_pref = window.XRA_gpu_preference || (window.XRA?.config?.performance?.gpu_preference) || 'default';
+const xra_preserve_buf = window.XRA_preserve_drawing_buffer ?? (window.XRA?.config?.performance?.preserve_drawing_buffer !== false);
+const xra_antialias = window.XRA_antialias ?? (window.XRA?.config?.performance?.antialias !== 'off');
 data.renderer = new THREE.WebGLRenderer({
   canvas: SLX,
   alpha: true,
-  antialias: true,
+  antialias: xra_antialias,
   stencil: false,
-  preserveDrawingBuffer: true
+  powerPreference: xra_gpu_pref,
+  preserveDrawingBuffer: xra_preserve_buf
 });
+
+try {
+  const _gl = data.renderer.getContext();
+  const _dbg = _gl?.getExtension?.('WEBGL_debug_renderer_info');
+  if (_dbg) {
+    window.XRA_DETECTED_GPU = _gl.getParameter(_dbg.UNMASKED_RENDERER_WEBGL);
+  }
+} catch (e) {}
 
 //data.renderer.outputColorSpace = THREE.SRGBColorSpace;//LinearSRGBColorSpace;//
 
-data.renderer.setPixelRatio(window.devicePixelRatio);
+data.renderer.setPixelRatio(window.XRA_calculatePixelRatio ? window.XRA_calculatePixelRatio() : Math.min(window.devicePixelRatio || 1, 1.0));
 
 GLTF_loader = new THREE.GLTFLoader();
 
@@ -9421,7 +9446,7 @@ if (this.reset_pose) {
   this.scale(1);
 
   if (MMD_SA.hide_3D_avatar) { vrm._update_core(time_delta) } else
-  vrm.update(time_delta);
+  vrm._update_XRA(time_delta);
 
   if (!mesh.matrixAutoUpdate) {
     mesh.updateMatrix()
@@ -9766,7 +9791,7 @@ if (!use_faceBlendshapes) {// || System._browser.camera.facemesh.auto_look_at_ca
 if (this._reset_physics_) { delete this._reset_physics_; this.resetPhysics(); }
 
 if (MMD_SA.hide_3D_avatar) { vrm._update_core(time_delta) } else
-vrm.update(time_delta);
+vrm._update_XRA(time_delta);
 
 
 if (MMD_SA.OSC.VMC.sender_enabled && MMD_SA.OSC.VMC.ready) {
@@ -10358,6 +10383,27 @@ vrm._update_core = function (delta) {
 
   if (this.expressionManager) {
     this.expressionManager.update();
+  }
+};
+
+// Keep humanoid, look-at, expressions, constraints and animated materials at
+// full render cadence while throttling only secondary Spring Bone physics.
+vrm._update_XRA = function (delta) {
+  this._update_core(delta);
+
+  if (this.nodeConstraintManager) {
+    this.nodeConstraintManager.update();
+  }
+
+  const rateValue = Number(window.XRA_springbone_rate);
+  const rate = Number.isFinite(rateValue) ? Math.max(0, Math.round(rateValue)) : 1;
+  const frame = Number(window.XRA_render_frame_count || 0);
+  if (this.springBoneManager && rate > 0 && (rate === 1 || frame % rate === 0)) {
+    this.springBoneManager.update(delta * rate);
+  }
+
+  if (this.materials) {
+    this.materials.forEach(material => material.update?.(delta));
   }
 };
 
@@ -12380,10 +12426,10 @@ if (fb != _device_framebuffer) {
         get devicePixelRatio() { return (threeX.enabled) ? this.obj.getPixelRatio() : this.obj.devicePixelRatio; },
         set devicePixelRatio(v) {
 if (!threeX.enabled) {
-  this.obj.devicePixelRatio = v;
+  this.obj.devicePixelRatio = (window.XRA_calculatePixelRatio) ? window.XRA_calculatePixelRatio(v) : Math.min(v || 1, 1.0);
 }
 else {
-  this.obj.setPixelRatio(v);
+  this.obj.setPixelRatio((window.XRA_calculatePixelRatio) ? window.XRA_calculatePixelRatio(v) : Math.min(v || 1, 1.0));
 }
         },
 
@@ -14852,8 +14898,10 @@ radius: bs.radius,
       colliders_for_hands.head.children = head_colliders.map(c=>{
         function validate(pos, vector_add, rot_base, reference_point) {
 // v0.34.1
-// Enforce pushing hand backward
-// rot_base is assumed to be 上半身2
+// Enforce pushing hand backward only when body colliders are active.
+// If mode===0 or head collider is disabled, skip z enforcement entirely.
+if (_poseNet.body_collider.mode === 0 || !_poseNet.body_collider.head.enabled) return true;
+
 const rot_body = rot_base;//modelX.get_bone_rotation_by_MMD_name('上半身2', true);
 const rot_body_inv = MMD_SA.TEMP_q.copy(rot_body).conjugate();
 _pos.copy(pos).applyQuaternion(rot_body_inv);

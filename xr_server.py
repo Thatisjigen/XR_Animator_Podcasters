@@ -12,6 +12,68 @@ import subprocess
 import sys
 import os
 
+try:
+    if getattr(sys, 'frozen', False):
+        _prof_path = Path(sys.executable).resolve().parent / "xra_profile.json"
+    else:
+        _prof_path = Path(__file__).resolve().parent / "xra_profile.json"
+    if _prof_path.is_file():
+        with open(_prof_path, "r", encoding="utf-8") as _f:
+            _perf = json.load(_f).get("custom", {}).get("performance", {})
+            _ai_gpu = str(_perf.get("hardware_mode") or _perf.get("ai_gpu_preference", "Auto")).strip()
+            if _ai_gpu in ("high-performance", "GPU_dGPU", "dGPU"):
+                os.environ["__EGL_VENDOR_LIBRARY_FILENAMES"] = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+                os.environ["XRA_HARDWARE_MODE"] = _ai_gpu
+            elif _ai_gpu in ("low-power", "GPU_iGPU", "iGPU"):
+                os.environ["__EGL_VENDOR_LIBRARY_FILENAMES"] = "/usr/share/glvnd/egl_vendor.d/50_mesa.json"
+                os.environ["XRA_HARDWARE_MODE"] = _ai_gpu
+            elif _ai_gpu.lower() == "cpu":
+                os.environ["XRA_FORCE_CPU"] = "1"
+                os.environ["XRA_HARDWARE_MODE"] = "CPU"
+            else:
+                os.environ["XRA_HARDWARE_MODE"] = "Auto"
+except Exception:
+    pass
+
+# XR Animator native MediaPipe backend. Import is defensive so a broken model
+# package never prevents the static application server from starting.
+try:
+    from xra_backends import registry as backend_registry
+    from xra_backends import downloader as backend_downloader
+    from xra_backends import engine as backend_engine
+    from xra_backends import server as backend_server
+    from xra_backends import provision as backend_provision
+    BACKENDS_OK = True
+except Exception as _backend_exc:  # pragma: no cover - import guard
+    backend_registry = None
+    backend_downloader = backend_engine = backend_server = None
+    backend_provision = None
+    BACKENDS_OK = False
+    _BACKENDS_IMPORT_ERROR = str(_backend_exc)
+
+
+def _start_backend_provisioning():
+    """Check/download the native Tasks models exactly once.
+
+    Called at import time so it runs no matter the entry point (frozen
+    xr_launcher.py imports xr_server; running xr_server.py directly also
+    imports it). With the bundled build this is a pure no-op that just records
+    a ready state; otherwise it starts a background download thread.
+    """
+    global _BACKEND_PROVISION_STARTED
+    if not BACKENDS_OK or _BACKEND_PROVISION_STARTED:
+        return
+    _BACKEND_PROVISION_STARTED = True
+    try:
+        prov = backend_provision.autostart()
+        print(f"[XRA] Backend provisioning: {prov.get('phase')} — {prov.get('message','')}")
+    except Exception as exc:  # never block the server
+        print(f"[XRA] Backend provisioning failed to start: {exc}")
+
+
+_BACKEND_PROVISION_STARTED = False
+_start_backend_provisioning()
+
 if getattr(sys, 'frozen', False):
     ROOT = Path(sys.executable).resolve().parent
 else:
@@ -41,8 +103,9 @@ DEFAULT_CUSTOM = {
     },
     "performance": {
         "preset": "CUSTOM", "master_preset": "CUSTOM", "tracking_pipeline": "FULL_BODY",
-        "disable_postfx": False, "pose_fps": 30, "hand_fps": 20, "auto_last_result": None,
-        "runtime_adaptive": False, "diagnostics_hud": False,
+        "disable_postfx": False, "pose_fps": 30, "hand_fps": 20,
+        "auto_last_result": None,
+        "runtime_adaptive": False, "diagnostics_hud": False, "tracker_backend": "mediapipe-tasks-landmarker",
     },
     "debug": {"session_enabled": False, "max_events": 12000},
     "body": {"anchor_strength": 0.80, "transition_ms": 450, "stable": False},
@@ -60,7 +123,7 @@ DEFAULT_CUSTOM = {
     "collider": {"preset": "CUSTOM", "mode": 0, "reaction": "z_push", "head": 100, "chest": 100, "waist": 100, "hip": 100},
     "visual_effects": {"UnrealBloom": None, "N8AO": None, "DOF": None},
     "left_settings": {},
-    "avatar": {"filename": ""},
+    "avatar": {"filename": "", "pose_key": ""},
     "devices": {
         "mic_device_id": "", "camera_device_id": "", "camera_label": "",
         "mirror_preview": False, "selfie_mode": False,
@@ -72,7 +135,7 @@ DEFAULT_CUSTOM = {
         "segment_minutes": 0, "output_format": "webm", "output_dir": "",
         "filename": "XR_Animator_{date}_{time}", "raw_audio_backup": True, "raw_audio_format": "flac", "hardware_encode": "auto", "chroma_safe": True, "force_render_resolution": True, "capture_source": "classic_v74",
     },
-    "ui": {"visible": True, "show_startup": True, "active_tab": "quick", "language": "auto", "preview_video": None, "preview_wireframe": None, "preview_debug": None},
+    "ui": {"visible": True, "active_tab": "quick", "language": "auto", "preview_video": None, "preview_wireframe": None, "preview_debug": None},
 }
 
 DEFAULT_PROFILE = {
@@ -141,6 +204,8 @@ def read_profile_file(path):
     performance = profile.setdefault("custom", {}).setdefault("performance", {})
     performance.pop("startup_mocap", None)
     performance.pop("e2_master", None)
+    for key in ("body_fps", "head_fps", "dwpose_body_fps", "mediapipe_head_fps", "drishti_threads"):
+        performance.pop(key, None)
     profile.setdefault("custom", {}).setdefault("ui", {}).pop("show_legacy_toolbar", None)
     left_settings = profile.setdefault("custom", {}).setdefault("left_settings", {})
     for key in list(left_settings):
@@ -176,11 +241,83 @@ def save_profile(profile, rotate_backup=True):
 
         tmp.replace(PROFILE_FILE)
 
+    try:
+        from xra_backends import capture as backend_capture
+        perf = (profile.get("custom") or {}).get("performance") or {}
+        fps = perf.get("pose_fps")
+        cam = (profile.get("custom") or {}).get("camera") or {}
+        cam_w = cam.get("width")
+        cam_h = cam.get("height")
+        tracking_pipeline = str(perf.get("tracking_pipeline") or "").upper()
+        infer_mode = perf.get("infer_mode")
+        infer_w = perf.get("infer_width")
+        infer_h = perf.get("infer_height")
+        kwargs = {}
+        if fps is not None:
+            kwargs["fps"] = float(fps)
+        if cam_w is not None:
+            kwargs["width"] = int(cam_w)
+        if cam_h is not None:
+            kwargs["height"] = int(cam_h)
+        if infer_mode is not None:
+            kwargs["infer_mode"] = infer_mode
+        if infer_w is not None and infer_h is not None:
+            kwargs["infer_width"] = int(infer_w)
+            kwargs["infer_height"] = int(infer_h)
+        tracking = (profile.get("custom") or {}).get("tracking") or {}
+        if "arm_steady_hold" in tracking:
+            kwargs["arm_steady_hold"] = bool(tracking["arm_steady_hold"])
+        kwargs["mocap_mode"] = "face" if tracking_pipeline == "FACE" else "holistic"
+        if kwargs:
+            backend_capture.CAPTURE.configure(**kwargs)
+        if backend_engine and backend_engine.ENGINE:
+            conf_kw = {}
+            if "min_joint_confidence" in perf:
+                conf_kw["min_joint"] = float(perf["min_joint_confidence"])
+            if "desk_wrist_guard" in tracking:
+                conf_kw["desk_wrist_guard"] = bool(tracking["desk_wrist_guard"])
+            if conf_kw:
+                backend_engine.ENGINE.configure_confidence(**conf_kw)
+    except Exception:
+        pass
+
 
 def load_profile():
     if PROFILE_FILE.exists():
         try:
-            return read_profile_file(PROFILE_FILE)
+            p = read_profile_file(PROFILE_FILE)
+            try:
+                from xra_backends import capture as backend_capture
+                from xra_backends import engine as backend_engine
+                perf = (p.get("custom") or {}).get("performance") or {}
+                tracking = (p.get("custom") or {}).get("tracking") or {}
+                pipe = str(perf.get("tracking_pipeline") or "").upper()
+                fps = perf.get("pose_fps")
+                infer_mode = perf.get("infer_mode")
+                infer_w = perf.get("infer_width")
+                infer_h = perf.get("infer_height")
+                kw = {"mocap_mode": "face" if pipe == "FACE" else "holistic"}
+                if fps is not None:
+                    kw["fps"] = float(fps)
+                if infer_mode is not None:
+                    kw["infer_mode"] = infer_mode
+                if infer_w is not None and infer_h is not None:
+                    kw["infer_width"] = int(infer_w)
+                    kw["infer_height"] = int(infer_h)
+                if "arm_steady_hold" in tracking:
+                    kw["arm_steady_hold"] = bool(tracking["arm_steady_hold"])
+                backend_capture.CAPTURE.configure(**kw)
+                if backend_engine and backend_engine.ENGINE:
+                    conf_kw = {}
+                    if "min_joint_confidence" in perf:
+                        conf_kw["min_joint"] = float(perf["min_joint_confidence"])
+                    if "desk_wrist_guard" in tracking:
+                        conf_kw["desk_wrist_guard"] = bool(tracking["desk_wrist_guard"])
+                    if conf_kw:
+                        backend_engine.ENGINE.configure_confidence(**conf_kw)
+            except Exception:
+                pass
+            return p
         except Exception as exc:
             print(f"[XRA] Main profile invalid: {exc}")
 
@@ -973,9 +1110,124 @@ def finalize_native_recording(video_info, audio_info=None):
     return final
 
 
+_proc_cpu_last_time = 0.0
+_proc_cpu_last_monotonic = 0.0
+_proc_cpu_percent = 0.0
+_proc_metrics_lock = threading.Lock()
+_proc_memory_samples = []
+_proc_vram_last_at = 0.0
+_proc_vram_mb = 0.0
+
+
+def _memory_slope(samples, index: int) -> float:
+    if len(samples) < 2:
+        return 0.0
+    first, last = samples[0], samples[-1]
+    minutes = (last[0] - first[0]) / 60.0
+    if minutes < (10.0 / 60.0):
+        return 0.0
+    return round((last[index] - first[index]) / minutes, 2)
+
+
+def _process_vram_mb(now: float) -> float:
+    global _proc_vram_last_at, _proc_vram_mb
+    if now - _proc_vram_last_at < 4.0:
+        return _proc_vram_mb
+    _proc_vram_last_at = now
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-compute-apps=pid,used_gpu_memory",
+             "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+            check=False,
+        )
+        total = 0.0
+        for line in result.stdout.splitlines():
+            fields = [field.strip() for field in line.split(",")]
+            if len(fields) >= 2 and int(fields[0]) == os.getpid():
+                total += float(fields[1])
+        _proc_vram_mb = round(total, 1)
+    except Exception:
+        pass
+    return _proc_vram_mb
+
+def get_process_metrics() -> dict:
+    global _proc_cpu_last_time, _proc_cpu_last_monotonic, _proc_cpu_percent
+    with _proc_metrics_lock:
+        now = time.monotonic()
+        times = os.times()
+        total_cpu = times.user + times.system
+        if _proc_cpu_last_monotonic > 0:
+            dt = now - _proc_cpu_last_monotonic
+            if dt >= 0.2:
+                dcpu = total_cpu - _proc_cpu_last_time
+                _proc_cpu_percent = round((dcpu / dt) * 100.0, 1)
+                _proc_cpu_last_time = total_cpu
+                _proc_cpu_last_monotonic = now
+        else:
+            _proc_cpu_last_time = total_cpu
+            _proc_cpu_last_monotonic = now
+
+        rss_mb = 0.0
+        pss_mb = 0.0
+        try:
+            with open("/proc/self/status", "r") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        rss_mb = round(int(line.split()[1]) / 1024.0, 1)
+                        break
+        except Exception:
+            pass
+        try:
+            with open("/proc/self/smaps_rollup", "r") as f:
+                for line in f:
+                    if line.startswith("Pss:"):
+                        pss_mb = round(int(line.split()[1]) / 1024.0, 1)
+                        break
+        except Exception:
+            pass
+
+        vram_mb = _process_vram_mb(now)
+        _proc_memory_samples.append((now, rss_mb, pss_mb, vram_mb))
+        cutoff = now - 120.0
+        while len(_proc_memory_samples) > 2 and _proc_memory_samples[0][0] < cutoff:
+            _proc_memory_samples.pop(0)
+
+        return {
+            "pid": os.getpid(),
+            "cpu_percent": _proc_cpu_percent,
+            "rss_mb": rss_mb,
+            "pss_mb": pss_mb,
+            "gpu_vram_mb": vram_mb,
+            "rss_slope_mb_min": _memory_slope(_proc_memory_samples, 1),
+            "pss_slope_mb_min": _memory_slope(_proc_memory_samples, 2),
+            "gpu_vram_slope_mb_min": _memory_slope(_proc_memory_samples, 3),
+            "slope_window_s": round(
+                _proc_memory_samples[-1][0] - _proc_memory_samples[0][0], 1
+            ) if len(_proc_memory_samples) >= 2 else 0.0,
+            "threads": threading.active_count(),
+            "cores": os.cpu_count() or 1,
+        }
+
+
 class Handler(SimpleHTTPRequestHandler):
+    # Required for the /__xra_backend/ws WebSocket upgrade: BaseHTTPRequestHandler
+    # defaults to HTTP/1.0, which marks the connection non-persistent and tears
+    # the socket down after the handshake response. The client's onopen still
+    # fires (so the bridge logs "connected"), but the server's subsequent
+    # {type:"pose"} frames never reach it -> lastPose stays null -> the native
+    # branch is never taken and the rig shows nothing. HTTP/1.1 keeps the socket
+    # alive for the long-lived bidirectional WS frame stream.
+    protocol_version = "HTTP/1.1"
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
+
+    def log_message(self, format, *args):
+        if os.environ.get("XRA_VERBOSE", "0") in {"1", "true", "yes", "on"}:
+            super().log_message(format, *args)
 
     def end_headers(self):
         path = urlparse(self.path).path
@@ -994,22 +1246,48 @@ class Handler(SimpleHTTPRequestHandler):
 
     def send_json(self, obj, status=200):
         data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass   # client reloaded / disconnected before we finished writing
 
     def send_js(self, text, status=200):
         data = text.encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/javascript; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/javascript; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def do_GET(self):
         path = urlparse(self.path).path
+
+        # Native mocap backend: WebSocket upgrade and JSON status routes.
+        if path == "/__xra_backend/ws":
+            if BACKENDS_OK and backend_server.maybe_upgrade(self):
+                return
+            self.send_error(404, "Backend websocket unavailable")
+            return
+
+        if path == "/__xra_backend/status":
+            self.send_json(self._backend_status())
+            return
+
+        if path == "/__xra_backend/list":
+            if not BACKENDS_OK:
+                self.send_json({"ok": False, "error": "backends module failed to import",
+                                "detail": _BACKENDS_IMPORT_ERROR}, status=500)
+                return
+            self.send_json({"ok": True, "backends": backend_registry.list_backends(),
+                            "active": backend_engine.ENGINE.status()})
+            return
 
         if path.startswith("/__xra_avatar/"):
             avatar = avatar_file(path.removeprefix("/__xra_avatar/"))
@@ -1098,6 +1376,32 @@ class Handler(SimpleHTTPRequestHandler):
 
         super().do_GET()
 
+    def _backend_status(self):
+        """Lightweight status payload for the Performance tab."""
+        if not BACKENDS_OK:
+            return {"ok": False, "error": "backends module failed to import",
+                    "detail": _BACKENDS_IMPORT_ERROR}
+        try:
+            from xra_backends import capture as backend_capture
+            capture_status = backend_capture.CAPTURE.status()
+        except Exception:
+            capture_status = {"running": False}
+        try:
+            transport_status = backend_server.get_transport_status()
+        except Exception:
+            transport_status = {}
+        return {
+            "ok": True,
+            "active": backend_engine.ENGINE.status(),
+            "capture": capture_status,
+            "hardware": capture_status.get("hardware") or (backend_capture.probe_hardware_info() if hasattr(backend_capture, 'probe_hardware_info') else None),
+            "transport": transport_status,
+            "process": get_process_metrics(),
+            "provision": backend_provision.status(),
+            "installed": {mid: backend_registry.is_installed(mid)
+                          for mid in backend_registry.REGISTRY},
+        }
+
     def read_json_body(self, max_bytes=4 * 1024 * 1024):
         length = int(self.headers.get("Content-Length", "0"))
         if length <= 0 or length > max_bytes:
@@ -1110,6 +1414,77 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path
+
+        if path == "/__xra_backend/download":
+            if not BACKENDS_OK:
+                self.send_json({"ok": False, "error": "backends module failed to import"}, status=500)
+                return
+            try:
+                obj = self.read_json_body(64 * 1024)
+                model = str(obj.get("model") or "")
+                if model not in backend_registry.REGISTRY:
+                    raise ValueError(f"Unknown backend: {model}")
+                result = backend_downloader.ensure_model(model)
+                self.send_json(result)
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+
+        if path == "/__xra_backend/load":
+            if not BACKENDS_OK:
+                self.send_json({"ok": False, "error": "backends module failed to import"}, status=500)
+                return
+            try:
+                obj = self.read_json_body(64 * 1024)
+                model = str(obj.get("model") or "")
+                mode = obj.get("mode") or obj.get("mocap_mode")
+                if mode:
+                    from xra_backends import capture as backend_capture
+                    backend_engine.ENGINE.configure_mode(mode)
+                    backend_capture.CAPTURE.configure(mocap_mode=mode)
+                if model == backend_registry.MEDIAPIPE_ID or not model:
+                    backend_engine.ENGINE.unload()
+                    self.send_json({"ok": True, "active": backend_engine.ENGINE.status()})
+                    return
+                if model not in backend_registry.REGISTRY:
+                    raise ValueError(f"Unknown backend: {model}")
+                result = backend_engine.ENGINE.load(model)
+                self.send_json(result)
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+
+        if path == "/__xra_backend/mode":
+            if not BACKENDS_OK:
+                self.send_json({"ok": False, "error": "backends module failed to import"}, status=500)
+                return
+            try:
+                obj = self.read_json_body(64 * 1024)
+                mode = str(obj.get("mode") or obj.get("mocap_mode") or "holistic")
+                from xra_backends import capture as backend_capture
+                res = backend_engine.ENGINE.configure_mode(mode)
+                backend_capture.CAPTURE.configure(mocap_mode=mode)
+                self.send_json({"ok": True, "active": backend_engine.ENGINE.status(), "capture": backend_capture.CAPTURE.status()})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+
+        if path == "/__xra_backend/uninstall":
+            if not BACKENDS_OK:
+                self.send_json({"ok": False, "error": "backends module failed to import"}, status=500)
+                return
+            try:
+                obj = self.read_json_body(64 * 1024)
+                model = str(obj.get("model") or "")
+                if model not in backend_registry.REGISTRY:
+                    raise ValueError(f"Unknown backend: {model}")
+                if backend_engine.ENGINE.model_id == model:
+                    backend_engine.ENGINE.unload()
+                result = backend_downloader.remove_model(model)
+                self.send_json(result)
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
 
         if path == "/__xra_debug/save":
             try:
@@ -1379,4 +1754,10 @@ if __name__ == "__main__":
     print(f"Profile: {PROFILE_FILE}")
     print(f"Backup:  {BACKUP_FILE}")
     print(f"Avatars: {AVATAR_DIR}")
+
+    # Backend provisioning already started at import time (see
+    # _start_backend_provisioning); nothing else to do here.
+    if not BACKENDS_OK:
+        print("[XRA] Native mocap backend unavailable (import failed)")
+
     server.serve_forever()

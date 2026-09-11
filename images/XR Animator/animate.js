@@ -3473,7 +3473,7 @@ wireframe:{
 
  ,light_position: [0,1,0]
 
- ,use_shadowMap: true
+  ,use_shadowMap: false
 // ,shadow_darkness: 0.1
  ,ground_shadow_only: true
 
@@ -3511,7 +3511,7 @@ wireframe:{
 
 //    use_VRM1: false,
 
-    use_OutlineEffect: true,
+    use_OutlineEffect: false,
 
 //    model_path: 'C:\\Users\\user\\Downloads\\EL-Pr213-BosaHair\\EL-Pr213-BosaHair\\ボサ髪_v01.pmx'//'C:\\Users\\user\\Downloads\\iroha+kazama+v1.0\\iroha kazama v1.0\\model\\iroha kazama ver1.0.pmx'//System.Gadget.path + '/TEMP/DEMO/models/AvatarSample_A.vrm'
 

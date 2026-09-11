@@ -38,6 +38,31 @@
     'Limit webcam': ['Limita la risoluzione massima della webcam per alleggerire il carico di calcolo.', 'medium'],
     'Webcam resolution': ['Risoluzione video inviata al modello di intelligenza artificiale per il tracciamento.', 'high'],
     'Webcam FPS': ['Frequenza di acquisizione della webcam. Più FPS = tracciamento più reattivo.', 'high'],
+    'Tracking inference': ['Frequenza MediaPipe nativa di elaborazione fotogrammi al secondo.', 'high'],
+    'Min tracking confidence': ['Affidabilità minima per confermare i punti di riferimento del corpo (landmarks). Valori più alti riducono tremolii ma richiedono ottima visibilità.', 'low'],
+    'Min pose detection confidence': ['Affidabilità minima per identificare la presenza del corpo nell\'inquadratura iniziale prima di agganciare i movimenti.', 'low'],
+    'Min face detection confidence': ['Affidabilità minima richiesta per rilevare il volto ed estrarre i 478 punti facciali e le 52 blendshape.', 'low'],
+    'Min joint confidence': ['Soglia di confidenza minima per accettare le singole articolazioni del corpo. Default 15%.', 'low'],
+    'Desk arm steady hold': ['Mantiene l\'avambraccio fermo alla scrivania se gomito e spalla non si muovono. Utile durante la digitazione.', 'low'],
+    'Desk wrist occlusion guard': ['Filtra i polsi allucinati quando le mani finiscono sotto il tavolo, evitando braccia rigide a mezz\'aria.', 'low'],
+    'Smart arm and hand sync': ['Allinea braccia e mani verso il basso in posa di riposo realistica, ed estende le braccia quando alzate anche senza dita visibili.', 'low'],
+    'Render FPS': ['Limita la frequenza di rendering della viewport 3D per ridurre calore e ventole su monitor ad alto refresh.', 'high'],
+    'Qualità di uscita (Render & Rec)': ['Risoluzione interna del motore 3D e della registrazione video (1080p Full HD consigliata, 720p per risparmio GPU).', 'high'],
+    'Scheda video (GPU)': ['Seleziona quale scheda video utilizzare (GPU integrata a basso consumo o GPU dedicata ad alte prestazioni). Richiede riavvio app.', 'high'],
+    'Ombre dinamiche 3D': ['Disattiva il calcolo delle ombre in tempo reale sul pavimento 3D. Risparmia fino al 30% di GPU.', 'medium'],
+    'Fisica capelli/vestiti (Spring Bone)': ['Frequenza di calcolo della fisica secondaria. "Half" calcola la fisica a frame alterni dimezzando l\'impatto CPU.', 'medium'],
+    'Anti-Aliasing (AA)': ['Smussa i bordi geometrici del modello 3D. Disattivarlo alleggerisce il lavoro dei pixel shader della scheda video.', 'medium'],
+    'Buffer disegno GPU (preserveDrawingBuffer)': ['Consente la cattura diretta del buffer per registrazione e screenshot. Disattivarlo riduce memoria e banda VRAM.', 'low'],
+    'Runtime adaptive performance': ['Governor automatico: riduce temporaneamente i rate di inferenza solo se il rendering è sotto sforzo prolungato.', 'low'],
+    'Performance / REC HUD': ['Overlay diagnostico su schermo con FPS di rendering, target di inferenza, latenza e stato registrazione.', 'tiny'],
+    'Debug session': ['Registra in memoria diagnostica di tracking, stabilizzazione e cambi posa senza salvare immagini.', 'tiny'],
+    'Debug log': ['Abilita la sessione, riproduci il problema ed esporta il registro JSON per analisi.', 'none'],
+    'Export debug log': ['Salva il file JSON contenente gli eventi diagnostici registrati in memoria.', 'none'],
+    'Clear debug log': ['Cancella tutti gli eventi diagnostici attualmente registrati in memoria.', 'none'],
+    '📹 Acquisizione Webcam': ['Impostazioni di risoluzione e frequenza della telecamera per bilanciare qualità e consumo.', 'none'],
+    '🤖 Motore Tracking (MediaPipe Tasks)': ['Configurazione del modello di intelligenza artificiale per il rilevamento di corpo, viso ed espressioni.', 'none'],
+    '🎮 Rendering Grafico & GPU': ['Ottimizzazioni per la grafica 3D in tempo reale, frequenza di rendering e carico GPU.', 'none'],
+    '📊 Diagnostica & Ottimizzazione': ['Strumenti avanzati di monitoraggio, HUD a schermo e gestione registro eventi.', 'none'],
     'Pose quality': ['Precisione del modello neurale per il corpo (Lite: leggero, Normal: bilanciato, Best: massima fedeltà).', 'high'],
     'Pose inference': ['Frequenza massima di analisi del corpo al secondo.', 'high'],
     'Hands inference': ['Frequenza massima di analisi delle mani al secondo.', 'high'],
@@ -169,17 +194,18 @@
     popup.innerHTML = '';
     const title = document.createElement('div');
     title.className = 'xra-help-title';
-    title.textContent = key;
+    title.textContent = XRA.i18n?.t ? XRA.i18n.t(key) : key;
     const text = document.createElement('div');
     text.className = 'xra-help-text';
-    text.textContent = data.text;
+    text.textContent = XRA.i18n?.t ? XRA.i18n.t(data.text) : data.text;
     const perf = document.createElement('div');
     perf.className = 'xra-help-perf';
     const label = document.createElement('span');
-    label.textContent = 'Impatto performance';
+    label.textContent = XRA.i18n?.t ? XRA.i18n.t('Impatto performance') : 'Impatto performance';
+    const rawImpact = impactLabel[data.impact] || impactLabel.variable;
     const badge = document.createElement('span');
     badge.className = `xra-help-badge impact-${data.impact}`;
-    badge.textContent = impactLabel[data.impact] || impactLabel.variable;
+    badge.textContent = XRA.i18n?.t ? XRA.i18n.t(rawImpact) : rawImpact;
     perf.append(label, badge);
     popup.append(title, text, perf);
     popup.hidden = false;
