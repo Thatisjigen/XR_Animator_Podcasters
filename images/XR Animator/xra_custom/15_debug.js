@@ -1,4 +1,3 @@
-// XRA_FRONTEND_STABILITY_V6
 ;(() => {
   const probeEnabled = (() => {
     try {

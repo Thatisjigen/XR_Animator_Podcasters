@@ -564,15 +564,15 @@ def probe_hardware_info(device_path: str = "/dev/video0") -> dict:
             card_name = os.path.basename(c)
 
             if '0x10de' in vendor:
-                name = 'NVIDIA Dedicated (RTX)'
+                name = 'NVIDIA Dedicated GPU'
                 is_dedicated = True
                 gpu_id = 'high-performance'
             elif '0x8086' in vendor:
-                name = 'Intel Graphics (Integrata)'
+                name = 'Intel Integrated GPU'
                 is_dedicated = False
                 gpu_id = 'low-power'
             elif '0x1002' in vendor:
-                name = 'AMD Radeon'
+                name = 'AMD Radeon GPU'
                 is_dedicated = True
                 gpu_id = 'high-performance'
             else:

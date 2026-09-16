@@ -20,11 +20,9 @@ MMD_SA_options.startup_screen = false;
 
 (() => {
   const base = toFileProtocol(Settings.f_path + '/xra_custom');
-  const assetVersion = '7.92';
-
   // Tiny boot assignment keeps startup ordering deterministic without synchronous XHR.
   document.write('<script src="/__xra_boot_profile.js"></scr' + 'ipt>');
-  document.write('<link rel="stylesheet" href="' + base + '/xra.css?v=' + assetVersion + '">');
+  document.write('<link rel="stylesheet" href="' + base + '/xra.css">');
 
   const scripts = [
     '00_core.js',
@@ -46,6 +44,6 @@ MMD_SA_options.startup_screen = false;
   ];
 
   for (const file of scripts) {
-    document.write('<script src="' + base + '/' + file + '?v=' + assetVersion + '"></scr' + 'ipt>');
+    document.write('<script src="' + base + '/' + file + '"></scr' + 'ipt>');
   }
 })();

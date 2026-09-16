@@ -167,7 +167,25 @@
     'VMD': ['Esporta l\'animazione in formato MMD Motion (VMD).', 'medium'],
     'glTF': ['Esporta la scena o l\'animazione in formato 3D glTF / GLB.', 'medium'],
     'BVH': ['Esporta l\'animazione scheletrica in formato BioVision Hierarchy (BVH).', 'medium'],
-    'VRMA': ['Esporta l\'animazione in formato VRM Animation (VRMA).', 'medium']
+    'VRMA': ['Esporta l\'animazione in formato VRM Animation (VRMA).', 'medium'],
+    'Output quality (Render & Rec)': ['Risoluzione interna del motore 3D e della registrazione video (1080p Full HD consigliata, 720p per risparmio GPU).', 'high'],
+    'Graphics card (GPU)': ['Seleziona quale scheda video utilizzare (GPU integrata a basso consumo o GPU dedicata ad alte prestazioni). Richiede riavvio app.', 'high'],
+    '3D dynamic shadows': ['Disattiva il calcolo delle ombre in tempo reale sul pavimento 3D. Risparmia fino al 30% di GPU.', 'medium'],
+    'Hair/cloth physics (Spring Bone)': ['Frequenza di calcolo della fisica secondaria. "Half" calcola la fisica a frame alterni dimezzando l\'impatto CPU.', 'medium'],
+    'GPU drawing buffer (preserveDrawingBuffer)': ['Consente la cattura diretta del buffer per registrazione e screenshot. Disattivarlo riduce memoria e banda VRAM.', 'low'],
+    '📹 Webcam Capture': ['Impostazioni di risoluzione e frequenza della telecamera per bilanciare qualità e consumo.', 'none'],
+    '🤖 Tracking Engine (MediaPipe Tasks)': ['Configurazione del modello di intelligenza artificiale per il rilevamento di corpo, viso ed espressioni.', 'none'],
+    '🎯 AI Confidence Thresholds': ['Soglie di confidenza minime per rilevamento e tracciamento.', 'low'],
+    '🎮 Graphics Rendering & GPU': ['Ottimizzazioni per la grafica 3D in tempo reale, frequenza di rendering e carico GPU.', 'none'],
+    '📊 Diagnostics & Optimization': ['Strumenti avanzati di monitoraggio, HUD a schermo e gestione registro eventi.', 'none'],
+    'Skip frames on overload': ['Salta frame video se l\'inferenza subisce un rallentamento improvviso.', 'low'],
+    'CPU affinity optimization': ['Vincola MediaPipe ai core ad alte prestazioni su Linux, eliminando jitter.', 'low'],
+    'Recording audio profile': ['Profilo audio: "Podcast" disattiva i filtri aggressivi preservando la dinamica naturale della voce.', 'none'],
+    'Mouth response (Volume)': ['Sensibilità con cui la webcam e l\'audio rilevano l\'apertura della bocca.', 'none'],
+    'Vowel expression (AA/OU/EE)': ['Intensità con cui le vocali aprono e modellano la bocca.', 'low'],
+    'Recording noise gate': ['Silenzia il microfono durante le pause per eliminare ronzii, respiro o rumori della stanza.', 'low'],
+    'Recording gate threshold': ['Soglia in dB per il passaggio voce. Rappresentata dalla linea arancione sul VU meter.', 'low'],
+    'Auto-calibrate gate threshold': ['Misura il rumore di fondo della stanza e imposta automaticamente la soglia ideale.', 'low']
   };
 
   let host = null;

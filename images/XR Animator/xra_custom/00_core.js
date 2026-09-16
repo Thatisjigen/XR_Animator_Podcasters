@@ -66,7 +66,7 @@
       diagnostics_hud: false,
       spring_bone: 'full',       // 'full' | 'half' (15 Hz) | 'off'
       antialias: 'auto',         // 'auto' (MSAA hardware) | 'off'
-      gpu_preference: 'default', // 'default' | 'high-performance' (RTX) | 'low-power' (iGPU)
+      gpu_preference: 'default', // 'default' | 'high-performance' (Discrete GPU) | 'low-power' (Integrated GPU)
       preserve_drawing_buffer: true
     },
 
