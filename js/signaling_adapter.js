@@ -111,6 +111,33 @@
     'wss://relay.snort.social'
   ];
 
+  let effectiveRelaysPromise = null;
+  async function getEffectiveNostrRelays() {
+    if (effectiveRelaysPromise) return effectiveRelaysPromise;
+    effectiveRelaysPromise = (async () => {
+      let relays = [...NOSTR_RELAYS];
+      try {
+        const resp = await fetch('/nostr.config', { cache: 'no-store' });
+        if (resp.ok) {
+          const text = await resp.text();
+          const custom = text
+            .split('\n')
+            .map(line => line.trim())
+            .filter(line => line && !line.startsWith('#') && (line.startsWith('wss://') || line.startsWith('ws://')));
+          if (custom.length > 0) {
+            const set = new Set([...custom, ...relays]);
+            relays = Array.from(set);
+          }
+        }
+      } catch (_) {}
+      if (typeof window !== 'undefined') {
+        window.NOSTR_RELAYS = relays;
+      }
+      return relays;
+    })();
+    return effectiveRelaysPromise;
+  }
+
   const getNostrTools = () => {
     if (typeof window !== 'undefined' && window.NostrTools) return window.NostrTools;
     if (typeof NostrTools !== 'undefined') return NostrTools;
@@ -167,9 +194,10 @@
     async _connectRelayWithFallback(chosenUrl, allowFallback = true) {
       const Nostr = getNostrTools();
       if (!Nostr) throw new Error('Libreria NostrTools non trovata.');
+      const activeRelays = await getEffectiveNostrRelays();
       const candidates = chosenUrl && allowFallback
-        ? [chosenUrl, ...NOSTR_RELAYS.filter(r => r !== chosenUrl)]
-        : (chosenUrl ? [chosenUrl] : NOSTR_RELAYS);
+        ? [chosenUrl, ...activeRelays.filter(r => r !== chosenUrl)]
+        : (chosenUrl ? [chosenUrl] : activeRelays);
 
       let lastErr = null;
       for (const url of candidates) {
@@ -216,8 +244,8 @@
 
       this.mySk = Nostr.generateSecretKey();
       this.myPk = Nostr.getPublicKey(this.mySk);
-
-      this.relay = await this._connectRelayWithFallback(relayChoice || NOSTR_RELAYS[0]);
+      const activeRelays = await getEffectiveNostrRelays();
+      this.relay = await this._connectRelayWithFallback(relayChoice || activeRelays[0]);
       if (this.isClosed) {
         try { this.relay.close(); } catch (_) {}
         this.relay = null;
@@ -656,4 +684,6 @@
   window.SignalingCrypto = SignalingCrypto;
   window.NostrSignalingAdapter = NostrSignalingAdapter;
   window.NOSTR_RELAYS = NOSTR_RELAYS;
+  window.getEffectiveNostrRelays = getEffectiveNostrRelays;
+  getEffectiveNostrRelays().catch(() => {});
 })();

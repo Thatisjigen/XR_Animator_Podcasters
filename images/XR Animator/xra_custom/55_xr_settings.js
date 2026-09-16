@@ -1467,6 +1467,17 @@
     root.id = 'XRA_NATIVE_SETTINGS';
     UI.registerHideable(root);
 
+    const leftHeader = el('div', 'xra-left-header');
+    const quitBtn = button('✕ CHIUDI', 'xra-app-quit');
+    quitBtn.title = 'Chiudi applicazione';
+    quitBtn.onclick = async () => {
+      if (window.XRA_RECORDING_ACTIVE) {
+        if (!confirm('Una registrazione è in corso. Vuoi davvero interrompere e chiudere XR Animator?')) return;
+      }
+      await XRA.nativeBridge?.quitApp?.();
+    };
+    leftHeader.appendChild(quitBtn);
+
     const launcher = button('⚙ IMPOSTAZIONI XRP', 'xra-native-launcher');
     launcher.dataset.xraNativeLauncher = '1';
     launcher.onclick = () => setOpen(!opened);
@@ -1493,7 +1504,7 @@
     addAdvanced(content);
 
     drawer.append(header, content);
-    root.append(launcher, drawer);
+    root.append(leftHeader, launcher, drawer);
     document.body.appendChild(root);
 
     events.on('profile-loaded', () => { XRA.nativeBridge?.hideNativeShellChrome?.(); restorePersistedLeftState(); refreshNativeJSON(); });

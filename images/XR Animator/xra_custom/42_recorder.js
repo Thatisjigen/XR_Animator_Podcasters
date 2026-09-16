@@ -1169,7 +1169,7 @@
     // calibration and often slammed the old slider against -25 dB. Use the
     // median as the stable room floor and a gentler 5 dB margin instead.
     const noiseFloor = values[Math.min(values.length - 1, Math.floor(values.length * 0.50))];
-    const threshold = Math.max(-55, Math.min(-5, Math.round((noiseFloor + 5) * 4) / 4));
+    const threshold = Math.max(-80, Math.min(-5, Math.round((noiseFloor + 5) * 4) / 4));
     cfg().gate_noise_floor_db = Number(noiseFloor.toFixed(1));
     cfg().gate_threshold_db = threshold;
     await XRA.profileService.save();

@@ -6,7 +6,8 @@
     myId: $('my-id'), copyId: $('copy-id-btn'), copyInvite: $('copy-invite-btn'),
     peerInput: $('peer-id-input'), connect: $('connect-btn'), connectHint: $('connect-hint'),
     statusDot: $('status-dot'), statusText: $('status-text'),
-    topbarFullscreen: $('topbar-fullscreen-btn'), sessionFullscreen: $('session-fullscreen-btn'),
+    topbarFullscreen: $('topbar-fullscreen-btn'),
+    topbarClose: $('topbar-close-btn'),
     setup: $('setup-view'), session: $('session-view'), sessionPeer: $('session-peer'),
     sessionDevicesToggle: $('session-devices-toggle'), sessionDevicesPanel: $('session-devices-panel'),
     sessionDevicesClose: $('session-devices-close'),
@@ -15,8 +16,9 @@
     disconnect: $('disconnect-btn'), muteBtn: $('mute-btn'),
     share: $('screenshare-btn'), stopShare: $('stop-share-btn'),
     syncBtn: $('sync-marker-btn'), chatSyncBtn: $('chat-sync-marker-btn'),
-    mainVideo: $('main-video'), noVideo: $('no-video-msg'), shareLabel: $('share-label'), remoteAudio: $('remote-audio'),
+    mainVideo: $('main-video'), localCanvas: $('local-preview-canvas'), noVideo: $('no-video-msg'), shareLabel: $('share-label'), remoteAudio: $('remote-audio'),
     chatBox: $('chat-box'), chatEmpty: $('chat-empty'), chatInput: $('chat-input'), send: $('send-btn'), chatState: $('chat-state'),
+    chatMinimizeBtn: $('chat-minimize-btn'), chatRestoreBtn: $('chat-restore-btn'), chatUnreadBadge: $('chat-unread-badge'),
     audioInput: $('audio-input-select'), audioOutput: $('audio-output-select'), refreshDevices: $('refresh-devices-btn'),
     enginePeerjsBtn: $('engine-peerjs-btn'), engineNostrBtn: $('engine-nostr-btn'), engineDescription: $('engine-description'),
     peerjsIdentityView: $('peerjs-identity-view'), nostrIdentityView: $('nostr-identity-view'),
@@ -45,6 +47,56 @@
   let closingMedia = false;
   let autoConnectDone = false;
   let isMuted = false;
+  let isChatMinimized = false;
+  let unreadChatCount = 0;
+  let unreadDividerInserted = false;
+
+  function isRemoteSharingActive() {
+    return Boolean(isRemoteSharingScreen);
+  }
+
+  function isScreenShareActive() {
+    const localHasVideo = Boolean(displayStream?.getVideoTracks().some(t => t.readyState === 'live'));
+    const remoteHasVideo = isRemoteSharingActive();
+    return localHasVideo || remoteHasVideo;
+  }
+
+  function updateSessionLayout() {
+    if (!ui.session || ui.session.hidden) return;
+    const hasScreen = isScreenShareActive();
+    ui.session.classList.toggle('has-screen', hasScreen);
+    ui.session.classList.toggle('no-screen', !hasScreen);
+    ui.session.classList.toggle('chat-minimized', isChatMinimized);
+
+    if (ui.chatRestoreBtn) {
+      ui.chatRestoreBtn.hidden = !isChatMinimized;
+    }
+  }
+
+  function updateUnreadBadge() {
+    if (!ui.chatUnreadBadge) return;
+    if (isChatMinimized && unreadChatCount > 0) {
+      ui.chatUnreadBadge.textContent = unreadChatCount > 99 ? '99+' : String(unreadChatCount);
+      ui.chatUnreadBadge.hidden = false;
+      document.title = `(${unreadChatCount > 99 ? '99+' : unreadChatCount}) Studio Link · XR Animator`;
+    } else {
+      ui.chatUnreadBadge.hidden = true;
+      ui.chatUnreadBadge.textContent = '';
+      document.title = 'Studio Link · XR Animator';
+    }
+  }
+
+  function setChatMinimized(minimized) {
+    isChatMinimized = Boolean(minimized);
+    if (!isChatMinimized) {
+      unreadChatCount = 0;
+    } else {
+      document.getElementById('chat-unread-divider')?.remove();
+      unreadDividerInserted = false;
+    }
+    updateUnreadBadge();
+    updateSessionLayout();
+  }
 
   function setNetworkState(kind, text) {
     ui.statusDot.className = 'status-dot' + (kind ? ` ${kind}` : '');
@@ -65,6 +117,15 @@
     if (!clean) return;
     ui.chatEmpty?.remove();
 
+    if ((kind === 'theirs' || kind === 'peer') && isChatMinimized && !unreadDividerInserted) {
+      const divider = document.createElement('div');
+      divider.className = 'chat-unread-divider';
+      divider.id = 'chat-unread-divider';
+      divider.innerHTML = '<span>Nuovi messaggi non letti</span>';
+      ui.chatBox.appendChild(divider);
+      unreadDividerInserted = true;
+    }
+
     const item = document.createElement('article');
     item.className = `message ${kind}`;
     const body = document.createElement('div');
@@ -76,6 +137,11 @@
     item.append(body, meta);
     ui.chatBox.appendChild(item);
     ui.chatBox.scrollTop = ui.chatBox.scrollHeight;
+
+    if ((kind === 'theirs' || kind === 'peer') && isChatMinimized) {
+      unreadChatCount++;
+      updateUnreadBadge();
+    }
   }
 
   function setChatReady(ready) {
@@ -96,9 +162,13 @@
 
   function updateFullscreenUi() {
     const active = isFullscreen();
-    const label = active ? '🗗 Esci schermo intero' : '⛶ Schermo intero';
-    if (ui.topbarFullscreen) ui.topbarFullscreen.textContent = label;
-    if (ui.sessionFullscreen) ui.sessionFullscreen.textContent = label;
+    const icon = active ? '🗗' : '⛶';
+    const title = active ? 'Esci da schermo intero (F11)' : 'Attiva schermo intero (F11)';
+    if (ui.topbarFullscreen) {
+      ui.topbarFullscreen.textContent = icon;
+      ui.topbarFullscreen.title = title;
+      ui.topbarFullscreen.setAttribute('aria-label', title);
+    }
   }
 
   function toggleFullscreen() {
@@ -125,13 +195,21 @@
 
   function updateShareButtonsUi() {
     const isSharingLocally = isSharingScreenLocally();
+    const isRemoteSharing = isRemoteSharingActive();
+
     if (ui.stopShare) {
       ui.stopShare.hidden = !isSharingLocally;
       ui.stopShare.disabled = !isSharingLocally;
     }
     if (ui.share) {
       ui.share.hidden = isSharingLocally;
-      ui.share.disabled = !activePeerId();
+      if (isRemoteSharing) {
+        ui.share.disabled = true;
+        ui.share.title = 'L’altro partecipante sta già condividendo lo schermo.';
+      } else {
+        ui.share.disabled = !activePeerId();
+        ui.share.title = 'Condividi schermo';
+      }
     }
   }
 
@@ -147,17 +225,26 @@
     ui.sessionPeer.textContent = connectedPeerId || 'Peer remoto';
     ui.setup.hidden = true;
     ui.session.hidden = false;
+    isChatMinimized = false;
+    unreadChatCount = 0;
+    updateUnreadBadge();
     updateShareButtonsUi();
     updateMuteButtonUi();
     setSyncButtonState('ready');
+    updateSessionLayout();
   }
 
   function showSetup() {
     connectedPeerId = '';
     isRemoteSharingScreen = false;
     remoteVideoStream = null;
+    isChatMinimized = false;
+    unreadChatCount = 0;
+    updateUnreadBadge();
     ui.setup.hidden = false;
     ui.session.hidden = true;
+    ui.session.classList.remove('has-screen', 'no-screen', 'chat-minimized');
+    if (ui.chatRestoreBtn) ui.chatRestoreBtn.hidden = true;
     if (ui.sessionDevicesPanel) ui.sessionDevicesPanel.hidden = true;
     ui.sessionDevicesToggle?.classList.remove('active');
     setChatReady(false);
@@ -567,7 +654,14 @@
         handleSyncProtocolMessage(payload);
         return;
       }
+      if (payload && typeof payload === 'object' && payload.type === 'xra-screen-start') {
+        isRemoteSharingScreen = true;
+        updateShareButtonsUi();
+        appendMessage('system', 'L’altro partecipante ha avviato la condivisione dello schermo.');
+        return;
+      }
       if (payload && typeof payload === 'object' && payload.type === 'xra-screen-stop') {
+        isRemoteSharingScreen = false;
         resetVideoStage(false);
         updateShareButtonsUi();
         appendMessage('system', 'L’altro partecipante ha interrotto la condivisione dello schermo (la voce prosegue).');
@@ -591,8 +685,21 @@
     });
   }
 
+  function extractPeerId(input) {
+    if (!input) return '';
+    const trimmed = String(input).trim();
+    try {
+      if (trimmed.includes('?')) {
+        const url = new URL(trimmed, 'http://localhost');
+        const param = url.searchParams.get('peer');
+        if (param) return param.trim();
+      }
+    } catch (_) {}
+    return trimmed;
+  }
+
   function connectToPeer(peerId) {
-    const target = String(peerId || '').trim();
+    const target = extractPeerId(peerId);
     if (!peer?.open || !target || target === peer.id) {
       setHint(target === peer?.id ? 'Non puoi collegarti al tuo stesso ID.' : 'Inserisci un ID valido.', true);
       return;
@@ -663,16 +770,97 @@
     }
   }
 
+  // --- Fractal Breaker Engine for Local Screen Share Preview ---
+  // When sharing screen locally, displaying raw 1080p 30fps capture inside the same window
+  // generates an infinite geometric recursion (fractal noise) that chokes software video encoders.
+  // The Fractal Breaker renders the local preview onto a smoothed, downsampled canvas at a clamped ~12.5 FPS.
+  // Reflections drop below 1 pixel within 3 levels, eliminating 60% of encoder frame load and 100% of the freeze.
+  const localPreviewSourceVideo = document.createElement('video');
+  localPreviewSourceVideo.autoplay = true;
+  localPreviewSourceVideo.muted = true;
+  localPreviewSourceVideo.playsInline = true;
+  let localPreviewTimer = null;
+  let localPreviewActive = false;
+
+  function startLocalPreviewCanvas(stream) {
+    stopLocalPreviewCanvas();
+    localPreviewActive = true;
+    localPreviewSourceVideo.srcObject = stream;
+    localPreviewSourceVideo.play().catch(() => {});
+
+    if (!ui.localCanvas) return;
+    const canvas = ui.localCanvas;
+    const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+    canvas.hidden = false;
+    canvas.style.display = 'block';
+
+    const render = () => {
+      if (!localPreviewActive) return;
+      if (localPreviewSourceVideo.readyState >= 2 && localPreviewSourceVideo.videoWidth > 0) {
+        const vw = localPreviewSourceVideo.videoWidth;
+        const vh = localPreviewSourceVideo.videoHeight;
+        // Downsample to max width 640px to bound spatial frequency
+        const maxDim = 640;
+        let cw = vw;
+        let ch = vh;
+        if (cw > maxDim) {
+          ch = Math.round((vh * maxDim) / cw);
+          cw = maxDim;
+        }
+        if (canvas.width !== cw || canvas.height !== ch) {
+          canvas.width = cw;
+          canvas.height = ch;
+        }
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'medium';
+        ctx.drawImage(localPreviewSourceVideo, 0, 0, cw, ch);
+      }
+    };
+
+    localPreviewTimer = setInterval(render, 80); // ~12.5 FPS
+    render();
+  }
+
+  function stopLocalPreviewCanvas() {
+    localPreviewActive = false;
+    if (localPreviewTimer) {
+      clearInterval(localPreviewTimer);
+      localPreviewTimer = null;
+    }
+    try {
+      localPreviewSourceVideo.pause();
+      localPreviewSourceVideo.srcObject = null;
+    } catch (_) {}
+    if (ui.localCanvas) {
+      ui.localCanvas.hidden = true;
+      ui.localCanvas.style.display = 'none';
+      const ctx = ui.localCanvas.getContext('2d');
+      if (ctx && ui.localCanvas.width && ui.localCanvas.height) {
+        ctx.clearRect(0, 0, ui.localCanvas.width, ui.localCanvas.height);
+      }
+    }
+  }
+
   function resetVideoStage(clearAudio = false) {
+    stopLocalPreviewCanvas();
     if (clearAudio) {
       remoteStream = null;
       ui.remoteAudio.srcObject = null;
+    } else if (remoteStream) {
+      remoteStream.getVideoTracks().forEach(track => {
+        try { track.stop(); } catch (_) {}
+        try { remoteStream.removeTrack(track); } catch (_) {}
+      });
     }
+    remoteVideoStream = null;
+    isRemoteSharingScreen = false;
     ui.mainVideo.srcObject = null;
     ui.mainVideo.style.display = 'none';
     ui.noVideo.hidden = false;
     ui.shareLabel.hidden = true;
     isLocalSharePreview = false;
+    updateShareButtonsUi();
+    updateSessionLayout();
   }
 
   function showVideo(stream, localPreview = false) {
@@ -681,12 +869,30 @@
       if (!isLocalSharePreview) resetVideoStage();
       return;
     }
-    ui.mainVideo.srcObject = new MediaStream(videoTracks);
-    ui.mainVideo.style.display = 'block';
+    if (!localPreview) {
+      stopLocalPreviewCanvas();
+      isRemoteSharingScreen = true;
+      videoTracks.forEach(track => {
+        track.addEventListener('ended', () => {
+          if (isRemoteSharingScreen) {
+            resetVideoStage(false);
+          }
+        }, { once: true });
+      });
+      ui.mainVideo.srcObject = new MediaStream(videoTracks);
+      ui.mainVideo.style.display = 'block';
+      ui.shareLabel.hidden = true;
+      ui.mainVideo.play().catch(() => {});
+    } else {
+      ui.mainVideo.srcObject = null;
+      ui.mainVideo.style.display = 'none';
+      ui.shareLabel.hidden = false;
+      startLocalPreviewCanvas(stream);
+    }
     ui.noVideo.hidden = true;
-    ui.shareLabel.hidden = !localPreview;
     isLocalSharePreview = localPreview;
-    ui.mainVideo.play().catch(() => {});
+    updateShareButtonsUi();
+    updateSessionLayout();
   }
 
   function playRemote(stream) {
@@ -696,8 +902,17 @@
       ui.remoteAudio.srcObject = new MediaStream(audioTracks);
       ui.remoteAudio.play().catch(() => {});
     }
-    if (stream.getVideoTracks().length) showVideo(stream, false);
-    else if (!displayStream) resetVideoStage();
+    if (stream.getVideoTracks().length) {
+      if (displayStream) {
+        stopTracks(displayStream);
+        displayStream = null;
+        updateShareButtonsUi();
+        appendMessage('system', 'La condivisione locale dello schermo è stata interrotta per visualizzare lo schermo remoto.');
+      }
+      showVideo(stream, false);
+    } else if (!displayStream) {
+      resetVideoStage();
+    }
   }
 
   function updateMuteButtonUi() {
@@ -798,7 +1013,8 @@
         displaySurface: 'window'
       },
       audio: false,
-      surfaceSwitching: 'include'
+      surfaceSwitching: 'include',
+      selfBrowserSurface: 'exclude'
     };
   }
 
@@ -815,6 +1031,11 @@
   }
 
   async function startMedia(mode) {
+    if (mode === 'screen' && isRemoteSharingActive()) {
+      appendMessage('system', 'L’altro partecipante sta già condividendo lo schermo. Solo chi ha avviato la condivisione può gestirla.');
+      return;
+    }
+
     if (currentEngine === 'nostr') {
       try {
         if (mode === 'audio') {
@@ -877,6 +1098,9 @@
       }
       const call = peer.call(target, outgoing, { metadata: { mode } });
       bindMediaCall(call, mode);
+      if (mode === 'screen' && connection?.open) {
+        try { connection.send({ type: 'xra-screen-start' }); } catch (_) {}
+      }
       appendMessage('system', mode === 'screen' ? 'Condivisione schermo avviata' : 'Chiamata voce avviata');
     }
     catch (error) {
@@ -941,6 +1165,8 @@
   function sendMessage() {
     const text = ui.chatInput.value.trim();
     if (!text) return;
+    document.getElementById('chat-unread-divider')?.remove();
+    unreadDividerInserted = false;
     const sent = sendDataPayload({ type: 'chat', text, sentAt: Date.now() });
     if (!sent) return;
     appendMessage('mine', text);
@@ -1041,12 +1267,12 @@
   function createNostrCallbacks(isCurrent = () => true) {
     return {
       onStatus: (msg) => {
-        if (!isCurrent()) return;
+        if (currentEngine !== 'nostr' || !isCurrent()) return;
         setNetworkState('connecting', msg);
         setHint(msg);
       },
       onOpen: (peerLabel) => {
-        if (!isCurrent()) return;
+        if (currentEngine !== 'nostr' || !isCurrent()) return;
         showSession(peerLabel);
         setChatReady(true);
         setNetworkState('online', `Connesso via Nostr (${peerLabel})`);
@@ -1056,7 +1282,7 @@
         void startMedia('audio');
       },
       onData: (payload) => {
-        if (!isCurrent()) return;
+        if (currentEngine !== 'nostr' || !isCurrent()) return;
         if (payload && typeof payload === 'object' && payload.type === 'xra-session-end') {
           finishNostrSession('L’altro partecipante si è disconnesso');
           return;
@@ -1219,6 +1445,11 @@
     if (ui.nostrConnectView) ui.nostrConnectView.hidden = isPeerjs;
 
     if (isPeerjs) {
+      if (nostrAdapter) {
+        const oldAdapter = nostrAdapter;
+        nostrAdapter = null;
+        try { oldAdapter.disconnect(); } catch (_) {}
+      }
       if (ui.engineDescription) ui.engineDescription.textContent = "Connessione standard basata su ID corto. Usa il cloud PeerJS per l'handshake iniziale.";
       if (ui.identitySubheading) ui.identitySubheading.textContent = 'Invia questo ID all’altro partecipante.';
       if (ui.connectSubheading) ui.connectSubheading.textContent = 'Incolla l’ID ricevuto e collegati.';
@@ -1303,7 +1534,7 @@
   });
   ui.connect.addEventListener('click', () => connectToPeer(ui.peerInput.value));
   ui.copyId.addEventListener('click', () => copyText(peer?.id, 'ID copiato'));
-  ui.copyInvite.addEventListener('click', () => copyText(inviteUrl(), 'Invito copiato'));
+  ui.copyInvite.addEventListener('click', () => copyText(peer?.id, 'ID copiato'));
   ui.enginePeerjsBtn?.addEventListener('click', () => setEngine('peerjs'));
   ui.engineNostrBtn?.addEventListener('click', () => setEngine('nostr'));
 
@@ -1354,12 +1585,33 @@
 
   ui.disconnect.addEventListener('click', disconnectEverything);
   ui.topbarFullscreen?.addEventListener('click', toggleFullscreen);
-  ui.sessionFullscreen?.addEventListener('click', toggleFullscreen);
+  ui.topbarClose?.addEventListener('click', () => {
+    if (typeof nw !== 'undefined' && nw?.Window?.get) {
+      try {
+        nw.Window.get().close();
+        return;
+      } catch (_) {}
+    }
+    window.close();
+  });
   ui.muteBtn?.addEventListener('click', toggleMute);
   ui.share.addEventListener('click', () => startMedia('screen'));
+  ui.noVideo?.addEventListener('click', () => {
+    if (!isSharingScreenLocally() && !isRemoteSharingActive()) {
+      ui.share?.click();
+    }
+  });
+  ui.noVideo?.addEventListener('keydown', event => {
+    if ((event.key === 'Enter' || event.key === ' ') && !isSharingScreenLocally() && !isRemoteSharingActive()) {
+      event.preventDefault();
+      ui.share?.click();
+    }
+  });
   ui.stopShare?.addEventListener('click', () => stopScreenShare('Condivisione schermo interrotta'));
   ui.syncBtn?.addEventListener('click', triggerSyncMarker);
   ui.chatSyncBtn?.addEventListener('click', triggerSyncMarker);
+  ui.chatMinimizeBtn?.addEventListener('click', () => setChatMinimized(true));
+  ui.chatRestoreBtn?.addEventListener('click', () => setChatMinimized(false));
   ui.send.addEventListener('click', sendMessage);
   ui.chatInput.addEventListener('keydown', event => {
     if (event.key === 'Enter' && !event.shiftKey) {

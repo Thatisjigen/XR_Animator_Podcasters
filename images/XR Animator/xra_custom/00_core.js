@@ -285,7 +285,7 @@
   // V7.6.6: screen-sharing capture is retired. Use XR Animator's native
   // high-quality recorder output as the recommended source.
   config.recorder ||= {};
-  config.recorder.gate_threshold_db = Math.max(-55, Math.min(-5, Number(config.recorder.gate_threshold_db ?? -48)));
+  config.recorder.gate_threshold_db = Math.max(-80, Math.min(-5, Number(config.recorder.gate_threshold_db ?? -48)));
   if (!config.recorder.capture_source || ['browser_visible','native_visible','native_xr'].includes(config.recorder.capture_source)) {
     config.recorder.capture_source = 'classic_v74';
   }

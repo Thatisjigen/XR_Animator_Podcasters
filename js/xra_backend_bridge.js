@@ -34,6 +34,8 @@
     face: null,
     leftHand: [],
     rightHand: [],
+    leftHandWorld: [],
+    rightHandWorld: [],
     reconnect: null,
     framesReceived: 0,
     emptyFrames: 0,
@@ -151,6 +153,8 @@
       state.face = message.face || null;
       state.leftHand = Array.isArray(message.leftHand) ? message.leftHand : [];
       state.rightHand = Array.isArray(message.rightHand) ? message.rightHand : [];
+      state.leftHandWorld = Array.isArray(message.leftHandWorld) ? message.leftHandWorld : [];
+      state.rightHandWorld = Array.isArray(message.rightHandWorld) ? message.rightHandWorld : [];
       if (message.empty || !Array.isArray(message.keypoints) || !message.keypoints.length) state.emptyFrames++;
       state.lastPoseAt = Date.now();
       state.lastPoseFrameId = message.frame_id ?? null;
@@ -459,6 +463,8 @@
     get face() { return state.face; },
     get leftHand() { return state.leftHand; },
     get rightHand() { return state.rightHand; },
+    get leftHandWorld() { return state.leftHandWorld; },
+    get rightHandWorld() { return state.rightHandWorld; },
     get status() {
       return {
         ...state,

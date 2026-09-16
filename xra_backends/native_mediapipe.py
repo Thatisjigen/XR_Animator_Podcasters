@@ -314,6 +314,8 @@ class HolisticTasksEngine:
                 return None
             out.setdefault("leftHand", [])
             out.setdefault("rightHand", [])
+            out.setdefault("leftHandWorld", [])
+            out.setdefault("rightHandWorld", [])
             if not isinstance(out.get("face"), dict):
                 out["face"] = {"landmarks": [], "blendshapes": {"native": {}}}
             out["face"].setdefault("landmarks", [])
@@ -553,6 +555,22 @@ def _hand_from_landmarks(hand_landmarks, w, h):
     return _landmark_list(hand_landmarks, w, h, normalized=True)
 
 
+def _hand_world_from_landmarks(landmarks) -> list:
+    pts = _unwrap_landmarks(landmarks)
+    if not pts or len(pts) < 21:
+        return []
+    out = []
+    for lm in pts[:21]:
+        try:
+            x = round(float(getattr(lm, "x", 0.0)), 4)
+            y = round(float(getattr(lm, "y", 0.0)), 4)
+            z = round(float(getattr(lm, "z", 0.0)), 4)
+        except Exception:
+            x = y = z = 0.0
+        out.append([x, y, z])
+    return out
+
+
 def _first_landmark_group(value):
     """Accept either a flat Holistic list or a list-of-people Tasks result."""
     groups = _unwrap_landmarks(value)
@@ -605,6 +623,8 @@ def _tasks_result_to_wholebody(res, w, h) -> dict:
         getattr(res, "face_landmarks", None), w, h, normalized=True)
     left = _hand_from_landmarks(getattr(res, "left_hand_landmarks", None), w, h)
     right = _hand_from_landmarks(getattr(res, "right_hand_landmarks", None), w, h)
+    left_world = _hand_world_from_landmarks(getattr(res, "left_hand_world_landmarks", None))
+    right_world = _hand_world_from_landmarks(getattr(res, "right_hand_world_landmarks", None))
 
     native = {}
     try:
@@ -620,6 +640,8 @@ def _tasks_result_to_wholebody(res, w, h) -> dict:
         native = {}
 
     out = _assemble(kp, zs, face_pts, blendshapes, left, right)
+    out["leftHandWorld"] = left_world
+    out["rightHandWorld"] = right_world
     if isinstance(out.get("face"), dict):
         out["face"]["faceInViewConfidence"] = 0.95
         if native:

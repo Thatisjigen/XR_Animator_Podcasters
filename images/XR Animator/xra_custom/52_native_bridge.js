@@ -104,6 +104,7 @@
   let xraVrmInput = null;
   let vrmLoadBusy = false;
   let vrmRestoreInFlight = null;
+  let initialVrmRestored = false;
 
   function modelList() {
     const list = window.MMD_SA?.THREEX?.models;
@@ -184,8 +185,23 @@
     const vrm = window.MMD_SA?.THREEX?.VRM;
     const fn = vrm?.swap_model;
     if (typeof fn !== 'function' || index < 0) return false;
+    const threeX = window.MMD_SA?.THREEX;
+    const targetModel = threeX?.models?.[index];
+    const targetScene = targetModel?.model?.scene;
     const result = fn.call(vrm, index);
     if (result && typeof result.then === 'function') await result;
+
+    // Wait until on_animation_update has executed and targetModel has become model 0 in scene,
+    // plus 2 animation/render frames so the mesh is physically visible on canvas.
+    const deadline = performance.now() + 6000;
+    while (performance.now() < deadline) {
+      const current0 = threeX?.models?.[0];
+      if (current0 === targetModel || (targetScene && current0?.model?.scene === targetScene)) {
+        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 120))));
+        return true;
+      }
+      await sleep(60);
+    }
     return true;
   }
 
@@ -232,6 +248,8 @@
     }
   }
 
+
+
   async function loadVrmFile(file, { persist = true, quiet = false } = {}) {
     if (!file) return false;
     if (vrmLoadBusy) throw new Error('A VRM is already being loaded');
@@ -243,6 +261,7 @@
     const beforePaths = extraModelPaths();
     const filename = file.name || basename(file.path) || 'VRM';
     if (!quiet) XRA.toast(`Caricamento avatar: ${filename}…`, 'info', 2500);
+    events.emit('avatar-loading', { name: filename });
 
     try {
       // This mirrors XR Animator's own file-dialog confirmation path.
@@ -265,6 +284,7 @@
               if (persist) await persistAvatar(file);
               if (!quiet) XRA.toast(`Avatar attivo: ${filename}`);
               events.emit('avatar-changed', { name: filename, modelIndex: candidate });
+              events.emit('avatar-ready', { name: filename, modelIndex: candidate });
               return true;
             }
           } catch (swapError) {
@@ -282,6 +302,7 @@
         if (persist) await persistAvatar(file);
         if (!quiet) XRA.toast(`Avatar caricato: ${filename}`);
         events.emit('avatar-changed', { name: filename, modelIndex: -1 });
+        events.emit('avatar-ready', { name: filename, modelIndex: -1 });
         return true;
       }
 
@@ -289,6 +310,8 @@
     }
     finally {
       vrmLoadBusy = false;
+      initialVrmRestored = true;
+      events.emit('avatar-ready', { name: filename });
     }
   }
 
@@ -296,11 +319,28 @@
     return String(config.avatar?.filename || '').trim();
   }
 
+  function isAvatarReady() {
+    if (!window.MMD_SA?.MMD_started) return false;
+    if (vrmLoadBusy || vrmRestoreInFlight) return false;
+    const filename = savedAvatarFilename();
+    if (filename && !initialVrmRestored) return false;
+    const model = window.MMD_SA?.THREEX?.get_model?.(0);
+    if (!model) return false;
+    if (model.loading || window.MMD_SA?.THREEX?._loading_model) return false;
+    if (!model.mesh && !model.model && !model.scene) return false;
+    if (model.mesh && model.mesh.visible === false) return false;
+    return true;
+  }
+
   async function restoreSavedVrm() {
     if (vrmRestoreInFlight) return vrmRestoreInFlight;
     const filename = savedAvatarFilename();
-    if (!filename) return false;
+    if (!filename) {
+      initialVrmRestored = true;
+      return false;
+    }
 
+    events.emit('avatar-loading', { name: filename });
     vrmRestoreInFlight = (async () => {
       await XRA.whenNativeReady();
       if (vrmLoadBusy) return false;
@@ -317,7 +357,11 @@
       console.error(TAG, 'saved VRM restore failed', error);
       XRA.toast(error.message || String(error), 'error', 6000);
       return false;
-    }).finally(() => { vrmRestoreInFlight = null; });
+    }).finally(() => {
+      vrmRestoreInFlight = null;
+      initialVrmRestored = true;
+      events.emit('avatar-ready', { name: filename });
+    });
 
     return vrmRestoreInFlight;
   }
@@ -1525,6 +1569,8 @@
     cameraBusy: () => cameraBusy,
     openVrmPicker,
     restoreSavedVrm,
+    isAvatarReady,
+    isAvatarLoading: () => !!(vrmLoadBusy || vrmRestoreInFlight || (savedAvatarFilename() && !initialVrmRestored)),
     hideNativeShellChrome,
     dismissCalibrationNotices,
     beginCalibrationNotices,

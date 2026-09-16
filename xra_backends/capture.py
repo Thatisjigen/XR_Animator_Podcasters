@@ -264,6 +264,75 @@ def _optimize_v4l2_device(device_spec: str) -> None:
         pass
 
 
+def check_camera_in_use(device_path: str = "/dev/video0") -> dict:
+    """Check if the camera device is currently held open by another process."""
+    import sys
+    if not sys.platform.startswith("linux"):
+        return {"busy": False, "pids": [], "processes": []}
+
+    dev = str(device_path or "/dev/video0")
+    if dev.isdigit():
+        dev = f"/dev/video{dev}"
+
+    if not os.path.exists(dev):
+        return {"busy": False, "pids": [], "processes": []}
+
+    my_pid = os.getpid()
+    busy_pids: list[int] = []
+    # 1. Try fuser
+    try:
+        fuser_bin = shutil.which("fuser") or "/usr/sbin/fuser"
+        if os.path.exists(fuser_bin):
+            proc = subprocess.run([fuser_bin, dev], capture_output=True, text=True, timeout=1.0)
+            raw = (proc.stdout + " " + proc.stderr).strip()
+            for token in raw.split():
+                if token.isdigit():
+                    pid = int(token)
+                    if pid != my_pid and pid not in busy_pids:
+                        busy_pids.append(pid)
+    except Exception:
+        pass
+
+    # 2. Fallback to lsof if fuser didn't find any external PIDs
+    if not busy_pids:
+        try:
+            lsof_bin = shutil.which("lsof") or "/usr/sbin/lsof"
+            if os.path.exists(lsof_bin):
+                proc = subprocess.run([lsof_bin, "-t", dev], capture_output=True, text=True, timeout=1.0)
+                raw = proc.stdout.strip()
+                for token in raw.split():
+                    if token.isdigit():
+                        pid = int(token)
+                        if pid != my_pid and pid not in busy_pids:
+                            busy_pids.append(pid)
+        except Exception:
+            pass
+
+    proc_names: list[str] = []
+    for pid in busy_pids:
+        name = ""
+        try:
+            with open(f"/proc/{pid}/comm", "r", encoding="utf-8") as f:
+                name = f.read().strip()
+        except Exception:
+            pass
+        if not name:
+            try:
+                with open(f"/proc/{pid}/cmdline", "r", encoding="utf-8") as f:
+                    cmd = f.read().split("\0")[0]
+                    name = os.path.basename(cmd)
+            except Exception:
+                pass
+        if name and name not in proc_names:
+            proc_names.append(name)
+
+    return {
+        "busy": bool(busy_pids),
+        "pids": busy_pids,
+        "processes": proc_names,
+    }
+
+
 class _OpenCVGrabber:
     name = "opencv"
 
@@ -333,14 +402,24 @@ class _OpenCVGrabber:
                 cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 2500)
             opened = cap.open(source, backend) if backend is not None else cap.open(source)
         except Exception as exc:
-            self.last_error = f"camera open failed ({self.device}): {exc}"
+            busy_info = check_camera_in_use(self.device)
+            if busy_info.get("busy"):
+                procs = ", ".join(busy_info["processes"]) or "un'altra applicazione"
+                self.last_error = f"Webcam occupata da: {procs}. Chiudila per avviare il tracking."
+            else:
+                self.last_error = f"camera open failed ({self.device}): {exc}"
             try:
                 cap.release()
             except Exception:
                 pass
             return False
         if not opened or not cap.isOpened():
-            self.last_error = f"camera open failed ({self.device})"
+            busy_info = check_camera_in_use(self.device)
+            if busy_info.get("busy"):
+                procs = ", ".join(busy_info["processes"]) or "un'altra applicazione"
+                self.last_error = f"Webcam occupata da: {procs}. Chiudila per avviare il tracking."
+            else:
+                self.last_error = f"camera open failed ({self.device})"
             cap.release()
             return False
 
@@ -593,6 +672,8 @@ class CaptureSource:
         self._mocap_mode = "holistic"
         self._arm_steady_hold: bool = os.environ.get("XRA_ARM_STEADY_HOLD", "0") in {"1", "true", "yes", "on"}
         self._desk_wrist_guard: bool = os.environ.get("XRA_DESK_WRIST_GUARD", "1") not in {"0", "false", "no", "off"}
+        self._last_busy_check_at: float = 0.0
+        self._last_busy_info: dict = {"busy": False, "pids": [], "processes": []}
         self._smart_arm_sync: bool = os.environ.get("XRA_SMART_ARM_SYNC", "1") not in {"0", "false", "no", "off"}
         engine.ENGINE._smart_arm_sync = self._smart_arm_sync
         engine.ENGINE._desk_wrist_guard = self._desk_wrist_guard
@@ -780,14 +861,28 @@ class CaptureSource:
         except Exception:
             return
 
+    def camera_busy_info(self) -> dict:
+        if self._grabber is not None and not self._paused.is_set():
+            return {"busy": False, "pids": [], "processes": []}
+        now = time.monotonic()
+        if now - self._last_busy_check_at < 1.5:
+            return self._last_busy_info
+        self._last_busy_check_at = now
+        self._last_busy_info = check_camera_in_use(self._device or "/dev/video0")
+        return self._last_busy_info
+
     def status(self) -> dict:
         with self._lock:
             count = len(self._subscribers)
+            busy_info = self.camera_busy_info()
             return {
                 "running": self._running and not self._stop.is_set(),
                 "paused": self._paused.is_set(),
                 "available": self._available,
                 "camera_open": self._grabber is not None and not self._paused.is_set(),
+                "camera_busy": bool(busy_info.get("busy", False)),
+                "busy_processes": list(busy_info.get("processes", [])),
+                "busy_process": str(busy_info.get("processes", [""])[0] if busy_info.get("processes") else ""),
                 "publishing": (
                     self._running
                     and not self._paused.is_set()
@@ -1293,14 +1388,16 @@ class CaptureSource:
                     rel = self._wrist_elbow_rel.get(index)
 
                     if is_smart_sync and sh_xy is not None and el_xy is not None and sh_score >= 0.25:
-                        el_thresh = 0.25 if has_hand else 0.45
+                        el_thresh = 0.25 if has_hand else 0.35
                         if el_score >= el_thresh:
                             dx_se = el_xy[0] - sh_xy[0]
                             dy_se = el_xy[1] - sh_xy[1]
-                            # Must be truly raised (elbow at or above shoulder dy_se <= 0)
-                            # or extended far laterally while NOT pointing down.
-                            # Raising only the shoulder (shrug) leaves dy_se > 0.15*torso and is NOT arm_active.
-                            if dy_se <= 0.0 or (abs(dx_se) >= max(70.0, torso * 0.75) and dy_se <= torso * 0.15):
+                            se_len = max(1.0, (dx_se * dx_se + dy_se * dy_se) ** 0.5)
+                            u_y = dy_se / se_len
+                            u_x = abs(dx_se) / se_len
+                            # Active upper arm: raised above shoulder (dy_se <= 0),
+                            # or angled away from vertical resting pose (u_y <= 0.85 or dy_se <= torso * 0.45 or u_x >= 0.38)
+                            if dy_se <= 0.0 or (u_y <= 0.85 and dy_se <= torso * 0.50) or (u_x >= 0.38 and dy_se <= torso * 0.40) or (abs(dx_se) >= max(35.0, torso * 0.45) and dy_se <= torso * 0.35):
                                 arm_active = True
                             elif has_hand and rel and rel[0] is not None and rel[0][1] < -torso * 0.15 and age <= 0.30:
                                 arm_active = True
@@ -1313,8 +1410,8 @@ class CaptureSource:
                         if rel and rel[0] is not None:
                             f_dx, f_dy = rel[0]
                             rel_3d = rel[1]
-                            # If upper arm is pointing down, transition downward directly.
-                            if dy_se > 0 and f_dy < 0:
+                            # If upper arm is pointing down and not active, transition downward directly.
+                            if dy_se > 0 and f_dy < 0 and not arm_active:
                                 f_dx = (dx_se / se_len) * forearm_len
                                 f_dy = abs(dy_se / se_len) * forearm_len
                                 rel_3d = None
