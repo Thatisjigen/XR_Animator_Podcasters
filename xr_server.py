@@ -1171,7 +1171,6 @@ def get_process_metrics() -> dict:
             _proc_cpu_last_monotonic = now
 
         rss_mb = 0.0
-        pss_mb = 0.0
         try:
             with open("/proc/self/status", "r") as f:
                 for line in f:
@@ -1180,33 +1179,11 @@ def get_process_metrics() -> dict:
                         break
         except Exception:
             pass
-        try:
-            with open("/proc/self/smaps_rollup", "r") as f:
-                for line in f:
-                    if line.startswith("Pss:"):
-                        pss_mb = round(int(line.split()[1]) / 1024.0, 1)
-                        break
-        except Exception:
-            pass
-
-        vram_mb = _process_vram_mb(now)
-        _proc_memory_samples.append((now, rss_mb, pss_mb, vram_mb))
-        cutoff = now - 120.0
-        while len(_proc_memory_samples) > 2 and _proc_memory_samples[0][0] < cutoff:
-            _proc_memory_samples.pop(0)
 
         return {
             "pid": os.getpid(),
             "cpu_percent": _proc_cpu_percent,
             "rss_mb": rss_mb,
-            "pss_mb": pss_mb,
-            "gpu_vram_mb": vram_mb,
-            "rss_slope_mb_min": _memory_slope(_proc_memory_samples, 1),
-            "pss_slope_mb_min": _memory_slope(_proc_memory_samples, 2),
-            "gpu_vram_slope_mb_min": _memory_slope(_proc_memory_samples, 3),
-            "slope_window_s": round(
-                _proc_memory_samples[-1][0] - _proc_memory_samples[0][0], 1
-            ) if len(_proc_memory_samples) >= 2 else 0.0,
             "threads": threading.active_count(),
             "cores": os.cpu_count() or 1,
         }

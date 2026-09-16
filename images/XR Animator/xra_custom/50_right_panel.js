@@ -412,7 +412,7 @@
       await refreshMicrophones();
       refreshAll();
     };
-    row(box.body, 'Dispositivo microfono', micSelect, {
+    row(box.body, 'Microphone', micSelect, {
       reset: async () => {
         config.devices.mic_device_id = '';
         await restartLip();
@@ -423,8 +423,8 @@
     });
 
     const audioProfile = select([
-      ['podcast', 'Podcast / Voce naturale (massima qualità)'],
-      ['call', 'Chiamata / Call (filtri eco/rumore browser)']
+      ['podcast', 'Podcast / Natural voice (Highest quality)'],
+      ['call', 'Call (Browser echo/noise filters)']
     ]);
     bindRefresh(() => {
       audioProfile.value = config.recorder?.audio_profile || 'podcast';
@@ -435,7 +435,7 @@
       await XRA.profileService.save();
       refreshAll();
     };
-    row(box.body, 'Profilo audio registrazione', audioProfile, {
+    row(box.body, 'Recording audio profile', audioProfile, {
       reset: async () => {
         config.recorder ||= {};
         config.recorder.audio_profile = defaults.recorder?.audio_profile || 'podcast';
@@ -465,7 +465,7 @@
       mixText.textContent = `Mic ${mix.value}% · Camera ${100 - Number(mix.value)}%`;
     };
     mix.onchange = () => XRA.profileService.save();
-    row(box.body, 'Mix microfono / camera', mixWrap, {
+    row(box.body, 'Mic / camera mix', mixWrap, {
       reset: async () => { config.lip.mic_mix = defaults.lip.mic_mix; },
       isDefault: () => Math.abs((config.lip.mic_mix ?? .6) - defaults.lip.mic_mix) < 1e-9,
       sub: 'Bilanciamento tra volume microfono e movimento rilevato dalla camera per l\'apertura della bocca.'
@@ -481,7 +481,7 @@
     });
     response.oninput = () => { config.lip.response_gain = Number(response.value) / 100; responseText.textContent = `${response.value}%`; };
     response.onchange = () => XRA.profileService.save();
-    row(box.body, 'Risposta bocca (Volume)', responseWrap, {
+    row(box.body, 'Mouth response (Volume)', responseWrap, {
       reset: async () => { config.lip.response_gain = defaults.lip.response_gain; },
       isDefault: () => Math.abs((config.lip.response_gain ?? 1) - defaults.lip.response_gain) < 1e-9,
       sub: 'Sensibilità all\'apertura della bocca quando parli ad intensità normale.'
@@ -497,7 +497,7 @@
     });
     vowel.oninput = () => { config.lip.vowel_emphasis = Number(vowel.value) / 100; vowelText.textContent = `${vowel.value}%`; };
     vowel.onchange = () => XRA.profileService.save();
-    row(box.body, 'Enfasi vocali (AA/OU/EE)', vowelWrap, {
+    row(box.body, 'Vowel expression (AA/OU/EE)', vowelWrap, {
       reset: async () => { config.lip.vowel_emphasis = defaults.lip.vowel_emphasis; },
       isDefault: () => Math.abs((config.lip.vowel_emphasis ?? 1) - defaults.lip.vowel_emphasis) < 1e-9,
       sub: 'Esagera le forme delle vocali sulla bocca dell\'avatar.'
@@ -517,7 +517,7 @@
       gateText.textContent = config.lip.threshold.toFixed(3);
     };
     gate.onchange = () => XRA.profileService.save();
-    row(box.body, 'Soglia attivazione Lip-sync', gateWrap, {
+    row(box.body, 'Voice gate', gateWrap, {
       reset: async () => { config.lip.threshold = defaults.lip.threshold; },
       isDefault: () => Math.abs((config.lip.threshold ?? .018) - defaults.lip.threshold) < 1e-9,
       sub: 'Volume minimo del microfono per muovere la bocca. Rappresentata dalla linea verde 🟢 sul VU-meter.'
@@ -539,7 +539,7 @@
       await XRA.profileService.save();
       refreshAll();
     };
-    row(box.body, 'Attiva Noise Gate registrazione', recGateToggle, {
+    row(box.body, 'Recording noise gate', recGateToggle, {
       reset: async () => {
         config.recorder ||= {};
         config.recorder.noise_gate = defaults.recorder?.noise_gate ?? true;
@@ -577,7 +577,7 @@
       await XRA.profileService.save();
       refreshAll();
     };
-    row(box.body, 'Soglia Noise Gate registrazione', recGateWrap, {
+    row(box.body, 'Recording gate threshold', recGateWrap, {
       reset: async () => {
         config.recorder ||= {};
         config.recorder.gate_threshold_db = defaults.recorder?.gate_threshold_db ?? -48;
@@ -613,7 +613,7 @@
     };
     const calWrap = el('div', 'xra-stack-control');
     calWrap.append(gateCalibrateBtn, gateCalInfo);
-    row(box.body, 'Auto-calibrazione soglia', calWrap, {
+    row(box.body, 'Auto-calibrate gate threshold', calWrap, {
       sub: 'Misura il rumore di fondo della stanza e imposta automaticamente la soglia ideale.'
     });
 
@@ -627,7 +627,7 @@
       updateMeterLoop();
       refreshAll();
     };
-    row(box.body, 'Mostra indicatore livello audio', meterToggle, {
+    row(box.body, 'Show VU meter', meterToggle, {
       reset: async () => { config.lip.meter_visible = defaults.lip.meter_visible; updateMeterLoop(); },
       isDefault: () => !!config.lip.meter_visible === !!defaults.lip.meter_visible,
       sub: 'Unico indicatore di livello audio per verificare in tempo reale il volume e le soglie di attivazione.'
@@ -1297,7 +1297,7 @@
     // -------------------------------------------------------------------------
     // 1. 📹 Acquisizione Webcam
     // -------------------------------------------------------------------------
-    const secWebcam = details(perfAdvanced.body, '📹 Acquisizione Webcam', { open: true });
+    const secWebcam = details(perfAdvanced.body, '📹 Webcam Capture', { open: true });
 
     const OPTIMAL_RESOLUTIONS = [
       ['640x360', '640×360 (Consigliata · 30 FPS fluidi)'],
@@ -1397,7 +1397,7 @@
       XRA.performance.apply();
       await XRA.profileService.save();
     };
-    row(secWebcam.body, 'Salta frame su sovraccarico', frameSkip, {
+    row(secWebcam.body, 'Skip frames on overload', frameSkip, {
       sub: 'Se l\'inferenza subisce un picco che buca la deadline, riutilizza la posa precedente per 1 frame evitando accumulo di ritardi.'
     });
 
@@ -1410,7 +1410,7 @@
       XRA.performance.apply();
       await XRA.profileService.save();
     };
-    row(secWebcam.body, 'Ottimizzazione CPU P-Core', cpuAffinity, {
+    row(secWebcam.body, 'CPU affinity optimization', cpuAffinity, {
       sub: 'Vincola MediaPipe ai core ad alte prestazioni su Linux, eliminando jitter e picchi di latenza dovuti a E-core o Hyper-Threading.'
     });
 
@@ -1463,14 +1463,14 @@
       const negFps = Math.round(Number(cap.effective_fps || cap.target_fps || 30));
       const measFps = Number(cap.measured_fps) > 0 ? Number(cap.measured_fps).toFixed(1) : '—';
       const resStr = cap.capture_geometry && cap.capture_geometry[0] ? ` · Hardware: ${cap.capture_geometry[0]}×${cap.capture_geometry[1]}` : '';
-      cameraTelemetry.textContent = `Richiesto: ${reqFps} FPS · Camera negoziata: ${negFps} FPS · Tracking reale: ${measFps} FPS${resStr}`;
+      cameraTelemetry.textContent = `Target: ${reqFps} FPS · Camera: ${negFps} FPS · Tracking: ${measFps} FPS${resStr}`;
     });
     secWebcam.body.appendChild(cameraTelemetry);
 
     // -------------------------------------------------------------------------
     // 2. 🤖 Motore Tracking (MediaPipe Tasks)
     // -------------------------------------------------------------------------
-    const secTracking = details(perfAdvanced.body, '🤖 Motore Tracking (MediaPipe Tasks)', { open: true });
+    const secTracking = details(perfAdvanced.body, '🤖 Tracking Engine (MediaPipe Tasks)', { open: true });
 
     const pipeline = select([
       ['Full Body', 'Full body'],
@@ -1501,9 +1501,9 @@
 
     const hardware = select([
       ['Auto', 'Auto (Default)'],
-      ['high-performance', 'GPU Dedicata (High Performance · RTX)'],
-      ['low-power', 'GPU Integrata (Low Power · iGPU)'],
-      ['cpu', 'Disattivata / CPU (XNNPACK)']
+      ['high-performance', 'Dedicated GPU (High Performance)'],
+      ['low-power', 'Integrated GPU (Low Power · iGPU)'],
+      ['cpu', 'Disabled / CPU (XNNPACK)']
     ]);
 
     const updateDynamicHardwareGpus = () => {
@@ -1517,24 +1517,24 @@
         const dedicated = hwGpus.find(g => g.is_dedicated);
         const integrated = hwGpus.find(g => !g.is_dedicated);
         opts = [
-          ['Auto', 'Auto / Sistema (default)'],
-          ['high-performance', `GPU Dedicata (${dedicated?.name || 'RTX'})`],
+          ['Auto', 'Auto / System (Default)'],
+          ['high-performance', `GPU Dedicata (${dedicated?.name || 'Dedicata'})`],
           ['low-power', `GPU Integrata (${integrated?.name || 'iGPU · Risparmio'})`],
-          ['cpu', 'Disattivata / CPU (XNNPACK)']
+          ['cpu', 'Disabled / CPU (XNNPACK)']
         ];
       } else if (hwGpus.length >= 1) {
         const single = hwGpus[0];
         opts = [
           ['Auto', 'Auto (Default)'],
           ['low-power', `GPU (${single?.name || 'Hardware'})`],
-          ['cpu', 'Disattivata / CPU (XNNPACK)']
+          ['cpu', 'Disabled / CPU (XNNPACK)']
         ];
       } else {
         opts = [
           ['Auto', 'Auto (Default)'],
-          ['high-performance', 'GPU Dedicata (High Performance · RTX)'],
-          ['low-power', 'GPU Integrata (Low Power · iGPU)'],
-          ['cpu', 'Disattivata / CPU (XNNPACK)']
+          ['high-performance', 'Dedicated GPU (High Performance)'],
+          ['low-power', 'Integrated GPU (Low Power · iGPU)'],
+          ['cpu', 'Disabled / CPU (XNNPACK)']
         ];
       }
 
@@ -1775,7 +1775,7 @@
     // -------------------------------------------------------------------------
     // Sottosezione: 🎯 Soglie di Confidenza AI
     // -------------------------------------------------------------------------
-    const secConfidence = details(secTracking.body, '🎯 Soglie di Confidenza AI', { open: false });
+    const secConfidence = details(secTracking.body, '🎯 AI Confidence Thresholds', { open: false });
 
     confidenceSlider(secConfidence.body, 'Min joint confidence', 'min_joint_confidence', 0.25, 5, 50, 1);
     confidenceSlider(secConfidence.body, 'Min tracking confidence', 'min_tracking_confidence', 0.50, 30, 90, 5);
@@ -1785,7 +1785,7 @@
     // -------------------------------------------------------------------------
     // 3. 🎮 Rendering Grafico & GPU
     // -------------------------------------------------------------------------
-    const secRendering = details(perfAdvanced.body, '🎮 Rendering Grafico & GPU', { open: true });
+    const secRendering = details(perfAdvanced.body, '🎮 Graphics Rendering & GPU', { open: true });
 
     const renderFps = select([[30, '30 FPS'], [60, '60 FPS'], [90, '90 FPS'], [120, '120 FPS'], [144, '144 FPS'], [0, 'Unlimited / Monitor']]);
     bindRefresh(() => { renderFps.value = String(config.performance.render_fps ?? 60); });
@@ -1809,10 +1809,10 @@
     });
 
     const renderRes = select([
-      ['1080p', '1080p (Full HD - Consigliato)'],
-      ['720p', '720p (HD - Risparmio GPU)'],
-      ['auto', 'Auto (Risoluzione display)'],
-      ['1440p', '1440p (2K - Alta risoluzione)']
+      ['1080p', '1080p (Full HD · Recommended)'],
+      ['720p', '720p (HD · GPU Saving)'],
+      ['auto', 'Auto (Display resolution)'],
+      ['1440p', '1440p (2K · High resolution)']
     ]);
     bindRefresh(() => { renderRes.value = String(config.performance.render_resolution || '1080p'); });
     renderRes.onchange = async () => {
@@ -1822,7 +1822,7 @@
       await XRA.profileService.save();
       refreshAll();
     };
-    row(secRendering.body, 'Qualità di uscita (Render & Rec)', renderRes, {
+    row(secRendering.body, 'Output quality (Render & Rec)', renderRes, {
       reset: async () => {
         config.performance.render_resolution = defaults.performance.render_resolution || '1080p';
         XRA.performance.applyRenderResolution(config.performance.render_resolution);
@@ -1836,8 +1836,8 @@
 
     const gpuSelect = select([
       ['default', 'Auto / Sistema (default)'],
-      ['high-performance', 'GPU Dedicata (High Performance · RTX)'],
-      ['low-power', 'GPU Integrata (Low Power · iGPU Risparmio Calore)']
+      ['high-performance', 'Dedicated GPU (High Performance)'],
+      ['low-power', 'Integrated GPU (Low Power · iGPU Heat Saving)']
     ]);
     const updateDynamicGpus = () => {
       const snap = XRA.xraBackend?.snapshot?.();
@@ -1851,7 +1851,7 @@
         const integrated = hwGpus.find(g => !g.is_dedicated);
         opts = [
           ['default', 'Auto / Sistema (default)'],
-          ['high-performance', `GPU Dedicata (${dedicated?.name || 'RTX'})`],
+          ['high-performance', `GPU Dedicata (${dedicated?.name || 'Dedicata'})`],
           ['low-power', `GPU Integrata (${integrated?.name || 'iGPU · Risparmio calore'})`]
         ];
       } else if (hwGpus.length >= 1) {
@@ -1862,8 +1862,8 @@
       } else {
         opts = [
           ['default', 'Auto / Sistema (default)'],
-          ['high-performance', 'GPU Dedicata (High Performance · RTX)'],
-          ['low-power', 'GPU Integrata (Low Power · iGPU Risparmio Calore)']
+          ['high-performance', 'Dedicated GPU (High Performance)'],
+          ['low-power', 'Integrated GPU (Low Power · iGPU Heat Saving)']
         ];
       }
       const existingKeys = [...gpuSelect.options].map(o => o.value).join(',');
@@ -1891,7 +1891,7 @@
       XRA.promptRestart('Il cambio di scheda video (GPU) richiede il riavvio dell\'applicazione per essere applicato dal runtime.');
     };
     const activeGpuText = () => window.XRA_DETECTED_GPU ? `GPU attiva: ${window.XRA_DETECTED_GPU}. ` : '';
-    const gpuRow = row(secRendering.body, 'Scheda video (GPU)', gpuSelect, {
+    const gpuRow = row(secRendering.body, 'Graphics card (GPU)', gpuSelect, {
       reset: async () => {
         config.performance.gpu_preference = 'default';
         window.XRA_gpu_preference = 'default';
@@ -1910,9 +1910,9 @@
     });
 
     const shadowsSelect = select([
-      ['auto', 'Auto (Spente su Green Screen · Risparmio)'],
-      ['off', 'Disattivate (Risparmio GPU massimo)'],
-      ['on', 'Attive (Per stage 3D con pavimento)']
+      ['auto', 'Auto (Disabled on Green Screen · Saving)'],
+      ['off', 'Disabled (Maximum GPU saving)'],
+      ['on', 'Enabled (For 3D stages with floor)']
     ]);
     bindRefresh(() => { shadowsSelect.value = String(config.performance.shadows || 'auto'); });
     shadowsSelect.onchange = async () => {
@@ -1922,7 +1922,7 @@
       await XRA.profileService.save();
       refreshAll();
     };
-    row(secRendering.body, 'Ombre dinamiche 3D', shadowsSelect, {
+    row(secRendering.body, '3D dynamic shadows', shadowsSelect, {
       reset: async () => {
         config.performance.shadows = defaults.performance.shadows || 'auto';
         XRA.performance.applyShadows(config.performance.shadows);
@@ -1935,8 +1935,8 @@
     });
 
     const springBoneSelect = select([
-      ['full', 'Full (ogni frame)'],
-      ['half', 'Half (1 frame su 2 · Risparmio)'],
+      ['full', 'Full (Every frame)'],
+      ['half', 'Half (1 frame out of 2 · Saving)'],
       ['off', 'Off']
     ]);
     bindRefresh(() => {
@@ -1949,7 +1949,7 @@
       await XRA.profileService.save();
       refreshAll();
     };
-    row(secRendering.body, 'Fisica capelli/vestiti (Spring Bone)', springBoneSelect, {
+    row(secRendering.body, 'Hair/cloth physics (Spring Bone)', springBoneSelect, {
       reset: async () => {
         config.performance.spring_bone = defaults.performance.spring_bone || 'full';
         XRA.performance.applySpringBone(config.performance.spring_bone);
@@ -1962,8 +1962,8 @@
     });
 
     const aaSelect = select([
-      ['auto', 'Attivo (MSAA Hardware · Consigliato)'],
-      ['off', 'Disattivato (Risparmio GPU)']
+      ['auto', 'Enabled (Hardware MSAA · Recommended)'],
+      ['off', 'Disabled (GPU saving)']
     ]);
     bindRefresh(() => {
       aaSelect.value = String(config.performance.antialias || 'auto');
@@ -1989,8 +1989,8 @@
     });
 
     const preserveBufSelect = select([
-      ['true', 'Attivo (Default · Compatibile REC & Screenshot)'],
-      ['false', 'Disattivato (Risparmio banda memoria GPU)']
+      ['true', 'Enabled (Default · Compatible with REC & Screenshot)'],
+      ['false', 'Disabled (VRAM bandwidth saving)']
     ]);
     bindRefresh(() => {
       preserveBufSelect.value = config.performance.preserve_drawing_buffer !== false ? 'true' : 'false';
@@ -2003,7 +2003,7 @@
       refreshAll();
       XRA.promptRestart('La modifica del buffer GPU (preserveDrawingBuffer) richiede il riavvio dell\'applicazione per ricreare il contesto grafico WebGL.');
     };
-    row(secRendering.body, 'Buffer disegno GPU (preserveDrawingBuffer)', preserveBufSelect, {
+    row(secRendering.body, 'GPU drawing buffer (preserveDrawingBuffer)', preserveBufSelect, {
       reset: async () => {
         config.performance.preserve_drawing_buffer = true;
         window.XRA_preserve_drawing_buffer = true;
@@ -2018,7 +2018,7 @@
     // -------------------------------------------------------------------------
     // 4. 📊 Diagnostica & Ottimizzazione
     // -------------------------------------------------------------------------
-    const secDiagnostics = details(perfAdvanced.body, '📊 Diagnostica & Ottimizzazione', { open: false });
+    const secDiagnostics = details(perfAdvanced.body, '📊 Diagnostics & Optimization', { open: false });
 
     const runtimeAdaptive = document.createElement('input'); runtimeAdaptive.type = 'checkbox';
     bindRefresh(() => { runtimeAdaptive.checked = !!config.performance?.runtime_adaptive; });

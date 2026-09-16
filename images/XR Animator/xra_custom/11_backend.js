@@ -149,6 +149,10 @@
   // -- server status polling (Performance tab / provisioning progress) --------
 
   async function refreshStatus() {
+    // Avoid redundant HTTP polls while WebSocket is actively streaming
+    if (ws && ws.readyState === WebSocket.OPEN && state.connected && state.ready) {
+      return state.serverStatus;
+    }
     try {
       const statusSignal = globalThis.AbortSignal?.timeout?.(2500);
       const response = await fetch(STATUS_URL, { cache: 'no-store', ...(statusSignal ? { signal: statusSignal } : {}) });

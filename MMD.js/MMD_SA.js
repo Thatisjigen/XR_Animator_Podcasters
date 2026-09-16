@@ -2637,62 +2637,7 @@ this.visible = false
 
 this.hidden_time_ref = Date.now()
 
-this.bubbles = [
-  {
-    image_url:System.Gadget.path+'/images/SB_kakukaku01.png'
-   ,font: '"Segoe Print",fantasy'
-   ,font_unicode: 'DFKai-SB,"Microsoft JhengHei"'
-   ,font_size: 18
-//   ,column_max: 50-3
-//   ,column_max_unicode: 25
-   ,row_max: 8
-   ,auto_wrap: true
-
-   ,bounding_box: [43-4,123-8, 452,252]
-   ,left_sided: true
-  },
-
-  {
-    image_url:System.Gadget.path+'/images/SB_irregular01.png'
-   ,font: '"Segoe Print",fantasy'
-   ,font_unicode: 'DFKai-SB,"Microsoft JhengHei"'
-   ,font_size: 18
-//   ,column_max: 36-3
-//   ,column_max_unicode: 18
-   ,row_max: 8
-   ,auto_wrap: true
-
-   ,bounding_box: [135-4,144-8, 313,221]
-  },
-
-  {
-    image_url:System.Gadget.path+'/images/SB_mokumoku01.png'
-   ,font: '"Segoe Print",fantasy'
-   ,font_unicode: 'DFKai-SB,"Microsoft JhengHei"'
-   ,font_size: 18
-//   ,column_max: 42-3
-//   ,column_max_unicode: 21
-   ,row_max: 8
-   ,auto_wrap: true
-
-   ,bounding_box: [87-4,133-8, 373,233]
-   ,left_sided: true
-  },
-
-  {
-    image_url:System.Gadget.path+'/images/SB_mokumoku01a.png'
-   ,font: '"Segoe Print",fantasy'
-   ,font_unicode: 'DFKai-SB,"Microsoft JhengHei"'
-   ,font_size: 18
-//   ,column_max: 42-3
-//   ,column_max_unicode: 21
-   ,row_max: 8
-   ,auto_wrap: true
-
-   ,bounding_box: [87-4,133-8, 373,233]
-   ,left_sided: true
-  }
-];
+this.bubbles = []; // Speech bubbles retired in favor of UI toasts
 
 para && Object.assign(this, para);
     }
@@ -2782,6 +2727,7 @@ return !!flipH_bubble
     };
 
     SB.prototype.update_bubble = function (flipH_bubble, para) {
+if (!this.bubbles || !this.bubbles.length) return;
 if (!para)
   para = this.para;
 this.flipH_bubble = flipH_bubble

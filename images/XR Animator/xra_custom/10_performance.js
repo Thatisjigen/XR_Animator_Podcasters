@@ -295,7 +295,7 @@
     const node = ensureDiagnosticsHud();
     const visible = !!config.performance?.diagnostics_hud;
     node.hidden = !visible;
-    if (!visible || now - diagnosticsLastPaint < 450) return;
+    if (!visible || now - diagnosticsLastPaint < 500) return;
     diagnosticsLastPaint = now;
     const rec = XRA.recorder?.status?.() || {};
     const backend = XRA.xraBackend?.snapshot?.() || {};
@@ -303,18 +303,11 @@
       backend.provider || backend.serverStatus?.active?.provider || ''
     ).toLowerCase();
     const backendName = provider.includes('face')
-      ? 'MediaPipe Face (Native)'
-      : 'MediaPipe Holistic (Native)';
-    const gate = Number.isFinite(Number(rec.gate_db)) ? `${Number(rec.gate_db).toFixed(1)} dB ${rec.gate_open ? 'OPEN' : 'CLOSED'}` : '—';
-    const worker = telemetry
-      ? `${Number(telemetry.inference_ms || 0).toFixed(1)} ms · ${Number(telemetry.fps || 0).toFixed(1)} fps`
-      : '—';
-    node.textContent =
-      `Render ${diagnostics.fps.toFixed(1)} FPS · ${diagnostics.frame_ms.toFixed(1)} ms · long ${diagnostics.long_pct.toFixed(1)}%\n` +
-      `Backend ${XRA.xraBackend?.active ? backendName : 'MediaPipe WASM'} · Adaptive ${config.performance?.runtime_adaptive ? adaptiveState : 'OFF'}\n` +
-      `Pose ${effectivePoseFps()} Hz · Hands ${effectiveHandFps()} Hz · Worker ${worker}\n` +
-      `REC ${rec.active ? `${Number(rec.draw_fps || 0).toFixed(1)} fps · dropped≈${Number(rec.dropped_frames_estimate || 0)}` : 'OFF'} · Mic ${gate}\n` +
-      `Torso confidence ${Number(XRA.tracking?.guardConfidence ?? 1).toFixed(2)}`;
+      ? 'Face (Native)'
+      : 'Holistic (Native)';
+    const backendLabel = XRA.xraBackend?.active ? backendName : 'MediaPipe WASM';
+    const recLabel = rec.active ? `REC ${Number(rec.draw_fps || 0).toFixed(0)} fps` : 'REC OFF';
+    node.textContent = `${diagnostics.fps.toFixed(0)} FPS · ${backendLabel} · ${recLabel}`;
   }
 
   function runtimeMonitorFrame(now) {
