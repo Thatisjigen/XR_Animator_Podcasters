@@ -6581,9 +6581,11 @@ var _mousedown_timestamp = 0
 c_host.addEventListener( 'dblclick', function (e) {
   _mousedown_timestamp = 0
   if (e_func(e)) {
-    e.stopPropagation();
-    e.stopImmediatePropagation();
-    e.preventDefault();
+    if (!window.XRA && !window.System?._browser?.camera?.ML_enabled) {
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      e.preventDefault();
+    }
   }
 });
 

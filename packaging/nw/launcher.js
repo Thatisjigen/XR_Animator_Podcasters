@@ -189,7 +189,7 @@ function openAnimator(port) {
     min_width: 800,
     min_height: 560,
     position: 'center',
-    frame: true,
+    frame: false,
     resizable: true,
     focus: true
   }, win => {

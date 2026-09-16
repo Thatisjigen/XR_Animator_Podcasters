@@ -240,7 +240,7 @@
 }
 
 .xra-right-content {
-  max-height: min(calc(82vh - 40px), 780px);
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-gutter: stable;
@@ -519,7 +519,7 @@
 #XRA_NATIVE_SETTINGS.xra-native-root {
   position: fixed;
   left: 0;
-  top: 50px;
+  top: 10px;
   bottom: 12px;
   z-index: 999998;
   pointer-events: none;
@@ -527,10 +527,50 @@
   font: 12px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
-.xra-native-launcher {
+.xra-left-header {
   position: absolute;
   left: 0;
   top: 0;
+  width: 236px;
+  height: 36px;
+  margin: 0 0 4px;
+  padding: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 6px;
+  pointer-events: auto;
+}
+
+.xra-app-quit {
+  height: 36px;
+  min-height: 36px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 9px;
+  background: rgba(36, 42, 38, .92);
+  color: #fff;
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: .05em;
+  cursor: pointer;
+  box-shadow: 0 2px 5px rgba(0,0,0,.28);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: background .15s ease, opacity .15s ease;
+}
+.xra-app-quit:hover {
+  background: rgba(175, 45, 45, .94);
+  color: #fff;
+}
+
+.xra-native-launcher {
+  position: absolute;
+  left: 0;
+  top: 40px;
   width: 236px;
   min-width: 236px;
   max-width: 236px;
@@ -564,7 +604,7 @@
 
 .xra-native-drawer {
   position: absolute;
-  top: 0;
+  top: 40px;
   left: 0;
   width: min(var(--xra-left-width), calc(100vw - 20px));
   max-height: calc(100vh - 64px);
@@ -838,7 +878,7 @@ body.xra-total-clean-screen #Ldungeon_UI {
 @media (max-width: 760px) {
   :root { --xra-right-width: 270px; --xra-left-width: 330px; }
   #XRA_CUSTOM_PANEL.xra-right-panel { right: 6px; top: 6px; }
-  #XRA_NATIVE_SETTINGS.xra-native-root { top: 48px; }
+  #XRA_NATIVE_SETTINGS.xra-native-root { top: 6px; }
   .xra-right-launcher { top: 48px; }
   .xra-native-root.open .xra-native-launcher { display: none; }
 }
@@ -850,7 +890,7 @@ body.xra-total-clean-screen #Ldungeon_UI {
     width: auto;
   }
   .xra-right-body { max-height: 72vh; }
-  #XRA_NATIVE_SETTINGS.xra-native-root { top: 48px; }
+  #XRA_NATIVE_SETTINGS.xra-native-root { top: 6px; }
   .xra-right-launcher { top: 48px; }
   .xra-native-drawer { width: calc(100vw - 12px); }
   .xra-row,

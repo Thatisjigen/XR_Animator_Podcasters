@@ -1778,7 +1778,10 @@
       'Tempo di risposta del filtro di stabilizzazione braccia.': 'Response time for the arm stabilization filter.',
       'Sensibilità di rilevamento delle dita e delle mani.': 'Detection sensitivity for fingers and hands.',
       'Recupero intelligente delle mani quando escono parzialmente dall\'inquadratura.': 'Smart hand recovery when hands partially leave the camera frame.',
-      'Concentra il rilevamento delle mani nell\'area attorno al corpo.': 'Constrains hand detection to the area around the body.'
+      'Concentra il rilevamento delle mani nell\'area attorno al corpo.': 'Constrains hand detection to the area around the body.',
+      'Studio Link': 'Studio Link',
+      'Apre chat, voce e condivisione schermo P2P in una finestra separata.': 'Opens P2P chat, voice and screen sharing in a separate window.',
+      'Apri chat': 'Open chat'
     },
     it: {
       '🖐️ Arms & Hands': '🖐️ Braccia e mani',
@@ -1798,12 +1801,11 @@
       'Filters phantom wrists when hands are covered by the desk or out of frame, preventing forearms from staying locked.': 'Filtra i polsi fantasma quando le mani sono coperte dal tavolo o fuori campo, evitando che l\'avambraccio rimanga teso.',
       'Keeps forearms anchored and visible while elbows and shoulders remain still at the desk. Releases naturally when moving elbows.': 'Mantiene l\'avambraccio fermo e visibile se gomito e spalla restano fermi alla scrivania. Si rilascia naturalmente muovendo il gomito.',
       'Anti-jitter stabilization filter for finger joints and palm.': 'Filtro anti-tremolio per le articolazioni delle dita e del palmo.',
-      'Stabilizes arm movement and extension based on body kinematics.': 'Stabilizza i movimenti e l\'estensione delle braccia basandosi sulla cinematica corporea.',
-      'Response time or latency window to apply arm stabilization.': 'Finestra temporale di latenza per applicare la stabilizzazione del braccio.',
-      'High uses the lower-confidence detector path to reacquire difficult hands more easily.': 'Alta utilizza la soglia a minore confidenza del rilevatore per riagganciare le mani più velocemente.',
-      'When a wrist is lost, periodically runs a full-frame hand search instead of waiting for body tracking.': 'Se il polso viene perso, esegue periodicamente una scansione a schermo intero anziché attendere il tracciamento del corpo.',
-      'When a wrist is lost, periodically runs a full-frame hand search instead of waiting for body tracking to rediscover the wrist.': 'Se il polso viene perso, esegue periodicamente una scansione a schermo intero anziché attendere il tracciamento del corpo.',
-      'Restricts hand search area around the body to prevent background false positives.': 'Limita la regione di ricerca delle mani attorno al corpo per evitare falsi positivi sullo sfondo.',
+      'Stabilizes arm movement and extension based on body kinematics.': 'Stabilizza il movimento e l\'estensione delle braccia in base alla cinematica corporea.',
+      'Response time or latency window to apply arm stabilization.': 'Finestra di risposta/latenza per applicare la stabilizzazione alle braccia.',
+      'High uses the lower-confidence detector path to reacquire difficult hands more easily.': 'Alta utilizza il rilevatore a soglia più permissiva per riagganciare le mani difficili.',
+      'When a wrist is lost, periodically runs a full-frame hand search instead of waiting for body tracking.': 'Se il polso viene perso, cerca periodicamente a schermo intero senza attendere il tracking del corpo.',
+      'Restricts hand search area around the body to prevent background false positives.': 'Restringe l\'area di ricerca delle mani vicino al corpo evitando falsi positivi sullo sfondo.',
       '🎯 AI Confidence Thresholds': '🎯 Soglie di Confidenza AI',
       '🎯 Soglie di Confidenza AI': '🎯 Soglie di Confidenza AI',
       'Impatto performance': 'Impatto performance',
@@ -1813,7 +1815,10 @@
       'Medio': 'Medio',
       'Alto': 'Alto',
       'Molto alto': 'Molto alto',
-      'Dipende': 'Dipende'
+      'Dipende': 'Dipende',
+      'Studio Link': 'Studio Link',
+      'Apre chat, voce e condivisione schermo P2P in una finestra separata.': 'Apre chat, voce e condivisione schermo P2P in una finestra separata.',
+      'Apri chat': 'Apri chat'
     },
     es: {
       '🖐️ Arms & Hands': '🖐️ Brazos y manos',

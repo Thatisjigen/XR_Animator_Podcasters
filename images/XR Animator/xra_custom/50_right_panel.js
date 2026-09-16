@@ -208,9 +208,14 @@
   function installStudioLink(parent) {
     const box = details(parent, '💬 Studio Link');
     const note = el('div', 'xra-note');
-    note.textContent = 'Apre chat, voce e condivisione schermo P2P in una finestra separata.';
     const open = button('APRI CHAT', 'xra-action primary');
     open.onclick = openStudioLink;
+    bindRefresh(() => {
+      const title = XRA.i18n?.t?.('Studio Link') || 'Studio Link';
+      box.summary.textContent = `💬 ${title}`;
+      note.textContent = XRA.i18n?.t?.('Apre chat, voce e condivisione schermo P2P in una finestra separata.') || 'Apre chat, voce e condivisione schermo P2P in una finestra separata.';
+      open.textContent = (XRA.i18n?.t?.('Apri chat') || 'APRI CHAT').toUpperCase();
+    });
     box.body.append(note, open);
   }
 
@@ -545,7 +550,7 @@
       sub: 'Silenzia il microfono durante le pause per eliminare ronzii, respiro o rumori della stanza.'
     });
 
-    const GATE_MIN_DB = -55;
+    const GATE_MIN_DB = -80;
     const GATE_MAX_DB = -5;
     const recGateWrap = el('div', 'xra-stack-control');
     const recGateSlider = document.createElement('input');
@@ -588,14 +593,17 @@
     const gateCalInfo = el('div', 'xra-sub');
     bindRefresh(() => {
       const floor = Number(config.recorder?.gate_noise_floor_db);
-      gateCalInfo.textContent = Number.isFinite(floor) ? `Rumore stanza memorizzato: ${floor.toFixed(1)} dB` : 'Resta in silenzio per 3 secondi per calibrare.';
+      const thresh = Number(config.recorder?.gate_threshold_db);
+      gateCalInfo.textContent = Number.isFinite(floor)
+        ? `Rumore stanza: ${floor.toFixed(1)} dB (Soglia auto: ${Number.isFinite(thresh) ? thresh.toFixed(1) : (floor + 5).toFixed(1)} dB)`
+        : 'Resta in silenzio per 3 secondi per calibrare.';
     });
     gateCalibrateBtn.onclick = async () => {
       gateCalibrateBtn.disabled = true;
       try {
         const result = await XRA.recorder.calibrateNoiseGate(3);
-        gateCalInfo.textContent = `Rumore fondo ${result.noise_floor_db.toFixed(1)} dB → Soglia ${result.threshold_db} dB`;
-        XRA.toast(`Noise Gate calibrato a ${result.threshold_db} dB`, 'success');
+        gateCalInfo.textContent = `Rumore fondo ${result.noise_floor_db.toFixed(1)} dB → Soglia ${result.threshold_db.toFixed(1)} dB`;
+        XRA.toast(`Noise Gate calibrato a ${result.threshold_db.toFixed(1)} dB (rumore: ${result.noise_floor_db.toFixed(1)} dB)`, 'success');
         refreshAll();
       } catch (e) {
         XRA.toast('Calibrazione fallita: ' + e.message, 'error', 4500);

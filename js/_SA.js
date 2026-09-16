@@ -1161,7 +1161,10 @@ if (SystemEXT.enforce_WSH)
   args.push("wsh")
 
 if (RAF_timerID) {
-  cancelAnimationFrame(RAF_timerID)
+  if (RAF_is_timeout)
+    clearTimeout(RAF_timerID)
+  else
+    cancelAnimationFrame(RAF_timerID)
   RAF_timerID = null
 }
 
@@ -2623,6 +2626,7 @@ this.count_to_10fps_ = v
 
 var use_RAF = !!window.requestAnimationFrame
 var RAF_timerID = null
+var RAF_is_timeout = false
 var RAF_timestamp = 0
 var RAF_timestamp_delta = 0
 var RAF_timestamp_delta_accumulated = 0
@@ -2630,9 +2634,20 @@ var RAF_frame_time_delayed = 0
 var RAF_frame_drop = 0
 
 var Animate_RAF = function (timestamp) {
+  if (timestamp == null)
+    timestamp = performance.now()
+
 //EV_sync_update.fps_count_func()
-  if (EV_sync_update.requestAnimationFrame_auto)
-    RAF_timerID = requestAnimationFrame(Animate_RAF)
+  if (EV_sync_update.requestAnimationFrame_auto) {
+    if (document.hidden) {
+      RAF_is_timeout = true
+      RAF_timerID = setTimeout(function () { Animate_RAF(performance.now()) }, 1000/30)
+    }
+    else {
+      RAF_is_timeout = false
+      RAF_timerID = requestAnimationFrame(Animate_RAF)
+    }
+  }
   else
     RAF_timerID = null
 //RAF_timerID = setTimeout(function () { Animate_RAF(performance.now()) }, 1000/60)
@@ -2715,6 +2730,29 @@ var Animate_RAF = function (timestamp) {
   catch (err) { console.error(err) }
 */
   Animate()
+}
+
+if (typeof document !== 'undefined' && document.addEventListener) {
+  document.addEventListener('visibilitychange', function () {
+    if (RAF_timerID) {
+      if (RAF_is_timeout)
+        clearTimeout(RAF_timerID)
+      else
+        cancelAnimationFrame(RAF_timerID)
+      RAF_timerID = null
+    }
+
+    if (use_RAF && EV_sync_update.requestAnimationFrame_auto && !EV_sync_update.RAF_paused) {
+      if (document.hidden) {
+        RAF_is_timeout = true
+        RAF_timerID = setTimeout(function () { Animate_RAF(performance.now()) }, 1000/30)
+      }
+      else {
+        RAF_is_timeout = false
+        RAF_timerID = requestAnimationFrame(Animate_RAF)
+      }
+    }
+  })
 }
 
 function Animate() {

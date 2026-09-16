@@ -1045,15 +1045,117 @@
     }
   }
 
+  function distributeForearmTwist(stage = 'runtime') {
+    // Only apply on the 'before-render' pass (or fallback 'runtime' pass).
+    // Skipping 'pose-ended' is vital because XR Animator's updateMotion and update_model()
+    // run AFTER 'pose-ended' and overwrite all VRM bones from mesh_MMD.
+    // By applying at 'before-render', we modify VRM bones immediately before Three.js renders.
+    if (stage === 'pose-ended') return;
+
+    // 1. VRM models (which lack dedicated PMX twist bones)
+    const modelX = getVRMModelX();
+    if (modelX?.getBoneNode) {
+      const sides = [
+        { lowerName: 'leftLowerArm', handName: 'leftHand', d: '左', defAxis: [1, 0, 0] },
+        { lowerName: 'rightLowerArm', handName: 'rightHand', d: '右', defAxis: [-1, 0, 0] }
+      ];
+
+      for (const { lowerName, handName, d, defAxis } of sides) {
+        try {
+          const lowerArm = modelX.getBoneNode(lowerName);
+          const hand = modelX.getBoneNode(handName);
+          if (!lowerArm?.quaternion || !hand?.quaternion) continue;
+
+          let axis = modelX.para?.lower_arm_fixedAxis?.[d];
+          if (!axis || axis.length < 3) axis = defAxis;
+          const ax = axis[0], ay = axis[1], az = axis[2];
+          const aLen = Math.hypot(ax, ay, az);
+          if (aLen < 1e-4) continue;
+          const ux = ax / aLen, uy = ay / aLen, uz = az / aLen;
+
+          const qh = hand.quaternion;
+          let qx = qh.x, qy = qh.y, qz = qh.z, qw = qh.w;
+          if (qw < 0) { qx = -qx; qy = -qy; qz = -qz; qw = -qw; }
+
+          const p = qx * ux + qy * uy + qz * uz;
+          let tx = p * ux, ty = p * uy, tz = p * uz, tw = qw;
+          const tLen = Math.hypot(tx, ty, tz, tw);
+          if (tLen < 1e-4) continue;
+          tx /= tLen; ty /= tLen; tz /= tLen; tw /= tLen;
+
+          let hx = tx, hy = ty, hz = tz, hw = tw + 1.0;
+          const hLen = Math.hypot(hx, hy, hz, hw);
+          if (hLen < 1e-4) continue;
+          hx /= hLen; hy /= hLen; hz /= hLen; hw /= hLen;
+
+          const qHalf = new THREE.Quaternion(hx, hy, hz, hw);
+          const qHalfInv = new THREE.Quaternion(-hx, -hy, -hz, hw);
+
+          lowerArm.quaternion.multiply(qHalf);
+          hand.quaternion.premultiply(qHalfInv);
+
+          lowerArm.updateMatrix?.();
+          hand.updateMatrix?.();
+          lowerArm.updateMatrixWorld?.(true);
+        } catch (e) {}
+      }
+    }
+
+    // 2. MMD models that lack dedicated twist bones (手捩)
+    const mmdMesh = getMMDMesh();
+    const mmdBones = mmdMesh?.bones_by_name;
+    if (mmdBones && !mmdBones['左手捩']) {
+      const mmdSides = [
+        { lowerName: '左ひじ', handName: '左手首', defAxis: [1, 0, 0] },
+        { lowerName: '右ひじ', handName: '右手首', defAxis: [-1, 0, 0] }
+      ];
+      for (const { lowerName, handName, defAxis } of mmdSides) {
+        try {
+          const lowerArm = mmdBones[lowerName];
+          const hand = mmdBones[handName];
+          if (!lowerArm?.quaternion || !hand?.quaternion) continue;
+
+          const ux = defAxis[0], uy = defAxis[1], uz = defAxis[2];
+          const qh = hand.quaternion;
+          let qx = qh.x, qy = qh.y, qz = qh.z, qw = qh.w;
+          if (qw < 0) { qx = -qx; qy = -qy; qz = -qz; qw = -qw; }
+
+          const p = qx * ux + qy * uy + qz * uz;
+          let tx = p * ux, ty = p * uy, tz = p * uz, tw = qw;
+          const tLen = Math.hypot(tx, ty, tz, tw);
+          if (tLen < 1e-4) continue;
+          tx /= tLen; ty /= tLen; tz /= tLen; tw /= tLen;
+
+          let hx = tx, hy = ty, hz = tz, hw = tw + 1.0;
+          const hLen = Math.hypot(hx, hy, hz, hw);
+          if (hLen < 1e-4) continue;
+          hx /= hLen; hy /= hLen; hz /= hLen; hw /= hLen;
+
+          const qHalf = new THREE.Quaternion(hx, hy, hz, hw);
+          const qHalfInv = new THREE.Quaternion(-hx, -hy, -hz, hw);
+
+          lowerArm.quaternion.multiply(qHalf);
+          hand.quaternion.premultiply(qHalfInv);
+
+          lowerArm.updateMatrix?.();
+          hand.updateMatrix?.();
+          lowerArm.updateMatrixWorld?.(true);
+        } catch (e) {}
+      }
+    }
+  }
+
   function applyPoseLocks(stage = 'runtime') {
     // Do not deduplicate these two lifecycle hooks. XR Animator can update bones
     // again between pose-processing completion and the final render pass.
     // Applying the locks at both points is what made BODY STABLE reliably hold
     // torso/hips/legs in the known-good stable build.
+    applyAnatomicalJointLimits();
     applyUpperBodyGuard();
     applyBodyAnchor(stage);
     hardLockArms();
     applyHandTransitions();
+    distributeForearmTwist(stage);
   }
 
   function quaternionAngleDeg(a, b) {
@@ -1065,6 +1167,177 @@
       Number(a.w ?? 1) * Number(b.w ?? 1)
     ));
     return 2 * Math.acos(Math.min(1, Math.abs(dot))) * 180 / Math.PI;
+  }
+
+  function angleNormalize(value) {
+    value = Number(value || 0);
+    while (value > Math.PI) value -= Math.PI * 2;
+    while (value < -Math.PI) value += Math.PI * 2;
+    return value;
+  }
+
+  // Strict anatomical joint limits (relative to parent bone in local skeletal hierarchy)
+  const ANATOMICAL_LIMITS = {
+    // Spine & Chest (Torso)
+    spine: {
+      pitch: [-25, 35],
+      yaw:   [-30, 30],
+      roll:  [-20, 20],
+    },
+    chest: {
+      pitch: [-20, 30],
+      yaw:   [-30, 30],
+      roll:  [-20, 20],
+    },
+    upperChest: {
+      pitch: [-15, 25],
+      yaw:   [-25, 25],
+      roll:  [-15, 15],
+    },
+
+    // Neck
+    neck: {
+      pitch: [-35, 40],
+      yaw:   [-45, 45],
+      roll:  [-30, 30],
+    },
+
+    // Head
+    head: {
+      pitch: [-35, 35],
+      yaw:   [-50, 50],
+      roll:  [-30, 30],
+    },
+
+    // Shoulders: clavicle range of motion
+    leftShoulder: {
+      maxTotalDeg: 35,
+    },
+    rightShoulder: {
+      maxTotalDeg: 35,
+    }
+  };
+
+  const MMD_TO_LIMIT_KEY = {
+    '上半身': 'chest',
+    '上半身2': 'upperChest',
+    '上半身3': 'upperChest',
+    '首': 'neck',
+    '頭': 'head',
+    '左肩': 'leftShoulder',
+    '左肩P': 'leftShoulder',
+    '右肩': 'rightShoulder',
+    '右肩P': 'rightShoulder',
+  };
+
+  const VRM_TO_LIMIT_KEY = {
+    'spine': 'spine',
+    'chest': 'chest',
+    'upperChest': 'upperChest',
+    'neck': 'neck',
+    'head': 'head',
+    'leftShoulder': 'leftShoulder',
+    'rightShoulder': 'rightShoulder',
+  };
+
+  const anatomicalNeutralMMD = new Map();
+  const anatomicalNeutralVRM = new Map();
+
+  function captureAnatomicalNeutrals() {
+    const bones = getMMDMesh()?.bones_by_name;
+    if (bones) {
+      for (const name in MMD_TO_LIMIT_KEY) {
+        const bone = bones[name];
+        if (bone && !anatomicalNeutralMMD.has(name)) {
+          anatomicalNeutralMMD.set(name, makeGuardTransform(bone));
+        }
+      }
+    }
+    const modelX = getVRMModelX();
+    if (modelX?.getBoneNode) {
+      for (const name in VRM_TO_LIMIT_KEY) {
+        try {
+          const bone = modelX.getBoneNode(name);
+          if (bone && !anatomicalNeutralVRM.has(name)) {
+            anatomicalNeutralVRM.set(name, makeGuardTransform(bone));
+          }
+        } catch (e) {}
+      }
+    }
+  }
+
+  function clampBoneAnatomicalLimits(bone, neutral, limits) {
+    if (!bone || !limits) return;
+
+    // 1. Euler limits for vertical/axial joints (spine, chest, neck, head)
+    if (limits.pitch || limits.yaw || limits.roll) {
+      if (bone.quaternion && bone.rotation) {
+        bone.rotation.setFromQuaternion(bone.quaternion, 'XYZ');
+      }
+      if (bone.rotation) {
+        const neutralRot = neutral?.rotation || { x: 0, y: 0, z: 0 };
+        const DEG_TO_RAD = Math.PI / 180;
+        const dx = angleNormalize(bone.rotation.x - neutralRot.x);
+        const dy = angleNormalize(bone.rotation.y - neutralRot.y);
+        const dz = angleNormalize(bone.rotation.z - neutralRot.z);
+
+        let cx = dx, cy = dy, cz = dz;
+        if (limits.pitch) {
+          cx = util.clamp(dx, limits.pitch[0] * DEG_TO_RAD, limits.pitch[1] * DEG_TO_RAD);
+        }
+        if (limits.yaw) {
+          cy = util.clamp(dy, limits.yaw[0] * DEG_TO_RAD, limits.yaw[1] * DEG_TO_RAD);
+        }
+        if (limits.roll) {
+          cz = util.clamp(dz, limits.roll[0] * DEG_TO_RAD, limits.roll[1] * DEG_TO_RAD);
+        }
+
+        if (cx !== dx || cy !== dy || cz !== dz) {
+          bone.rotation.x = neutralRot.x + cx;
+          bone.rotation.y = neutralRot.y + cy;
+          bone.rotation.z = neutralRot.z + cz;
+          if (bone.quaternion) bone.quaternion.setFromEuler(bone.rotation);
+        }
+      }
+    }
+
+    // 2. Total angular deviation limit relative to neutral/parent
+    if (limits.maxTotalDeg && bone.quaternion) {
+      const neutralQuat = neutral?.quaternion || (window.THREE?.Quaternion ? new THREE.Quaternion(0, 0, 0, 1) : { x: 0, y: 0, z: 0, w: 1 });
+      const totalDeg = quaternionAngleDeg(bone.quaternion, neutralQuat);
+      if (totalDeg > limits.maxTotalDeg && totalDeg > 0.01) {
+        bone.quaternion.copy(neutralQuat).slerp(bone.quaternion, limits.maxTotalDeg / totalDeg);
+        if (bone.rotation) bone.rotation.setFromQuaternion(bone.quaternion, 'XYZ');
+      }
+    }
+  }
+
+  function applyAnatomicalJointLimits() {
+    captureAnatomicalNeutrals();
+
+    const bones = getMMDMesh()?.bones_by_name;
+    if (bones) {
+      for (const name in MMD_TO_LIMIT_KEY) {
+        const bone = bones[name];
+        if (!bone) continue;
+        const neutral = guardMMDBones.get(name) || anatomicalNeutralMMD.get(name);
+        const limit = ANATOMICAL_LIMITS[MMD_TO_LIMIT_KEY[name]];
+        if (limit) clampBoneAnatomicalLimits(bone, neutral, limit);
+      }
+    }
+
+    const modelX = getVRMModelX();
+    if (modelX?.getBoneNode) {
+      for (const name in VRM_TO_LIMIT_KEY) {
+        try {
+          const bone = modelX.getBoneNode(name);
+          if (!bone) continue;
+          const neutral = guardVRMBones.get(name) || anatomicalNeutralVRM.get(name);
+          const limit = ANATOMICAL_LIMITS[VRM_TO_LIMIT_KEY[name]];
+          if (limit) clampBoneAnatomicalLimits(bone, neutral, limit);
+        } catch (e) {}
+      }
+    }
   }
 
   // Motion Hysteresis stabilizes the core torso/head and rejects abrupt body jumps.
@@ -1087,13 +1360,6 @@
   let guardConfidence = 1;
   let guardMeasuredConfidence = null;
   let guardLastJump = 0;
-
-  function angleNormalize(value) {
-    value = Number(value || 0);
-    while (value > Math.PI) value -= Math.PI * 2;
-    while (value < -Math.PI) value += Math.PI * 2;
-    return value;
-  }
 
   function copyTransformInto(target, bone) {
     if (!target || !bone) return;
@@ -2622,6 +2888,8 @@
   // a tracking loss can tear the new model apart. Rebuild every guard only
   // after the native swap has completed.
   events.on('avatar-changed', () => {
+    anatomicalNeutralMMD.clear();
+    anatomicalNeutralVRM.clear();
     clearGuardState();
     faceLossPoseMMD.clear(); faceLossPoseVRM.clear(); resetFaceLossState(true);
     leftArmTransition = null; rightArmTransition = null;
@@ -2737,5 +3005,24 @@
     get faceMeshEnabled() { return facemeshEnabled(); }
 
   };
+
+  // Global double-click reset for all poses (Full body, Upper body, etc.)
+  window.addEventListener('dblclick', (e) => {
+    // Ignore double clicks on UI controls, sidebars, or modals
+    if (e.target?.closest?.('#xra-panel-container, .xra-overlay, .xra-modal, select, input, button, textarea, a')) return;
+    try {
+      if (window.MMD_SA?._trackball_camera?.reset) {
+        window.MMD_SA._trackball_camera.reset();
+      }
+      if (window.MMD_SA?.reset_camera) {
+        window.MMD_SA.reset_camera(true);
+      }
+      if (window.System?._browser?.camera?._update_camera_reset) {
+        window.System._browser.camera._update_camera_reset();
+      }
+    } catch (err) {
+      console.warn(TAG, 'Global dblclick camera reset error:', err);
+    }
+  }, true); // Capture phase to guarantee execution across all poses
 
 })();

@@ -25,11 +25,12 @@
       </div>
 
       <div class="topbar-actions">
-        <button id="topbar-fullscreen-btn" class="quiet-button" type="button" title="Attiva/disattiva schermo intero (F11)">⛶ Schermo intero</button>
         <div class="network-state" aria-live="polite">
           <span id="status-dot" class="status-dot"></span>
           <span id="status-text">Avvio rete…</span>
         </div>
+        <button id="topbar-fullscreen-btn" class="quiet-button icon-button" type="button" title="Attiva/disattiva schermo intero (F11)" aria-label="Schermo intero">⛶</button>
+        <button id="topbar-close-btn" class="quiet-button icon-button close-window-btn" type="button" title="Chiudi Studio Link" aria-label="Chiudi Studio Link">✕</button>
       </div>
     </header>
 
@@ -78,7 +79,7 @@
                 <span id="my-id">generazione-id…</span>
                 <span class="copy-glyph" aria-hidden="true">⧉</span>
               </button>
-              <button id="copy-invite-btn" class="secondary-button" type="button" disabled>Copia invito</button>
+              <button id="copy-invite-btn" class="secondary-button" type="button" disabled>Copia ID invito</button>
             </div>
 
             <!-- Nostr Token Identity -->
@@ -155,47 +156,47 @@
       <section id="session-view" class="session" hidden>
         <section class="stage-panel">
           <div class="session-bar">
-            <div>
+            <div class="session-bar-info">
               <span class="eyebrow">SESSIONE ATTIVA</span>
               <strong id="session-peer">Peer</strong>
             </div>
             <div class="session-bar-actions">
-              <button id="session-fullscreen-btn" class="quiet-button" type="button" title="Attiva/disattiva schermo intero (F11)">⛶ Schermo intero</button>
               <button id="session-devices-toggle" class="quiet-button" type="button" title="Impostazioni microfono e uscita audio durante la chiamata">⚙️ Audio</button>
               <button id="disconnect-btn" class="quiet-button" type="button">Disconnetti</button>
             </div>
-          </div>
 
-          <div id="session-devices-panel" class="session-devices-popover" hidden>
-            <div class="devices-popover-head">
-              <div class="devices-popover-title">
-                <span class="devices-popover-icon" aria-hidden="true">🎙️</span>
-                <span>Dispositivi Audio</span>
+            <div id="session-devices-panel" class="session-devices-popover" hidden>
+              <div class="devices-popover-head">
+                <div class="devices-popover-title">
+                  <span class="devices-popover-icon" aria-hidden="true">🎙️</span>
+                  <span>Dispositivi Audio</span>
+                </div>
+                <button id="session-devices-close" class="devices-popover-close" type="button" aria-label="Chiudi impostazioni audio">✕</button>
               </div>
-              <button id="session-devices-close" class="devices-popover-close" type="button" aria-label="Chiudi impostazioni audio">✕</button>
-            </div>
-            <div class="devices-popover-body">
-              <label class="devices-popover-field">
-                <span class="devices-field-label">Microfono</span>
-                <select id="session-audio-input-select"><option value="">Predefinito</option></select>
-              </label>
-              <label class="devices-popover-field">
-                <span class="devices-field-label">Uscita audio (cuffie / casse)</span>
-                <select id="session-audio-output-select"><option value="">Predefinita</option></select>
-              </label>
-            </div>
-            <div class="devices-popover-foot">
-              <button id="session-refresh-devices-btn" class="popover-refresh-btn" type="button">🔄 Aggiorna elenco</button>
-              <span class="devices-popover-live-badge"><span class="badge-dot"></span> In tempo reale</span>
+              <div class="devices-popover-body">
+                <label class="devices-popover-field">
+                  <span class="devices-field-label">Microfono</span>
+                  <select id="session-audio-input-select"><option value="">Predefinito</option></select>
+                </label>
+                <label class="devices-popover-field">
+                  <span class="devices-field-label">Uscita audio (cuffie / casse)</span>
+                  <select id="session-audio-output-select"><option value="">Predefinita</option></select>
+                </label>
+              </div>
+              <div class="devices-popover-foot">
+                <button id="session-refresh-devices-btn" class="popover-refresh-btn" type="button">🔄 Aggiorna elenco</button>
+                <span class="devices-popover-live-badge"><span class="badge-dot"></span> In tempo reale</span>
+              </div>
             </div>
           </div>
 
           <div class="video-stage">
             <video id="main-video" autoplay playsinline muted></video>
-            <div id="no-video-msg" class="stage-empty">
+            <canvas id="local-preview-canvas" class="local-preview-canvas" hidden></canvas>
+            <div id="no-video-msg" class="stage-empty" role="button" tabindex="0" title="Clicca per avviare la condivisione dello schermo">
               <span class="screen-icon" aria-hidden="true">▱</span>
               <strong>Nessuno schermo condiviso</strong>
-              <small>La voce e la chat continuano a funzionare.</small>
+              <small>Attiva la condivisione</small>
             </div>
             <span id="share-label" class="share-label" hidden>STAI CONDIVIDENDO</span>
           </div>
@@ -229,6 +230,7 @@
             <div class="conversation-head-actions">
               <button id="chat-sync-marker-btn" class="chat-sync-btn" type="button" disabled title="Sincronizza registrazioni">⏱️ Sync</button>
               <span id="chat-state" class="chat-state">in attesa</span>
+              <button id="chat-minimize-btn" class="quiet-button icon-button" type="button" title="Minimizza chat" aria-label="Minimizza chat">—</button>
             </div>
           </div>
 
@@ -246,6 +248,12 @@
           </div>
           <p class="composer-hint">Invio per spedire · Maiusc+Invio per andare a capo</p>
         </aside>
+
+        <button id="chat-restore-btn" class="chat-restore-tab" type="button" hidden title="Mostra chat">
+          <span class="chat-icon">💬</span>
+          <span class="chat-label">Chat</span>
+          <span id="chat-unread-badge" class="chat-unread-badge" hidden></span>
+        </button>
       </section>
     </main>
 
