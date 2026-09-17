@@ -291,11 +291,13 @@
     return node;
   }
 
+  let adaptiveWindowStart = 0;
+
   function paintDiagnostics(now) {
     const node = ensureDiagnosticsHud();
     const visible = !!config.performance?.diagnostics_hud;
     node.hidden = !visible;
-    if (!visible || now - diagnosticsLastPaint < 500) return;
+    if (!visible || now - diagnosticsLastPaint < 250) return;
     diagnosticsLastPaint = now;
     const rec = XRA.recorder?.status?.() || {};
     const backend = XRA.xraBackend?.snapshot?.() || {};
@@ -303,11 +305,20 @@
       backend.provider || backend.serverStatus?.active?.provider || ''
     ).toLowerCase();
     const backendName = provider.includes('face')
-      ? 'Face (Native)'
-      : 'Holistic (Native)';
+      ? 'MediaPipe Face (Native)'
+      : 'MediaPipe Holistic (Native)';
     const backendLabel = XRA.xraBackend?.active ? backendName : 'MediaPipe WASM';
-    const recLabel = rec.active ? `REC ${Number(rec.draw_fps || 0).toFixed(0)} fps` : 'REC OFF';
-    node.textContent = `${diagnostics.fps.toFixed(0)} FPS · ${backendLabel} · ${recLabel}`;
+    const recLabel = rec.active ? `REC ${Number(rec.draw_fps || 0).toFixed(1)} fps` : 'REC OFF';
+    const gate = Number.isFinite(Number(rec.gate_db)) ? `${Number(rec.gate_db).toFixed(1)} dB ${rec.gate_open ? 'OPEN' : 'CLOSED'}` : '';
+    const worker = telemetry
+      ? `${Number(telemetry.inference_ms || 0).toFixed(1)} ms · ${Number(telemetry.fps || 0).toFixed(1)} fps`
+      : '';
+
+    let text = `Render ${diagnostics.fps.toFixed(1)} FPS · ${diagnostics.frame_ms.toFixed(1)} ms · long ${diagnostics.long_pct.toFixed(1)}%\n` +
+      `Backend ${backendLabel} · Mocap ${effectivePoseFps()} Hz`;
+    if (worker) text += ` · AI ${worker}`;
+    text += `\n${recLabel}${gate ? ' · Mic ' + gate : ''}`;
+    node.textContent = text;
   }
 
   function runtimeMonitorFrame(now) {
@@ -325,22 +336,28 @@
       if (dt > 34) monitorLong++;
     }
 
-    if (now - monitorWindowStart >= 2000) {
+    if (now - monitorWindowStart >= 500) {
       if (renderTickFrames > 0) {
         diagnostics.frame_ms = renderTickSum / renderTickFrames;
         diagnostics.fps = diagnostics.frame_ms ? 1000 / diagnostics.frame_ms : 0;
         diagnostics.long_pct = 100 * renderTickLong / renderTickFrames;
       } else {
-        diagnostics.frame_ms = monitorFrames ? monitorSum / monitorFrames : 0;
-        diagnostics.fps = diagnostics.frame_ms ? 1000 / diagnostics.frame_ms : 0;
-        diagnostics.long_pct = monitorFrames ? 100 * monitorLong / monitorFrames : 0;
+        diagnostics.frame_ms = 0;
+        diagnostics.fps = 0;
+        diagnostics.long_pct = 0;
       }
-      adaptiveStep(diagnostics.fps, diagnostics.long_pct);
       monitorFrames = monitorLong = 0;
       monitorSum = 0;
       renderTickFrames = renderTickLong = renderTickSum = 0;
       monitorWindowStart = now;
     }
+
+    if (!adaptiveWindowStart) adaptiveWindowStart = now;
+    if (now - adaptiveWindowStart >= 2000) {
+      adaptiveStep(diagnostics.fps, diagnostics.long_pct);
+      adaptiveWindowStart = now;
+    }
+
     paintDiagnostics(now);
     monitorRAF = setTimeout(() => runtimeMonitorFrame(performance.now()), 250);
   }

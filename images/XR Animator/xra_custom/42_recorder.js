@@ -18,6 +18,12 @@
   let recordingCtx = null;
   let sourceCanvas = null;
   let drawRAF = 0;
+  let drawInterval = 0;
+  let activeVideoTrack = null;
+  let activeRenderHook = null;
+  window.XRA_recorder_render_hook = function(now) {
+    activeRenderHook?.(now);
+  };
   let drawFrames = 0;
   let drawStartedAt = 0;
   let captureStrategy = 'composite';
@@ -151,6 +157,9 @@
     const addPreferred = value => {
       if (value instanceof HTMLCanvasElement && isWebGLCanvas(value) && value.width >= 160 && value.height >= 120 && !preferred.includes(value)) preferred.push(value);
     };
+    try { addPreferred(window.MMD_SA?.THREEX?.renderer?.obj?.domElement); } catch (e) {}
+    try { addPreferred(window.MMD_SA?.THREEX?.SL); } catch (e) {}
+    try { addPreferred(document.getElementById('SLX')); } catch (e) {}
     try { addPreferred(window.MMD_SA?.THREEX?.renderer?.domElement); } catch (e) {}
     try { addPreferred(window.MMD_SA?.THREEX?._renderer?.domElement); } catch (e) {}
     try { addPreferred(window.MMD_SA?.THREEX?._THREE?.renderer?.domElement); } catch (e) {}
@@ -207,6 +216,7 @@
 
   function resolveRenderer() {
     const candidates = [
+      window.MMD_SA?.THREEX?.renderer?.obj,
       window.MMD_SA?.THREEX?.renderer,
       window.MMD_SA?.THREEX?._renderer,
       window.MMD_SA?.THREEX?._THREE?.renderer
@@ -586,25 +596,37 @@
     recordingCanvas.width = width;
     recordingCanvas.height = height;
     recordingCanvas.dataset.xraRecorderCanvas = '1';
-    recordingCtx = recordingCanvas.getContext('2d', { alpha: false, desynchronized: true });
+    recordingCtx = recordingCanvas.getContext('2d', { alpha: false });
     if (!recordingCtx) throw new Error('Classic recorder canvas context unavailable');
 
-    let last = 0;
     const interval = 1000 / fps;
-    const draw = now => {
-      if (!recordingCanvas) return;
-      if (now - last >= interval - 1) {
-        last = now;
-        try {
-          drawBackdrop(recordingCtx, width, height);
-          recordingCtx.drawImage(sourceCanvas, 0, 0, width, height);
-          drawFrames++;
-        } catch (e) {}
-      }
-      drawRAF = requestAnimationFrame(draw);
+    let last = 0;
+
+    const renderComposite = (now) => {
+      if (!recordingCanvas || !recordingCtx || !sourceCanvas) return;
+      if (now - last < interval * 0.75) return;
+      last = now;
+      try {
+        drawBackdrop(recordingCtx, width, height);
+        recordingCtx.drawImage(sourceCanvas, 0, 0, width, height);
+        drawFrames++;
+        if (activeVideoTrack && typeof activeVideoTrack.requestFrame === 'function') {
+          try { activeVideoTrack.requestFrame(); } catch (_) {}
+        }
+      } catch (e) {}
     };
-    drawRAF = requestAnimationFrame(draw);
-    return recordingCanvas.captureStream(fps);
+
+    activeRenderHook = renderComposite;
+
+    drawInterval = setInterval(() => {
+      if (recordingCanvas && (performance.now() - last > interval * 1.5)) {
+        renderComposite(performance.now());
+      }
+    }, Math.floor(interval));
+
+    const stream = recordingCanvas.captureStream(fps);
+    activeVideoTrack = stream.getVideoTracks()[0] || null;
+    return stream;
   }
 
   function createVideoStream() {
@@ -618,9 +640,19 @@
     drawFrames = 0;
     drawStartedAt = performance.now();
 
+    const interval = 1000 / fps;
+    let last = 0;
+
     if (directCaptureIsSafe(width, height)) {
       captureStrategy = 'direct';
-      return sourceCanvas.captureStream(fps);
+      const stream = sourceCanvas.captureStream(fps);
+      activeVideoTrack = stream.getVideoTracks()[0] || null;
+      activeRenderHook = (now) => {
+        if (activeVideoTrack && typeof activeVideoTrack.requestFrame === 'function') {
+          try { activeVideoTrack.requestFrame(); } catch (_) {}
+        }
+      };
+      return stream;
     }
 
     captureStrategy = 'composite';
@@ -628,29 +660,40 @@
     recordingCanvas.width = width;
     recordingCanvas.height = height;
     recordingCanvas.dataset.xraRecorderCanvas = '1';
-    recordingCtx = recordingCanvas.getContext('2d', { alpha: false, desynchronized: true });
+    recordingCtx = recordingCanvas.getContext('2d', { alpha: false });
     if (!recordingCtx) throw new Error('Recording canvas context unavailable');
 
-    let last = 0;
-    const interval = 1000 / fps;
-    const draw = now => {
-      if (!recordingCanvas) return;
-      if (now - last >= interval - 1) {
-        last = now;
-        try {
-          if (now - lastRenderResolutionCheck > 1000) {
-            lastRenderResolutionCheck = now;
+    const renderComposite = (now) => {
+      if (!recordingCanvas || !recordingCtx || !sourceCanvas) return;
+      if (now - last < interval * 0.75) return;
+      last = now;
+      try {
+        if (now - lastRenderResolutionCheck > 2000) {
+          lastRenderResolutionCheck = now;
+          if (sourceCanvas.width < width || sourceCanvas.height < height) {
             ensureNativeRenderResolution(width, height);
           }
-          drawBackdrop(recordingCtx, width, height);
-          recordingCtx.drawImage(sourceCanvas, 0, 0, width, height);
-          drawFrames++;
-        } catch (e) {}
-      }
-      drawRAF = requestAnimationFrame(draw);
+        }
+        drawBackdrop(recordingCtx, width, height);
+        recordingCtx.drawImage(sourceCanvas, 0, 0, width, height);
+        drawFrames++;
+        if (activeVideoTrack && typeof activeVideoTrack.requestFrame === 'function') {
+          try { activeVideoTrack.requestFrame(); } catch (_) {}
+        }
+      } catch (e) {}
     };
-    drawRAF = requestAnimationFrame(draw);
-    return recordingCanvas.captureStream(fps);
+
+    activeRenderHook = renderComposite;
+
+    drawInterval = setInterval(() => {
+      if (recordingCanvas && (performance.now() - last > interval * 1.5)) {
+        renderComposite(performance.now());
+      }
+    }, Math.floor(interval));
+
+    const stream = recordingCanvas.captureStream(fps);
+    activeVideoTrack = stream.getVideoTracks()[0] || null;
+    return stream;
   }
 
   async function createAudioStream() {
@@ -1053,7 +1096,10 @@
     if (segmentTimer) clearTimeout(segmentTimer);
     if (gateTimer) clearInterval(gateTimer);
     if (drawRAF) cancelAnimationFrame(drawRAF);
-    statusTimer = segmentTimer = gateTimer = drawRAF = 0;
+    if (drawInterval) clearInterval(drawInterval);
+    activeRenderHook = null;
+    activeVideoTrack = null;
+    statusTimer = segmentTimer = gateTimer = drawRAF = drawInterval = 0;
     try { outputStream?.getVideoTracks?.().forEach(track => track.stop()); } catch (e) {}
     // Stop only the processed gate-destination track; shared mic tracks belong
     // to XRA.audioEngine and stay alive for lip sync / meter reuse.

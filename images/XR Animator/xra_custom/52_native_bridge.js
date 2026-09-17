@@ -574,12 +574,16 @@
       return;
     }
     hideSpeechBubbleMesh(bubble);
+    const noticeDuration = Number(bubble?._duration) > 0
+      ? Number(bubble._duration)
+      : (calibrationNotice ? 10000 : 0);
     XRA.uiCore?.showNativeNotice?.(id, content.message, {
       title: 'XR Animator',
       interactive: calibrationNotice
         ? content.actions.length > 0
         : speechBubbleInteractive(bubble),
-      actions: content.actions
+      actions: content.actions,
+      duration: noticeDuration
     });
   }
 
@@ -1846,6 +1850,7 @@
     function runExternalStartupCalibration(devLabel = '') {
       bridge.beginCalibrationNotices?.();
       let cleanupDone = false;
+      let autoDismissTimer = null;
       const bubbleParams = {
         font_scale: 1,
         font: '"Segoe UI",Roboto,Ubuntu,"SF Pro"'
@@ -1864,13 +1869,26 @@
         return speech?.list?.[index] || speech || null;
       };
 
+      function hideSpeechBubbleMesh(bubble) {
+        if (!bubble) return;
+        try {
+          const mesh = window.MMD_SA?.THREEX?.mesh_obj
+            ?.get?.('SpeechBubbleMESH' + (bubble.index || ''));
+          if (typeof mesh?.hide === 'function') mesh.hide();
+          else if (bubble._mesh) bubble._mesh.visible = false;
+        } catch (e) {
+          try { if (bubble._mesh) bubble._mesh.visible = false; } catch (ignore) {}
+        }
+      }
+
       function publishNotice(index, message, duration = 0) {
         const bubble = nativeBubble(index);
         if (typeof XRA.uiCore?.showNativeNotice === 'function') {
           try {
             hideSpeechBubbleMesh(bubble);
             XRA.uiCore.showNativeNotice(`native-speech-${index}`, message, {
-              title: 'XR Animator'
+              title: 'XR Animator',
+              duration
             });
             return;
           } catch (error) {
@@ -1892,14 +1910,21 @@
           'Mocap initializing'
         );
         if (!ready) {
-          publishNotice(0, `${initializing} (${mode})...`);
+          publishNotice(0, `${initializing} (${mode})...`, 10000);
           return;
         }
         const webcamOn = translate('XR_Animator.UI.streamer_mode.webcam_on', 'Webcam: ON');
         const modelLoaded = translate('XR_Animator.UI.streamer_mode.mocap_model_loaded', 'Mocap model: LOADED');
         const calibrating = translate('XR_Animator.UI.streamer_mode.face_data_calibrating', 'Face data calibrating');
         const camera = devLabel || XRA.config?.devices?.camera_label || 'Webcam';
-        publishNotice(0, `✅${webcamOn} (${camera})\n✅${modelLoaded}\n✅${calibrating}...`);
+        publishNotice(0, `✅${webcamOn} (${camera})\n✅${modelLoaded}\n✅${calibrating}...`, 10000);
+        if (autoDismissTimer) clearTimeout(autoDismissTimer);
+        autoDismissTimer = setTimeout(() => {
+          try {
+            nativeBubble(0)?.hide?.();
+            XRA.uiCore?.hideNativeNotice?.('native-speech-0');
+          } catch (e) {}
+        }, 10000);
       }
 
       function showProgress(rawPercent) {
@@ -1915,12 +1940,16 @@
         );
         const message = `(${title} - ${percent}%)`
           + (percent < 100 ? `\n${instruction}` : '');
-        publishNotice(1, message, percent >= 100 ? 2000 : 0);
+        publishNotice(1, message, percent >= 100 ? 2000 : 15000);
       }
 
       function cleanup({ hide = false } = {}) {
         if (cleanupDone) return;
         cleanupDone = true;
+        if (autoDismissTimer) {
+          clearTimeout(autoDismissTimer);
+          autoDismissTimer = null;
+        }
         window.removeEventListener('SA_camera_facemesh_calibrating', onCalibration);
         if (hide) {
           for (const index of [0, 1]) {
@@ -1937,7 +1966,12 @@
         const percent = Number(event?.detail?.percent);
         if (!Number.isFinite(percent)) return;
         showProgress(percent);
-        if (percent >= 100) cleanup();
+        if (percent >= 100) {
+          setTimeout(() => {
+            cleanup({ hide: true });
+            bridge.dismissCalibrationNotices?.();
+          }, 2000);
+        }
       }
 
       const session = {
@@ -1956,7 +1990,9 @@
             }
           } catch (e) {}
           try {
+            if (cam?.facemesh) cam.facemesh.data_detected = 0;
             cam?.facemesh?.reset_calibration?.(true);
+            window.MMD_SA?.WebXR?.user_camera?.facemesh?.reset_calibration?.(true);
           } catch (error) {
             console.warn('[XRA CALIBRATION]', 'reset_calibration error', error);
           }
@@ -2005,7 +2041,10 @@
           }
           ensureExternalTrackingActive();
           const cfg = XRA?.config || XRA?.profile?.custom || config;
-          const devIndex = Number(cfg?.devices?.camera_device_id || 0) || 0;
+          const rawDevId = String(cfg?.devices?.camera_device_id ?? '');
+          const devIndex = deviceIndex.has(rawDevId)
+            ? deviceIndex.get(rawDevId)
+            : (Number.isFinite(Number.parseInt(rawDevId, 10)) ? Number.parseInt(rawDevId, 10) : 0);
           const selfieMode = !!cfg?.devices?.selfie_mode;
           const captureFps = Number(cfg?.performance?.pose_fps) || 30;
 

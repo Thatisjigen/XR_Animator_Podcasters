@@ -244,13 +244,20 @@
       const snap = XRA.xraBackend?.snapshot?.();
       const cap = snap?.capture || window.XRA_BACKEND_CAMERA?.status?.()?.backend?.capture;
       if (cap?.camera_busy) {
-        const procs = (cap.busy_processes && cap.busy_processes.length)
-          ? cap.busy_processes.join(', ')
-          : (cap.busy_process || 'un\'altra applicazione');
-        return { busy: true, proc: procs };
+        const rawProcs = (cap.busy_processes && cap.busy_processes.length)
+          ? cap.busy_processes
+          : (cap.busy_process ? [cap.busy_process] : []);
+        const externalProcs = rawProcs.filter(p => !/^(exe|nw|xra_browser|xr_animator|xra_server)$/i.test(String(p).trim()));
+        if (externalProcs.length) {
+          return { busy: true, proc: externalProcs.join(', ') };
+        }
       }
       if (cap?.last_error && cap.last_error.includes('Webcam occupata')) {
-        return { busy: true, proc: cap.last_error };
+        const procMatch = cap.last_error.match(/Webcam occupata da:\s*([^.]+)/i);
+        const name = procMatch ? procMatch[1].trim() : '';
+        if (!/^(exe|nw|xra_browser|xr_animator|xra_server)$/i.test(name)) {
+          return { busy: true, proc: cap.last_error };
+        }
       }
       return { busy: false, proc: '' };
     }
@@ -304,6 +311,7 @@
         } catch (e) {
           if (!globalThis.XRA_CAMERA_OWNERSHIP?.isOwnershipError?.(e)) {
             console.warn(TAG, 'Auto-starting camera on START failed', e);
+            XRA.toast?.('Avvio telecamera: ' + e.message, 'warn', 5000);
           }
         }
       }
