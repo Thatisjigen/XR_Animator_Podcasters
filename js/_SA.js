@@ -1160,6 +1160,8 @@ else {
 if (SystemEXT.enforce_WSH)
   args.push("wsh")
 
+if (typeof _SA_stop_bg_worker === 'function')
+  _SA_stop_bg_worker()
 if (RAF_timerID) {
   if (RAF_is_timeout)
     clearTimeout(RAF_timerID)
@@ -2633,23 +2635,142 @@ var RAF_timestamp_delta_accumulated = 0
 var RAF_frame_time_delayed = 0
 var RAF_frame_drop = 0
 
+var _SA_bg_worker = null
+var _SA_last_anim_time = (typeof performance !== 'undefined' ? performance.now() : Date.now())
+var _SA_raf_stalled = false
+var _SA_worker_active = false
+var _SA_worker_interval = 0
+var _SA_heartbeat_busy = false
+var _SA_fallback_timer = null
+
+function _SA_stop_bg_worker() {
+  if (_SA_bg_worker && _SA_worker_active) {
+    try {
+      _SA_bg_worker.postMessage({ type: 'stop' })
+    } catch (e) {}
+    _SA_worker_active = false
+    _SA_worker_interval = 0
+  }
+  if (_SA_fallback_timer) {
+    clearTimeout(_SA_fallback_timer)
+    _SA_fallback_timer = null
+  }
+}
+
+function _SA_init_bg_worker() {
+  if (_SA_bg_worker) return _SA_bg_worker
+  if (typeof Worker === 'undefined' || typeof Blob === 'undefined' || typeof URL === 'undefined') {
+    return null
+  }
+  try {
+    var code = [
+      'var timer = null;',
+      'self.onmessage = function(e) {',
+      '  if (e.data && e.data.type === "start") {',
+      '    if (timer) clearInterval(timer);',
+      '    var ms = Math.max(4, Math.floor(e.data.interval || 10));',
+      '    timer = setInterval(function() {',
+      '      self.postMessage("tick");',
+      '    }, ms);',
+      '  } else if (e.data && e.data.type === "stop") {',
+      '    if (timer) { clearInterval(timer); timer = null; }',
+      '  }',
+      '};'
+    ].join('\n')
+    var blob = new Blob([code], { type: 'application/javascript' })
+    var url = URL.createObjectURL(blob)
+    _SA_bg_worker = new Worker(url)
+    _SA_bg_worker.onmessage = function(e) {
+      if (e.data === 'tick') {
+        _SA_on_heartbeat_tick()
+      }
+    }
+  } catch (err) {
+    console.warn('[XRA] Background Web Worker watchdog unavailable:', err)
+    _SA_bg_worker = null
+  }
+  return _SA_bg_worker
+}
+
+function _SA_ensure_heartbeat() {
+  var target_fps = (Number.isFinite(window.XRA_render_fps_limit) && window.XRA_render_fps_limit > 0)
+    ? window.XRA_render_fps_limit
+    : (window.XRA_render_fps_limit === 0 ? 120 : 60)
+  var target_interval = 1000 / target_fps
+  // Heartbeat checks at half-frame cadence (min 4ms) to detect stalls with minimum jitter
+  var check_interval = Math.max(4, Math.floor(target_interval / 2))
+  var worker = _SA_init_bg_worker()
+  if (worker) {
+    if (!_SA_worker_active || _SA_worker_interval !== check_interval) {
+      _SA_worker_active = true
+      _SA_worker_interval = check_interval
+      worker.postMessage({ type: 'start', interval: check_interval })
+    }
+  } else if (!_SA_fallback_timer) {
+    _SA_fallback_timer = setTimeout(function _fallback_tick() {
+      _SA_fallback_timer = null
+      _SA_on_heartbeat_tick()
+      if (!_SA_fallback_timer && use_RAF && EV_sync_update.requestAnimationFrame_auto && !EV_sync_update.RAF_paused) {
+        _SA_fallback_timer = setTimeout(_fallback_tick, check_interval)
+      }
+    }, check_interval)
+  }
+}
+
+function _SA_on_heartbeat_tick() {
+  if (!use_RAF || !EV_sync_update.requestAnimationFrame_auto || EV_sync_update.RAF_paused) {
+    return
+  }
+  if (_SA_heartbeat_busy) return
+
+  var now = performance.now()
+  var target_fps = (Number.isFinite(window.XRA_render_fps_limit) && window.XRA_render_fps_limit > 0)
+    ? window.XRA_render_fps_limit
+    : (window.XRA_render_fps_limit === 0 ? 120 : 60)
+  var target_interval = 1000 / target_fps
+
+  // When RAF is running, threshold is 1.35x target interval (giving RAF full priority).
+  // Once stalled (or if window is hidden), threshold is 0.75x target interval to maintain steady FPS.
+  var stall_threshold = _SA_raf_stalled ? (target_interval * 0.75) : (target_interval * 1.35)
+  var elapsed = now - _SA_last_anim_time
+
+  if (document.hidden || elapsed >= stall_threshold) {
+    _SA_raf_stalled = true
+    _SA_heartbeat_busy = true
+    try {
+      _SA_last_anim_time = now
+      Animate_RAF(now)
+    } catch (err) {
+      console.error('[XRA] Background render tick error:', err)
+    } finally {
+      _SA_heartbeat_busy = false
+    }
+  }
+}
+
 var Animate_RAF = function (timestamp) {
   if (timestamp == null)
     timestamp = performance.now()
 
-//EV_sync_update.fps_count_func()
+  _SA_last_anim_time = timestamp
+  _SA_ensure_heartbeat()
+
   if (EV_sync_update.requestAnimationFrame_auto) {
-    if (document.hidden) {
-      RAF_is_timeout = true
-      RAF_timerID = setTimeout(function () { Animate_RAF(performance.now()) }, 1000/30)
-    }
-    else {
+    if (!document.hidden) {
       RAF_is_timeout = false
-      RAF_timerID = requestAnimationFrame(Animate_RAF)
+      RAF_timerID = requestAnimationFrame(function (ts) {
+        _SA_raf_stalled = false
+        Animate_RAF(ts)
+      })
+    } else {
+      RAF_is_timeout = true
+      RAF_timerID = null
     }
   }
-  else
+  else {
+    _SA_stop_bg_worker()
     RAF_timerID = null
+  }
 //RAF_timerID = setTimeout(function () { Animate_RAF(performance.now()) }, 1000/60)
 
   if (EV_sync_update.RAF_paused) {
@@ -2658,7 +2779,9 @@ var Animate_RAF = function (timestamp) {
   }
 
   // Render FPS limiter (controlled by XRA settings):
-  const xra_frame_rate = Number(window.XRA_render_fps_limit);
+  const raw_limit = Number(window.XRA_render_fps_limit);
+  // Se 0 (Illimitato/Monitor), applichiamo un tetto massimo a 120 FPS per evitare surriscaldamento o framerate sregolato
+  const xra_frame_rate = (Number.isFinite(raw_limit) && raw_limit > 0) ? raw_limit : (raw_limit === 0 ? 120 : NaN);
   if (Number.isFinite(xra_frame_rate) && xra_frame_rate > 0) {
     if (window._XRA_last_fps_limit !== xra_frame_rate) {
       window._XRA_last_fps_limit = xra_frame_rate;
@@ -2744,12 +2867,17 @@ if (typeof document !== 'undefined' && document.addEventListener) {
 
     if (use_RAF && EV_sync_update.requestAnimationFrame_auto && !EV_sync_update.RAF_paused) {
       if (document.hidden) {
-        RAF_is_timeout = true
-        RAF_timerID = setTimeout(function () { Animate_RAF(performance.now()) }, 1000/30)
+        _SA_raf_stalled = true
+        _SA_on_heartbeat_tick()
       }
       else {
+        _SA_raf_stalled = false
+        _SA_last_anim_time = performance.now()
         RAF_is_timeout = false
-        RAF_timerID = requestAnimationFrame(Animate_RAF)
+        RAF_timerID = requestAnimationFrame(function (ts) {
+          _SA_raf_stalled = false
+          Animate_RAF(ts)
+        })
       }
     }
   })
@@ -2811,6 +2939,7 @@ function Animate() {
       catch (err) {}
     }
   }
+  window.XRA_recorder_render_hook?.(performance.now());
 }
 
 var RAF_animation_frame_timestamp_last = 0

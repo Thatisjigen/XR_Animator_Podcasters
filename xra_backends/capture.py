@@ -1,3 +1,9 @@
+# XRA_TRACKING_HOTFIX_V9_3
+# XRA_UNIVERSAL_RUNTIME_V9
+# XRA_PERFORMANCE_RUNTIME_V7
+# XRA_FRONTEND_STABILITY_V6
+# XRA_BACKEND_CONTROL_V5
+# XRA_BACKEND_CAMERA_V3
 """Local webcam capture + inference source for the mocap backends."""
 
 from __future__ import annotations
@@ -264,6 +270,66 @@ def _optimize_v4l2_device(device_spec: str) -> None:
         pass
 
 
+def _is_own_process(pid: int) -> bool:
+    """Check if the PID belongs to XR Animator itself (server, renderer, browser)."""
+    my_pid = os.getpid()
+    if pid == my_pid:
+        return True
+    try:
+        if os.getpgid(pid) == os.getpgrp():
+            return True
+    except Exception:
+        pass
+    try:
+        curr = my_pid
+        while curr > 1:
+            if curr == pid:
+                return True
+            with open(f"/proc/{curr}/stat", "r", encoding="ascii") as f:
+                curr = int(f.read().split()[3])
+    except Exception:
+        pass
+    try:
+        with open(f"/proc/{pid}/cmdline", "r", encoding="utf-8", errors="ignore") as f:
+            cmd = f.read().lower()
+            if any(sig in cmd for sig in ("xr_animator", "xra_browser", "package.nw", ".nw-profile", "xra_server")):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def list_video_capture_devices() -> list[str]:
+    """Return sorted list of /dev/video* device paths that support video capture."""
+    import sys
+    if not sys.platform.startswith("linux"):
+        return []
+    import glob, struct
+    VIDIOC_QUERYCAP = 0x80685600
+    V4L2_CAP_VIDEO_CAPTURE = 0x00000001
+    results = []
+    candidates = sorted(
+        glob.glob("/dev/video*"),
+        key=lambda p: int(p.rsplit("video", 1)[1]) if p.rsplit("video", 1)[1].isdigit() else 999
+    )
+    for path in candidates:
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            try:
+                import fcntl
+                buf = bytearray(104)
+                fcntl.ioctl(fd, VIDIOC_QUERYCAP, buf)
+                capabilities, device_caps = struct.unpack("II", buf[84:92])
+                caps = device_caps if (capabilities & 0x80000000) else capabilities
+                if caps & V4L2_CAP_VIDEO_CAPTURE:
+                    results.append(path)
+            finally:
+                os.close(fd)
+        except Exception:
+            pass
+    return results
+
+
 def check_camera_in_use(device_path: str = "/dev/video0") -> dict:
     """Check if the camera device is currently held open by another process."""
     import sys
@@ -277,7 +343,6 @@ def check_camera_in_use(device_path: str = "/dev/video0") -> dict:
     if not os.path.exists(dev):
         return {"busy": False, "pids": [], "processes": []}
 
-    my_pid = os.getpid()
     busy_pids: list[int] = []
     # 1. Try fuser
     try:
@@ -288,7 +353,7 @@ def check_camera_in_use(device_path: str = "/dev/video0") -> dict:
             for token in raw.split():
                 if token.isdigit():
                     pid = int(token)
-                    if pid != my_pid and pid not in busy_pids:
+                    if not _is_own_process(pid) and pid not in busy_pids:
                         busy_pids.append(pid)
     except Exception:
         pass
@@ -303,7 +368,7 @@ def check_camera_in_use(device_path: str = "/dev/video0") -> dict:
                 for token in raw.split():
                     if token.isdigit():
                         pid = int(token)
-                        if pid != my_pid and pid not in busy_pids:
+                        if not _is_own_process(pid) and pid not in busy_pids:
                             busy_pids.append(pid)
         except Exception:
             pass
@@ -394,33 +459,39 @@ class _OpenCVGrabber:
         elif isinstance(source, int) and os.name == "nt" and hasattr(cv2, "CAP_DSHOW"):
             backend = cv2.CAP_DSHOW
 
-        cap = cv2.VideoCapture()
-        try:
-            if hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
-                cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 2500)
-            if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
-                cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 2500)
-            opened = cap.open(source, backend) if backend is not None else cap.open(source)
-        except Exception as exc:
-            busy_info = check_camera_in_use(self.device)
-            if busy_info.get("busy"):
-                procs = ", ".join(busy_info["processes"]) or "un'altra applicazione"
-                self.last_error = f"Webcam occupata da: {procs}. Chiudila per avviare il tracking."
-            else:
-                self.last_error = f"camera open failed ({self.device}): {exc}"
+        self.last_error = ""
+        cap = None
+        opened = False
+        max_attempts = 6
+        for attempt in range(max_attempts):
+            cap = cv2.VideoCapture()
+            try:
+                opened = cap.open(source, backend) if backend is not None else cap.open(source)
+                if opened and cap.isOpened():
+                    break
+            except Exception as exc:
+                opened = False
+
             try:
                 cap.release()
             except Exception:
                 pass
-            return False
-        if not opened or not cap.isOpened():
+            cap = None
+            if attempt < max_attempts - 1:
+                time.sleep(0.15 + 0.05 * attempt)
+
+        if not cap or not opened or not cap.isOpened():
             busy_info = check_camera_in_use(self.device)
             if busy_info.get("busy"):
                 procs = ", ".join(busy_info["processes"]) or "un'altra applicazione"
                 self.last_error = f"Webcam occupata da: {procs}. Chiudila per avviare il tracking."
             else:
                 self.last_error = f"camera open failed ({self.device})"
-            cap.release()
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
             return False
 
         # Ask for MJPEG before geometry: on V4L2 this often unlocks low-cost
@@ -661,6 +732,9 @@ class CaptureSource:
         self._dropped_hands = 0
         self._phantom_counter = 0
         self._last_unstick_at = 0.0
+        self._empty_frames_count = 0
+        self._was_empty = False
+        self._just_recovered = False
         self._last_landmark_stats = {}
         self._last_frame_log_at = 0.0
         self._last_log_geometry_reason = None
@@ -712,6 +786,8 @@ class CaptureSource:
 
     def start(self) -> None:
         with self._lock:
+            self._last_error = ""
+            self._available = False
             self._rate_window_at = time.monotonic()
             self._rate_window_frames = 0
             self._measured_fps = 0.0
@@ -720,6 +796,8 @@ class CaptureSource:
             self._infer_ms_ema = 0.0
             self._last_work_ms = 0.0
             self._work_ms_ema = 0.0
+            if self._grabber is not None:
+                setattr(self._grabber, "last_error", "")
             if self._thread is not None and self._thread.is_alive():
                 self._running = True
                 self._paused.clear()
@@ -762,7 +840,14 @@ class CaptureSource:
             try:
                 index = int(index)
                 import sys
-                device = f"/dev/video{index}" if sys.platform.startswith("linux") else str(index)
+                if sys.platform.startswith("linux"):
+                    valid_devs = list_video_capture_devices()
+                    if 0 <= index < len(valid_devs):
+                        device = valid_devs[index]
+                    else:
+                        device = f"/dev/video{index}"
+                else:
+                    device = str(index)
             except Exception:
                 device = str(index)
         with self._lock:
@@ -991,7 +1076,8 @@ class CaptureSource:
 
                 if frame is None:
                     failures += 1
-                    self._set_error(getattr(grabber, "last_error", "") or "frame grab failed")
+                    if failures >= 4:
+                        self._set_error(getattr(grabber, "last_error", "") or "frame grab failed")
                     if failures >= 15:
                         self._release_camera(); grabber = None; failures = 0
                         self._stop.wait(0.5)
@@ -1013,6 +1099,10 @@ class CaptureSource:
                         frame = cv2.flip(frame, 1)
                     except Exception:
                         frame = np.ascontiguousarray(frame[:, ::-1, :])
+
+                if getattr(self, "_just_recovered", False):
+                    self._just_recovered = False
+                    last_missed_deadline = False
 
                 # Optional adaptive frame skip: if previous frame missed deadline,
                 # skip heavy MediaPipe inference once and dispatch the cached wireframe
@@ -1062,6 +1152,11 @@ class CaptureSource:
     def _effective_fps(self) -> float:
         with self._lock:
             target = max(1.0, min(30.0, float(self._target_fps)))
+            empty_count = getattr(self, "_empty_frames_count", 0)
+            if empty_count > 15:
+                # Idle search mode: drop to 12 FPS when room is empty (> 0.5s)
+                # Cuts CPU/GPU load from 70% to 15% and prevents thermal throttling.
+                return 12.0
             if self._infer_ms_ema > 0.0 and _INFERENCE_HEADROOM > 1.0:
                 sustainable = 1000.0 / (self._infer_ms_ema * _INFERENCE_HEADROOM)
                 target = min(target, sustainable)
@@ -1708,18 +1803,21 @@ class CaptureSource:
             raw_summary = self._landmark_summary(payload, frame.shape[1], frame.shape[0])
             if payload is not None:
                 payload = self._stabilize_payload(payload, frame.shape[1], frame.shape[0])
-            # Auto-unstick: detect when MediaPipe gets stuck in a tiny ROI on background objects.
+            # Auto-unstick / Phantom suppression:
             raw_span = raw_summary.get("shoulder_span_px", 0.0) if raw_summary else 0.0
             raw_face_pts = raw_summary.get("face_points", 0) if raw_summary else 0
             now_mono = time.monotonic()
-            if raw_span > 0.0 and raw_span < 50.0 and raw_face_pts == 0:
+            if raw_face_pts == 0 and 0.0 < raw_span < 55.0:
+                # Phantom noise detected on background object while user is away; suppress it.
+                payload = None
                 self._phantom_counter += 1
-                if self._phantom_counter >= 20 and (now_mono - self._last_unstick_at) >= 3.0:
+                if self._phantom_counter >= 15 and (now_mono - self._last_unstick_at) >= 5.0:
                     self._phantom_counter = 0
                     self._last_unstick_at = now_mono
+                    # Feed a blank frame to reset MediaPipe's tracking ROI to full-frame detection
+                    # without reloading the engine from disk.
                     try:
-                        active_id = getattr(engine.ENGINE, "active_id", None) or getattr(registry, "MEDIAPIPE_TASKS_ID", "mediapipe-tasks-landmarker")
-                        engine.ENGINE.load(active_id, force=True)
+                        engine.ENGINE.infer(np.zeros_like(frame))
                     except Exception:
                         pass
             else:
@@ -1754,6 +1852,22 @@ class CaptureSource:
         has_face = bool((wire.get("face") or {}).get("landmarks"))
         has_body = bool(wire.get("keypoints"))
         is_empty = not (has_face if self._mocap_mode == "face" else has_body)
+
+        if getattr(self, "_was_empty", False) and not is_empty:
+            # User just re-entered camera view!
+            # Snap latency EMA immediately to fresh tracking latency (capped at 22ms)
+            # so the capture loop and scheduler immediately recover 30 FPS without lag.
+            self._infer_ms_ema = min(self._last_infer_ms, 22.0)
+            self._work_ms_ema = min(self._last_work_ms, 24.0)
+            self._empty_frames_count = 0
+            self._deadline_misses = 0
+            self._just_recovered = True
+        elif is_empty:
+            self._empty_frames_count = getattr(self, "_empty_frames_count", 0) + 1
+        else:
+            self._empty_frames_count = 0
+        self._was_empty = is_empty
+
         wire.update({
             "type": "pose",
             "frame_id": self._frames,

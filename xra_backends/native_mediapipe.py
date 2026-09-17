@@ -1,3 +1,7 @@
+# XRA_TRACKING_HOTFIX_V9_3
+# XRA_UNIVERSAL_RUNTIME_V9
+# XRA_RUNTIME_BUILD_V8
+# XRA_PERFORMANCE_RUNTIME_V7
 """Native Python MediaPipe Tasks backend.
 
 ``HolisticTasksEngine`` wraps ``mediapipe.tasks.vision.HolisticLandmarker`` and
