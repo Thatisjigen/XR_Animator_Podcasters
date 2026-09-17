@@ -14,11 +14,17 @@ import multiprocessing
 import os
 from pathlib import Path
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
 import urllib.request
 import webbrowser
+
+if getattr(sys, "frozen", False):
+    import importlib.machinery
+    if importlib.machinery.PathFinder not in sys.meta_path[:1]:
+        sys.meta_path.insert(0, importlib.machinery.PathFinder)
 
 from xr_server import Handler, ThreadingHTTPServer
 
@@ -65,6 +71,9 @@ def open_browser_when_ready(port: int, chat: bool) -> None:
                     "--enable-webaudio-input",
                     "--auto-accept-camera-and-microphone-capture",
                     "--autoplay-policy=no-user-gesture-required",
+                    "--disable-background-timer-throttling",
+                    "--disable-renderer-backgrounding",
+                    "--disable-backgrounding-occluded-windows",
                 ]
 
                 if gpu_pref == "high-performance":
@@ -159,7 +168,7 @@ def main() -> int:
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n[XRA] Stopping server...")
+        print("\n[XRA] Arresto server…")
     finally:
         server.server_close()
     return 0

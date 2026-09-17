@@ -1,4 +1,3 @@
-# XRA_UNIVERSAL_RUNTIME_V9
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller onedir bundle that preserves XR Animator's HTTP runtime."""
 

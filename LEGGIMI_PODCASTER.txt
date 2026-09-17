@@ -1,0 +1,166 @@
+===============================================================================
+              XR ANIMATOR PODCASTERS EDITION · MANUALE D'USO
+===============================================================================
+
+Benvenuto nella versione speciale di XR Animator ottimizzata per Podcaster,
+Streamer e Creator virtuali (VTuber). Questa guida raccoglie tutte le
+funzionalità chiave, le impostazioni consigliate per evitare glitch e le
+istruzioni dettagliate per ottenere le massime prestazioni.
+
+-------------------------------------------------------------------------------
+1. PANORAMICA DEI MENU E CONTROLLI
+-------------------------------------------------------------------------------
+
+L'interfaccia è suddivisa in due pannelli principali a scomparsa:
+
+* PANNELLO DI DESTRA (Control Panel):
+  È il centro di controllo operativo. Da qui gestisci:
+  - 💬 Studio Link: chiamate audio, chat e condivisione schermo P2P ultra-leggera.
+  - 🔴 Registrazione: cattura video e audio ad alta fedeltà con backup FLAC grezzo.
+  - 🧍 Body & Tracking: stabilizzazione del busto, ancoraggio e filtri anti-glitch.
+  - 🎤 Audio & Lip-Sync: calibrazione automatica del Noise Gate e livello voce.
+  - 🎮 Performance & GPU: framerate di rendering (30/60 FPS), risoluzione e preset.
+
+* PANNELLO DI SINISTRA (Impostazioni XRP):
+  È il cassetto di configurazione nativa. Da qui gestisci:
+  - Caricamento e cambio avatar (VRM e MMD PMX).
+  - Gestione pose e tasto rapido [↺ Reset pose] per raddrizzare l'avatar.
+  - Regolazione fine delle spalle (Shoulder adjust) e tracking nativo.
+  - Tasto rapido [✕ CHIUDI] in alto a sinistra per uscire in sicurezza.
+
+-------------------------------------------------------------------------------
+2. COME EVITARE CHE L'AVATAR SI "SMINCHI" O CADA PER TERRA (SEDUTI AL PC)
+-------------------------------------------------------------------------------
+
+Quando sei seduto alla scrivania, la webcam inquadra solo testa e busto:
+gambe, fianchi e piedi sono nascosti sotto il tavolo.
+L'intelligenza artificiale di tracking cerca di "indovinare" le gambe e, se
+confusa da ombre o vestiti, allucina che tu sia sdraiato o piegato, facendo
+collassare l'avatar sul pavimento o facendolo volare in un angolo.
+
+PER IMPEDIRE QUALSIASI GLITCH, ATTIVA LA "COMBO SCRIVANIA":
+Nel pannello di destra, apri la sezione [🧍 Body] e imposta:
+
+  [X] Body stabilization (ATTIVO)
+      -> Blocca saldamente il bacino e le gambe alla sedia. Testa, bocca,
+         braccia e mani continuano a muoversi al 100%, ma l'avatar non potrà
+         MAI cadere, inclinarsi o volare via.
+  
+  [X] Anchor strength: 80% - 90%
+      -> È la forza dell'ancoraggio. Sopra l'80% garantisce stabilità totale.
+  
+  [X] Motion hysteresis (anti-jerk) (ATTIVO)
+      -> Filtro anti-scatto: se la webcam perde un frame o rileva una posa
+         anomala a distanza, il filtro scarta l'errore e trattiene l'ultima
+         posa composta valida (HOLDING LAST VALID).
+  
+  [X] Tracking loss protection (ATTIVO)
+      -> Se ti allontani dalla webcam, congela l'avatar nella posa composta
+         naturale continuando a muovere la bocca con il microfono.
+  
+  [*] Tasto [🎯 Recapture reference pose] (sotto Advanced):
+      -> Mettiti dritto e comodo davanti al PC e clicca questo tasto una volta
+         per memorizzare la tua postura perfetta da seduto.
+
+Se l'avatar dovesse comunque prendere una posa storta per errore, premi il
+tasto [↺ Reset pose] nel pannello di sinistra per ripristinarlo all'istante.
+
+-------------------------------------------------------------------------------
+3. NOISE GATE INTELLIGENTE CON AUTO-CALIBRAZIONE (-80 dB)
+-------------------------------------------------------------------------------
+
+Il Noise Gate silenzia automaticamente il microfono durante le pause, eliminando
+il respiro, il ronzio delle ventole del PC e il rumore di fondo della stanza.
+
+COME CALIBRARE IN 3 SECONDI:
+1. Nel pannello di destra, vai su [🎤 Audio & Lip-sync].
+2. Resta in perfetto silenzio per 3 secondi.
+3. Clicca il pulsante [🎚 Calibra rumore stanza (3s)].
+4. Il sistema misura il silenzio della stanza (es. -66.1 dB) e imposta
+   automaticamente la soglia ideale a +5 dB sopra il rumore (es. -61.0 dB).
+5. Lo slider si sposterà da solo sul valore calcolato.
+
+REGOLAZIONE MANUALE:
+Lo slider "Soglia Noise Gate registrazione" supporta un intervallo esteso
+da -80 dB a -5 dB con passi da 0.5 dB.
+- Se la tua voce viene tagliata a inizio frase: sposta lo slider verso sinistra (es. -65 dB).
+- Se entra troppo fruscio della stanza: sposta lo slider verso destra (es. -50 dB).
+
+-------------------------------------------------------------------------------
+4. STUDIO LINK · CHIAMATE, VOCE E CONDIVISIONE SCHERMO P2P
+-------------------------------------------------------------------------------
+
+Studio Link permette a due podcaster di collegarsi via audio, chat e video
+in modalità Peer-to-Peer diretta crittografata (senza passare da server esterni).
+
+* CONNESSIONE:
+  - Modalità PeerJS (ID corto): clicca [Copia ID invito], invialo all'ospite;
+    l'ospite lo incolla e clicca [Connetti].
+  - Modalità Nostr: connessione P2P decentralizzata con token xra1_...
+
+* CONDIVISIONE SCHERMO & MOTORE "FRACTAL BREAKER":
+  - Clicca [Condividi schermo] (o clicca sul riquadro centrale vuoto).
+  - L'ospite remoto riceve il tuo schermo fluido a 30 FPS e a piena risoluzione.
+  - Visualizzazione responsive: l'intero schermo viene mostrato senza tagli.
+  - Protezione "Fractal Breaker": se condividi per errore l'intero schermo dove
+    è presente Studio Link, l'anteprima locale viene attenuata su canvas a
+    ~12.5 FPS per evitare il congelamento della CPU da specchio infinito.
+  - Solo chi ha avviato la condivisione può interromperla con [Ferma schermo].
+
+* CHAT E GESTIONE:
+  - Clicca [—] in alto a destra nella chat per minimizzarla e allargare la visuale.
+  - Un badge verde ti avvisa dei messaggi non letti (1..99, 99+) con una riga
+    divisoria rossa che indica i nuovi messaggi in arrivo.
+
+-------------------------------------------------------------------------------
+5. PRESET LOW-SPEC (OTTIMIZZATO PER INTEL CORE i5 10a GEN / GPU INTEGRATA)
+-------------------------------------------------------------------------------
+
+Nel progetto trovi il file preconfigurato:
+  -> xra_profile_example_low_spec.json
+
+Questo preset è stato tarato per processori di fascia media o notebook con
+grafica integrata (Intel UHD Graphics) come l'i5 di 10a generazione:
+- Rendering 3D a schermo: 30 FPS stabili.
+- Risoluzione viewport: 720p (leggero sulla scheda video).
+- Post-processing (Bloom, Ambient Occlusion, Depth of Field): Disattivato.
+- Registrazione video: 720p a 30 FPS con bitrate a 2.5 Mbps (compattissimo).
+- Stabilizzazione corpo e Noise Gate: pre-attivati.
+
+Per usarlo:
+1. Rinomina o copia `xra_profile_example_low_spec.json` in `xra_profile.json`
+   nella cartella di XR Animator.
+2. Avvia XR Animator: il preset verrà caricato automaticamente.
+
+-------------------------------------------------------------------------------
+6. GUIDA: COME PASSARE A 60 FPS (RENDERING E REGISTRAZIONE)
+-------------------------------------------------------------------------------
+
+Se disponi di un PC più potente o di una scheda video dedicata (Nvidia RTX /
+AMD Radeon) e desideri una fluidità cinematografica a 60 FPS, segui questi
+semplici passaggi nel MENU DI DESTRA:
+
+PASSO 1 · RENDERING A 60 FPS (Fluidità a schermo):
+1. Apri il pannello di destra e clicca su [⚡ Performance].
+2. Apri la sezione [Advanced performance].
+3. Apri la tendina [🎮 Rendering Grafico & GPU].
+4. Alla voce "Render FPS", cambia il menu a tendina da "30 FPS" a [60 FPS]
+   (oppure su "Unlimited / Monitor" se hai uno schermo a 144 Hz).
+5. Alla voce "Render resolution", puoi selezionare [1080p (Full HD)].
+
+PASSO 2 · REGISTRAZIONE A 60 FPS (Fluidità del video salvato):
+1. Nel pannello di destra, apri la sezione [🔴 Registrazione].
+2. Alla voce "FPS", digita o imposta [60].
+3. Se desideri registrare in Full HD:
+   - Risoluzione: Larghezza 1920, Altezza 1080.
+   - Bitrate video: imposta 5000000 (5 Mbps) o 6000000 (6 Mbps).
+4. Premi [Salva impostazioni] in fondo al pannello.
+
+NOTA SUGLI EFFETTI VISIVI A 60 FPS:
+Se hai una GPU Nvidia, puoi aprire la sezione [Effetti visivi / Bloom] e attivare
+l'UnrealBloom per dare lucentezza e riflessi realistici ai vestiti e agli occhi
+del modello 3D. Se noti cali di frame rate, mantieni disattivato solo l'AO (N8AO).
+
+===============================================================================
+                       BUON RECORDING & STREAMING!
+===============================================================================

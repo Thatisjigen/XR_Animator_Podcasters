@@ -1,4 +1,3 @@
-/* XRA_BACKEND_CONTROL_V5: pose-only worker WebSocket. */
 (function initXraBackendPoseBridge(scope) {
   'use strict';
   if (!scope) return;
