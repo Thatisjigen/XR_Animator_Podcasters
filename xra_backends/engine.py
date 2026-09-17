@@ -233,7 +233,7 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
         wire_face["blendshapes"] = blendshapes
 
     # -----------------------------------------------------------------------
-    # Phase 2a: joint confidence suppression and kinematic guard
+    # Fase 2a – tracker confidence suppression + kinematic guard
     # XRA_JOINT_CONF_MIN (float, default 0.25): joints with score below this
     #   threshold are zeroed-out (score=0, position zeroed) instead of being
     #   sent with bogus coordinates that hallucinate limbs out of frame.
@@ -285,6 +285,7 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
         sh_idx = 11 if wrist_idx == 15 else 12
         el_idx = 13 if wrist_idx == 15 else 14
         arm_active = False
+        el_pos = None
 
         if sh_idx < len(keypoints) and el_idx < len(keypoints):
             sh_kp = keypoints[sh_idx]
@@ -293,10 +294,10 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
             sh_sc = sh_kp.get("score", 0.0)
             el_sc = el_kp.get("score", 0.0)
             w_sc = w_kp.get("score", 0.0)
+            el_pos = el_kp.get("position") or el_kp
 
             if sh_sc >= 0.18 and el_sc >= 0.18:
                 sh_pos = sh_kp.get("position") or sh_kp
-                el_pos = el_kp.get("position") or el_kp
                 w_pos = w_kp.get("position") or w_kp
                 dx_se = _float(el_pos.get("x")) - _float(sh_pos.get("x"))
                 dy_se = _float(el_pos.get("y")) - _float(sh_pos.get("y"))
@@ -441,9 +442,9 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
 
         if not arm_active and desk_guard_enabled and not has_active_hand:
             cur_w_pos = keypoints[wrist_idx].get("position") or keypoints[wrist_idx]
-            cur_dy_ew = _float(cur_w_pos.get("y")) - _float(el_pos.get("y"))
+            cur_dy_ew = (_float(cur_w_pos.get("y")) - _float(el_pos.get("y"))) if el_pos is not None else 0.0
             w_score = keypoints[wrist_idx].get("score", 0.0)
-            if (not smart_arm_sync and w_score < desk_thresh) or cur_dy_ew <= -0.05:
+            if (not smart_arm_sync and w_score < desk_thresh) or cur_dy_ew <= -0.05 or el_pos is None:
                 keypoints[wrist_idx] = _suppress_joint(keypoints[wrist_idx])
                 if wrist_idx < len(keypoints3d):
                     keypoints3d[wrist_idx] = _suppress_joint(keypoints3d[wrist_idx])
@@ -571,7 +572,7 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
         "leftHandWorld": payload.get("leftHandWorld", []) if active_hands.get("leftHand") else [],
         "rightHandWorld": payload.get("rightHandWorld", []) if active_hands.get("rightHand") else [],
     }
-    # Phase 2b: raw hand landmarks for diagnostics (no smoothing/filtering).
+    # Fase 2b – raw hand landmarks for diagnostics (no smoothing/filtering).
     # Set XRA_RAW_HANDS_DEBUG=1 to include raw_hands in the wire payload.
     # Frontend can use this to distinguish data-level defects from adapter bugs.
     if os.environ.get("XRA_RAW_HANDS_DEBUG", "0").lower() in {"1", "true", "yes"}:

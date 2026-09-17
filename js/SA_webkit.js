@@ -54,13 +54,13 @@ if (browser_native_mode) {
         return true
       }
       else {
-        console.error(((is_SA_child_animation)?(SA_child_animation_id+1):0) + ':SA_project_JSON-' + path_relative + ',' + existed)
+//        console.error(((is_SA_child_animation)?(SA_child_animation_id+1):0) + ':SA_project_JSON-' + path_relative + ',' + existed)
         return false
       }
     }
     else {
       if (!is_SA_relative || /TEMP[\/\\]SA_wallpaper/.test(path)) {
-        console.error(((is_SA_child_animation)?(SA_child_animation_id+1):0) + ':OFF-SA_project_JSON-' + path + ',' + existed)
+//        console.error(((is_SA_child_animation)?(SA_child_animation_id+1):0) + ':OFF-SA_project_JSON-' + path + ',' + existed)
 //console.error(System.Gadget.path)
         return false
       }
@@ -75,7 +75,7 @@ console.log(((is_SA_child_animation)?(SA_child_animation_id+1):0) + ':PRE-SA_pro
       return true
     }
 // probably testing the animation folder itself, simply return false for folders
-    console.error(((is_SA_child_animation)?(SA_child_animation_id+1):0) + ':PRE-SA_project_JSON-' + path + ',' + existed)
+//    console.error(((is_SA_child_animation)?(SA_child_animation_id+1):0) + ':PRE-SA_project_JSON-' + path + ',' + existed)
     return false
   }
 }

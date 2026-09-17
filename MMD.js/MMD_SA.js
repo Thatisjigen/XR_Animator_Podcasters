@@ -2637,7 +2637,64 @@ this.visible = false
 
 this.hidden_time_ref = Date.now()
 
-this.bubbles = []; // Speech bubbles retired in favor of UI toasts
+var _SB_EMPTY_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAZelqqAAAAAElFTkSuQmCC';
+
+this.bubbles = [
+  {
+    image_url:_SB_EMPTY_PNG
+   ,font: '"Segoe Print",fantasy'
+   ,font_unicode: 'DFKai-SB,"Microsoft JhengHei"'
+   ,font_size: 18
+//   ,column_max: 50-3
+//   ,column_max_unicode: 25
+   ,row_max: 8
+   ,auto_wrap: true
+
+   ,bounding_box: [43-4,123-8, 452,252]
+   ,left_sided: true
+  },
+
+  {
+    image_url:_SB_EMPTY_PNG
+   ,font: '"Segoe Print",fantasy'
+   ,font_unicode: 'DFKai-SB,"Microsoft JhengHei"'
+   ,font_size: 18
+//   ,column_max: 36-3
+//   ,column_max_unicode: 18
+   ,row_max: 8
+   ,auto_wrap: true
+
+   ,bounding_box: [135-4,144-8, 313,221]
+  },
+
+  {
+    image_url:_SB_EMPTY_PNG
+   ,font: '"Segoe Print",fantasy'
+   ,font_unicode: 'DFKai-SB,"Microsoft JhengHei"'
+   ,font_size: 18
+//   ,column_max: 42-3
+//   ,column_max_unicode: 21
+   ,row_max: 8
+   ,auto_wrap: true
+
+   ,bounding_box: [87-4,133-8, 373,233]
+   ,left_sided: true
+  },
+
+  {
+    image_url:_SB_EMPTY_PNG
+   ,font: '"Segoe Print",fantasy'
+   ,font_unicode: 'DFKai-SB,"Microsoft JhengHei"'
+   ,font_size: 18
+//   ,column_max: 42-3
+//   ,column_max_unicode: 21
+   ,row_max: 8
+   ,auto_wrap: true
+
+   ,bounding_box: [87-4,133-8, 373,233]
+   ,left_sided: true
+  }
+];
 
 para && Object.assign(this, para);
     }
@@ -2727,13 +2784,14 @@ return !!flipH_bubble
     };
 
     SB.prototype.update_bubble = function (flipH_bubble, para) {
-if (!this.bubbles || !this.bubbles.length) return;
+if (!this.bubbles || !this.bubbles.length || !this.bubbles[this.bubble_index]) return;
 if (!para)
   para = this.para;
 this.flipH_bubble = flipH_bubble
 
 bubble_index = this.bubble_index
 var b = this.bubbles[bubble_index]
+if (!b) return;
 
 msg = this.msg.replace(/\{\{(.+?)\}\}/g, function (match, p1) { return eval(p1) })
 
@@ -3026,8 +3084,13 @@ if (this.msg_timerID) {
   this.msg_timerID = null
 }
 
+if (!this.bubbles || !this.bubbles.length || !this.bubbles[bubble_index]) {
+  return;
+}
+
 var msg_changed = (this.bubble_index != bubble_index) || (this.msg != msg) || para.always_update;
 var b = this.bubbles[bubble_index]
+if (!b) return;
 
 var para_SA = MMD_SA.MMD.motionManager.para_SA
 
@@ -3036,7 +3099,7 @@ var cam = MMD_SA.camera_position
 var head_pos = para.head_pos || MMD_SA._head_pos;//MMD_SA.get_bone_position(THREE.MMD.getModels()[0].mesh, "頭");//
 
 var x_diff = cam.x - head_pos.x
-var left_sided = b.left_sided
+var left_sided = !!b.left_sided
 if (para.flipH)
   left_sided = !left_sided
 var flipH_side = (para.flipH_side != null) ? para.flipH_side : (Math.abs(x_diff) < 2) ? ((msg_changed) ? false : this.list[0].flipH_side) : ((left_sided) ? (x_diff>0) : (x_diff<0))
@@ -3047,7 +3110,7 @@ if (para_SA.SpeechBubble_flipH)
   flipH_side = !flipH_side
 this.flipH_side = !!flipH_side
 
-var pos_mod = (para.pos_mod) || para_SA.SpeechBubble_pos_mod || b.pos_mod || ((MMD_SA_options.model_para_obj_all.length>1) ? [-2,2,-5] : [0,0,0])
+var pos_mod = (para.pos_mod) || para_SA.SpeechBubble_pos_mod || (b && b.pos_mod) || ((MMD_SA_options.model_para_obj_all.length>1) ? [-2,2,-5] : [0,0,0])
 var x_mod = ((flipH_side && !left_sided) || (!flipH_side && left_sided)) ? -13 : 13;
 x_mod /= this.get_fov_factor(true);
 
@@ -3327,7 +3390,11 @@ window.addEventListener('MMDStarted', ()=>{
       pos.x = mouse_x - pos.x;
       pos.y = mouse_y - pos.y;
 
-      const b = sb.bubbles[sb.bubble_index];
+      const b = (sb.bubbles && sb.bubbles[sb.bubble_index]) ? sb.bubbles[sb.bubble_index] : null;
+      if (!b || !b.image) {
+        clear_highlight(sb);
+        return;
+      }
       const w = b.image.width;
       const h = b.image.height;
 
@@ -3948,8 +4015,8 @@ if (!MMD_SA_options.MMD_disabled && MMD_SA_options.use_THREEX && MMD_SA.MMD_star
   const MMD_mesh0 = THREE.MMD.getModels()[0].mesh;
   const model0 = MMD_SA.THREEX.get_model(0);
 //DEBUG_show(['頭', '上半身'].map(b=>model0.get_bone_position_by_MMD_name(b).distanceTo(MMD_SA._trackball_camera.object.position)).join('\n'))
-  const avatar_visible_distance = MMD_SA_options.avatar_visible_distance || 3;
-  if (MMD_mesh0.visible) {
+  const avatar_visible_distance = (MMD_SA_options.avatar_visible_distance != null) ? Number(MMD_SA_options.avatar_visible_distance) : 0;
+  if (avatar_visible_distance > 0 && MMD_mesh0.visible) {
     const check_list = ['頭', '上半身'].map(b=>model0.get_bone_position_by_MMD_name(b));
     check_list.push(MMD_SA.TEMP_v3.copy(check_list[check_list.length-1]).lerp(MMD_mesh0.position, 0.5));
     if (check_list.some(p=>p.distanceTo(MMD_SA._trackball_camera.object.position) < avatar_visible_distance)) {

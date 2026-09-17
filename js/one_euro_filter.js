@@ -62,6 +62,11 @@ if (self.THREE) {
   lastValue() {
     return this.y;
   }
+
+  reset() {
+    this.y = null;
+    this.s = null;
+  }
 }
 
 class OneEuroFilter {
@@ -169,11 +174,21 @@ if (self.THREE) {
     return 1.0 / ( 1.0 + tau / te );
   }
 
+  reset() {
+    this.lasttime = null;
+    this.freq = 30.0;
+    if (this.x) this.x.reset();
+    if (this.dx) this.dx.reset();
+  }
+
   filter(x, timestamp=null, time_scale=1) {
     if (this.lasttime && timestamp) {
-// AT: convert timestamp to seconds
-// avoid infinity when time delta is 0
-      this.freq = 1.0 / (Math.max( (timestamp - this.lasttime)/1000, 1/60 ) * time_scale);
+      const dt = (timestamp - this.lasttime) / 1000;
+      if (dt > 0.5) {
+        this.reset();
+      } else {
+        this.freq = 1.0 / (Math.max(dt, 1/60) * time_scale);
+      }
     }
     this.lasttime = timestamp;
 

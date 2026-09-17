@@ -1,3 +1,5 @@
+# XRA_BACKEND_CONTROL_V5
+# XRA_BACKEND_CAMERA_V3
 """WebSocket transport + inference glue for native MediaPipe Tasks."""
 
 from __future__ import annotations
