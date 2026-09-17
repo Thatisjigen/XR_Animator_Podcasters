@@ -884,6 +884,7 @@
     sendControl({ type: 'capture', action: 'start' });
     try {
       let nextStatusRequestAt = 0;
+      const startedWaitingAt = performance.now();
       await waitFor(() => {
         const snap = backendSnapshot();
         const capture = snap.capture;
@@ -897,21 +898,19 @@
         if (capture?.running && capture.camera_open === true && capture.available === true) {
           return capture;
         }
-        // Only the capture source's own fresh error is authoritative. The
-        // sticky client error must be ignored when unchanged: at boot a capture
-        // command issued before the model finished loading can leave
-        // `engine_not_ready`/`capture command failed` behind, and treating it as
-        // fatal aborted an otherwise healthy start (the LED turned on but the
-        // pose stream/UI never came up).
-        const captureError = String(capture?.last_error || '');
-        if (captureError && /camera|capture|engine_not_ready|open failed/i.test(captureError)) {
-          throw new Error(captureError);
-        }
-        // `clearError()` above wiped the sticky value, so any client error seen
-        // here was produced during this start attempt and is authoritative.
-        const clientError = String(snap.lastError || '');
-        if (clientError && /camera|capture|engine_not_ready|open failed/i.test(clientError)) {
-          throw new Error(clientError);
+        // Allow Python at least 3.0s to complete its hardware open retry sequence
+        // (absorbing asynchronous V4L2 device close by browser) before treating
+        // any capture error as a fatal start failure.
+        const elapsed = now - startedWaitingAt;
+        if (elapsed > 3000) {
+          const captureError = String(capture?.last_error || '');
+          if (captureError && /camera|capture|engine_not_ready|open failed|Webcam occupata/i.test(captureError)) {
+            throw new Error(captureError);
+          }
+          const clientError = String(snap.lastError || '');
+          if (clientError && /camera|capture|engine_not_ready|open failed|Webcam occupata/i.test(clientError)) {
+            throw new Error(clientError);
+          }
         }
         return null;
       }, 10000, 'Python camera start');

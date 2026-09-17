@@ -635,6 +635,7 @@
       status.textContent = isLive
         ? `Webcam: ON · ${active.label || 'unknown'} · ${active.readyState}`
         : `Webcam: OFF${active.label ? ` · ${active.label}` : ''}`;
+      try { updateToggleState(); } catch (_) {}
     }
 
     async function refreshCameras(requestPermission = false) {
@@ -723,35 +724,72 @@
       value => XRA.nativeBridge?.setPreviewVisibility?.('wireframe', value),
       'Mostra lo scheletro di tracciamento sopra la scena.');
 
-    const actions = el('div', 'xra-inline-grid xra-three-actions');
-    const startButton = button('▶ Start webcam');
-    startButton.onclick = async () => {
-      startButton.disabled = true;
-      try { status.textContent = 'Starting webcam…'; await XRA.nativeBridge.startNativeStreamer(); }
-      catch (e) { status.textContent = 'Start failed: ' + e.message; }
-      finally { startButton.disabled = false; await refreshCameras(false); }
+    const actions = el('div', 'xra-inline-grid');
+    const toggleButton = button('▶ Start webcam');
+
+    function updateToggleState() {
+      const live = !!(XRA.nativeBridge.cameraRunning?.() ?? (XRA.nativeBridge.activeCamera().readyState === 'live'));
+      toggleButton.textContent = live ? '■ Stop webcam' : '▶ Start webcam';
+      toggleButton.classList.toggle('active', live);
+    }
+
+    toggleButton.onclick = async () => {
+      toggleButton.disabled = true;
+      const live = !!(XRA.nativeBridge.cameraRunning?.() ?? (XRA.nativeBridge.activeCamera().readyState === 'live'));
+      try {
+        if (live) {
+          status.textContent = 'Stopping webcam…';
+          await XRA.nativeBridge.stopNativeStreamer();
+        } else {
+          status.textContent = 'Starting webcam…';
+          if (typeof XRA.whenNativeReady === 'function') {
+            await XRA.whenNativeReady(15000);
+          }
+          if (XRA.xraBackend?.waitUntilReady) {
+            await XRA.xraBackend.waitUntilReady(6000).catch(() => {});
+          }
+          await XRA.nativeBridge?.startNativeStreamer?.();
+          XRA.ui?.refresh?.();
+        }
+      } catch (e) {
+        if (!globalThis.XRA_CAMERA_OWNERSHIP?.isOwnershipError?.(e)) {
+          status.textContent = (live ? 'Stop' : 'Start') + ' failed: ' + e.message;
+          XRA.toast?.('Avvio telecamera: ' + e.message, 'warn', 5000);
+        }
+      } finally {
+        toggleButton.disabled = false;
+        await refreshCameras(false);
+        updateToggleState();
+      }
     };
-    const stopButton = button('■ Stop webcam');
-    stopButton.onclick = async () => {
-      stopButton.disabled = true;
-      try { await XRA.nativeBridge.stopNativeStreamer(); }
-      catch (e) { status.textContent = 'Stop failed: ' + e.message; }
-      finally { stopButton.disabled = false; await refreshCameras(false); }
-    };
-    const refresh = button('↻ Refresh cameras');
-    refresh.onclick = () => refreshCameras(true);
-    actions.append(startButton, stopButton, refresh);
-    box.body.appendChild(actions);
 
     const restart = button('↻ Restart webcam');
     restart.onclick = async () => {
       restart.disabled = true;
-      try { status.textContent = 'Restarting webcam…'; await XRA.nativeBridge.restartNativeStreamer(); }
-      catch (e) { status.textContent = 'Restart failed: ' + e.message; }
-      finally { restart.disabled = false; await refreshCameras(false); }
+      try {
+        status.textContent = 'Restarting webcam…';
+        if (typeof XRA.whenNativeReady === 'function') {
+          await XRA.whenNativeReady(15000);
+        }
+        if (XRA.xraBackend?.waitUntilReady) {
+          await XRA.xraBackend.waitUntilReady(6000).catch(() => {});
+        }
+        await XRA.nativeBridge.restartNativeStreamer();
+        XRA.ui?.refresh?.();
+      } catch (e) {
+        if (!globalThis.XRA_CAMERA_OWNERSHIP?.isOwnershipError?.(e)) {
+          status.textContent = 'Restart failed: ' + e.message;
+          XRA.toast?.('Riavvio telecamera: ' + e.message, 'warn', 5000);
+        }
+      } finally {
+        restart.disabled = false;
+        await refreshCameras(false);
+        updateToggleState();
+      }
     };
     restart.classList.add('xra-secondary-action');
-    box.body.appendChild(restart);
+    actions.append(toggleButton, restart);
+    box.body.appendChild(actions);
 
     box.details.addEventListener('toggle', () => { if (box.details.open) refreshCameras(false); });
     events.on('camera-switched', () => refreshCameras(false));
@@ -1203,7 +1241,7 @@
       trueResolution.disabled = noVideo || rc().capture_source === 'native_xr' || rc().capture_source === 'browser_visible' || rc().capture_source === 'native_visible';
       segment.disabled = rc().capture_source === 'native_xr';
       chromaSafe.disabled = noVideo;
-      audioBitrate.disabled = audioProfile.disabled = gate.disabled = gateRange.disabled = noAudio;
+      audioBitrate.disabled = noAudio;
     });
 
     const recStatus = el('div', 'xra-status', 'Ready.');

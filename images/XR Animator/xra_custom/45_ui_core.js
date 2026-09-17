@@ -11,6 +11,7 @@
   let toastHost = null;
   let nativeNoticeHost = null;
   const nativeNotices = new Map();
+  const nativeNoticeTimers = new Map();
 
   function el(tag, cls = '', text = '') {
     const node = document.createElement(tag);
@@ -196,10 +197,15 @@
     return nativeNoticeHost;
   }
 
-  function showNativeNotice(id, message, { title = 'XR Animator', interactive = false, actions = [] } = {}) {
+  function showNativeNotice(id, message, { title = 'XR Animator', interactive = false, actions = [], duration = 0, timeout = 0 } = {}) {
     id = String(id || 'system');
     message = String(message || '').trim();
     if (!message && !actions.length) return hideNativeNotice(id);
+
+    if (nativeNoticeTimers.has(id)) {
+      clearTimeout(nativeNoticeTimers.get(id));
+      nativeNoticeTimers.delete(id);
+    }
 
     const host = ensureNativeNoticeHost();
     let notice = nativeNotices.get(id);
@@ -234,11 +240,24 @@
     actionsNode.hidden = !hasActions;
     notice.classList.toggle('interactive', !!interactive || hasActions);
     host.hidden = uiHidden;
+
+    const autoDismissMs = Number(duration || timeout) || 0;
+    if (autoDismissMs > 0) {
+      const timer = setTimeout(() => {
+        hideNativeNotice(id);
+      }, autoDismissMs);
+      nativeNoticeTimers.set(id, timer);
+    }
+
     return notice;
   }
 
   function hideNativeNotice(id) {
     id = String(id || 'system');
+    if (nativeNoticeTimers.has(id)) {
+      clearTimeout(nativeNoticeTimers.get(id));
+      nativeNoticeTimers.delete(id);
+    }
     const notice = nativeNotices.get(id);
     if (notice) notice.remove();
     nativeNotices.delete(id);
