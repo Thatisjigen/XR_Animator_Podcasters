@@ -196,6 +196,14 @@ if [ ! -d "$BUNDLE_DIR/package.nw" ]; then
   exit 6
 fi
 
+echo "[build] Copying Podcaster documentation and preset profile..."
+for doc_file in "LEGGIMI_PODCASTER.txt" "README_PODCASTER.txt" "xra_profile_example_low_spec.json"; do
+  if [ -f "$ROOT_DIR/$doc_file" ]; then
+    cp -f "$ROOT_DIR/$doc_file" "$BUNDLE_DIR/$doc_file"
+    echo "[build] Copied $doc_file to $BUNDLE_DIR/"
+  fi
+done
+
 echo "=================================================="
 echo "Build complete"
 echo "Bundle: $BUNDLE_DIR"

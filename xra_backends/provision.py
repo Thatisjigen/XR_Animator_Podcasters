@@ -88,7 +88,7 @@ def provision(force: bool = False) -> dict:
     result = downloader.ensure_model(DEFAULT_MODEL, cb=cb, force=force)
     if not result.get("ok"):
         _set(phase="error", progress=0, done=True, ok=False,
-             message="Download fallito: " + str(result.get("error")), finished=time.time())
+             message="Download failed: " + str(result.get("error")), finished=time.time())
         _persist()
         return status()
 

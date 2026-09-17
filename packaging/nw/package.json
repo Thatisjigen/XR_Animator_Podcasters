@@ -2,7 +2,7 @@
   "name": "xr-animator-podcasters-bundled",
   "main": "launcher.js",
   "single-instance": true,
-  "chromium-args": "--enable-webaudio-input --auto-accept-camera-and-microphone-capture --ignore-gpu-blocklist --autoplay-policy=no-user-gesture-required --enable-features=WebRTCPipeWireCapturer,VaapiVideoDecoder,AcceleratedVideoDecodeLinuxGL,UseOzonePlatform --ozone-platform-hint=auto --enable-gpu-rasterization --enable-zero-copy --disable-features=Vulkan,OptimizationGuideOnDeviceModel,LogOnDeviceMetricsOnStartup,OnDeviceModelValidation --disable-breakpad --disable-sync --disable-speech-api --disable-component-update --disable-background-networking --disable-translate --no-default-browser-check --no-pings --disable-domain-reliability --disable-client-side-phishing-detection",
+  "chromium-args": "--enable-webaudio-input --auto-accept-camera-and-microphone-capture --ignore-gpu-blocklist --autoplay-policy=no-user-gesture-required --enable-features=WebRTCPipeWireCapturer,VaapiVideoDecoder,AcceleratedVideoDecodeLinuxGL,UseOzonePlatform --ozone-platform-hint=auto --enable-gpu-rasterization --enable-zero-copy --disable-features=Vulkan,OptimizationGuideOnDeviceModel,LogOnDeviceMetricsOnStartup,OnDeviceModelValidation --disable-breakpad --disable-sync --disable-speech-api --disable-component-update --disable-background-networking --disable-translate --no-default-browser-check --no-pings --disable-domain-reliability --disable-client-side-phishing-detection --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows",
   "node-remote": [
     "http://127.0.0.1:*",
     "http://localhost:*"

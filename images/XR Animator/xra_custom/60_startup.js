@@ -1,4 +1,3 @@
-/* XRA_BACKEND_CONTROL_V5 */
 (() => {
   'use strict';
 

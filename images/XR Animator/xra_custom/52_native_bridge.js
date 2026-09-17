@@ -1631,7 +1631,6 @@
 
 })();
 
-/* XRA_BACKEND_CONTROL_V5: route legacy camera UI to Python in external mode. */
 ;(() => {
   'use strict';
   if (globalThis.__XRA_NATIVE_BACKEND_ROUTE_V5__) return;

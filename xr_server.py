@@ -12,6 +12,11 @@ import subprocess
 import sys
 import os
 
+if getattr(sys, "frozen", False):
+    import importlib.machinery
+    if importlib.machinery.PathFinder not in sys.meta_path[:1]:
+        sys.meta_path.insert(0, importlib.machinery.PathFinder)
+
 try:
     if getattr(sys, 'frozen', False):
         _prof_path = Path(sys.executable).resolve().parent / "xra_profile.json"

@@ -109,6 +109,11 @@ def main() -> int:
     if BASE_RELEASE.exists():
         shutil.rmtree(BASE_RELEASE)
 
+    for doc in ("LEGGIMI_PODCASTER.txt", "README_PODCASTER.txt", "xra_profile_example_low_spec.json"):
+        src = ROOT / doc
+        if src.is_file():
+            shutil.copy2(src, TARGET / doc)
+
     print(f"[XRA] Bundled browser ready: {TARGET / 'XR_Animator'}")
     print(f"[XRA] Root launcher ready (ELF double-click): {ROOT / 'XR_Animator'}")
     print("[XRA] Chromium launched as shell; XR Animator runs on local HTTP.")

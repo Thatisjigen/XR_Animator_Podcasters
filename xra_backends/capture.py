@@ -1,9 +1,3 @@
-# XRA_TRACKING_HOTFIX_V9_3
-# XRA_UNIVERSAL_RUNTIME_V9
-# XRA_PERFORMANCE_RUNTIME_V7
-# XRA_FRONTEND_STABILITY_V6
-# XRA_BACKEND_CONTROL_V5
-# XRA_BACKEND_CAMERA_V3
 """Local webcam capture + inference source for the mocap backends."""
 
 from __future__ import annotations

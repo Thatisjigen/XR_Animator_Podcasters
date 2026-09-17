@@ -233,7 +233,7 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
         wire_face["blendshapes"] = blendshapes
 
     # -----------------------------------------------------------------------
-    # Fase 2a – tracker confidence suppression + kinematic guard
+    # Phase 2a: joint confidence suppression and kinematic guard
     # XRA_JOINT_CONF_MIN (float, default 0.25): joints with score below this
     #   threshold are zeroed-out (score=0, position zeroed) instead of being
     #   sent with bogus coordinates that hallucinate limbs out of frame.
@@ -572,7 +572,7 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
         "leftHandWorld": payload.get("leftHandWorld", []) if active_hands.get("leftHand") else [],
         "rightHandWorld": payload.get("rightHandWorld", []) if active_hands.get("rightHand") else [],
     }
-    # Fase 2b – raw hand landmarks for diagnostics (no smoothing/filtering).
+    # Phase 2b: raw hand landmarks for diagnostics (no smoothing/filtering).
     # Set XRA_RAW_HANDS_DEBUG=1 to include raw_hands in the wire payload.
     # Frontend can use this to distinguish data-level defects from adapter bugs.
     if os.environ.get("XRA_RAW_HANDS_DEBUG", "0").lower() in {"1", "true", "yes"}:

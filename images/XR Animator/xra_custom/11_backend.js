@@ -502,7 +502,6 @@
   eventsEmit('tracker-backend', { current: state.selected });
 })();
 
-/* XRA_BACKEND_CONTROL_V5: main-window camera ownership and control plane. */
 ;(() => {
   'use strict';
   if (globalThis.__XRA_BACKEND_CONTROL_V5__) return;
