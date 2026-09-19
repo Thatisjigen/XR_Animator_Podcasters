@@ -516,6 +516,16 @@ class InferenceWorker:
                 )
             elif action in {"start", "on", "resume"}:
                 if not engine.ENGINE.ready:
+                    if not getattr(engine.ENGINE, "_loading", False):
+                        preferred = _preferred_model() or getattr(registry, "MEDIAPIPE_TASKS_ID", "mediapipe-tasks-landmarker")
+                        try:
+                            engine.ENGINE.load(preferred)
+                        except Exception:
+                            pass
+                    wait_deadline = time.monotonic() + 5.0
+                    while not engine.ENGINE.ready and time.monotonic() < wait_deadline:
+                        time.sleep(0.05)
+                if not engine.ENGINE.ready:
                     raise RuntimeError("engine_not_ready")
                 if action == "resume":
                     capture.CAPTURE.resume()

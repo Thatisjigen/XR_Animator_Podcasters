@@ -1965,9 +1965,16 @@ function get_wrist(i) {
 // assumed mirrored
     const kp = pose.keypoints[get_pose_index((_side=='Left')?10:9)];
     const thresh = from_native_backend ? 0.15 : score_threshold;
-    if (!kp || kp.score < thresh) return false;
+    if (!kp || kp.score < thresh) {
+      const kp_sh = pose.keypoints[get_pose_index((_side=='Left')?6:5)];
+      if (kp_sh && ((kp_sh.score || 0) >= 0.18 || (kp_sh.visibility || 0) >= 0.18)) {
+        wrist = [kp_sh.position?.x ?? kp_sh.x, kp_sh.position?.y ?? kp_sh.y];
+        return true;
+      }
+      return false;
+    }
 
-    wrist = [kp.position.x, kp.position.y];
+    wrist = [kp.position?.x ?? kp.x, kp.position?.y ?? kp.y];
     return true;
   }
 }
@@ -2131,47 +2138,6 @@ else {
   return landmark_adjust(_h, clip);
 }
       });
-
-      // When from_native_backend is true, anchor hand wrist h[0] directly to the body wrist
-      // and clamp hand dimensions relative to forearm length so hands remain proportional.
-      if (from_native_backend && pose && pose.keypoints) {
-        const isLeft = (label === 'Left');
-        const wrist_idx = isLeft ? 16 : 15;
-        const elbow_idx = isLeft ? 14 : 13;
-        const kp_wrist = pose.keypoints[wrist_idx];
-        const kp_elbow = pose.keypoints[elbow_idx];
-        if (kp_wrist && (kp_wrist.score > 0.10 || kp_wrist.visibility > 0.10)) {
-          const target_x = kp_wrist.position?.x ?? kp_wrist.x;
-          const target_y = kp_wrist.position?.y ?? kp_wrist.y;
-          if (Number.isFinite(target_x) && Number.isFinite(target_y)) {
-            const dx = target_x - h[0][0];
-            const dy = target_y - h[0][1];
-            for (let j = 0; j < h.length; j++) {
-              h[j][0] += dx;
-              h[j][1] += dy;
-            }
-          }
-        }
-        if (kp_wrist && kp_elbow && (kp_elbow.score > 0.10 || kp_elbow.visibility > 0.10)) {
-          const wx = kp_wrist.position?.x ?? kp_wrist.x;
-          const wy = kp_wrist.position?.y ?? kp_wrist.y;
-          const ex = kp_elbow.position?.x ?? kp_elbow.x;
-          const ey = kp_elbow.position?.y ?? kp_elbow.y;
-          const forearm_len = Math.hypot(wx - ex, wy - ey);
-          if (forearm_len > 25 && h.length >= 21) {
-            const hand_len = Math.hypot(h[12][0] - h[0][0], h[12][1] - h[0][1]);
-            const max_len = forearm_len * 0.85;
-            if (hand_len > max_len && hand_len > 0) {
-              const scale_down = max_len / hand_len;
-              for (let j = 1; j < h.length; j++) {
-                h[j][0] = h[0][0] + (h[j][0] - h[0][0]) * scale_down;
-                h[j][1] = h[0][1] + (h[j][1] - h[0][1]) * scale_down;
-                h[j][2] = h[0][2] + (h[j][2] - h[0][2]) * scale_down;
-              }
-            }
-          }
-        }
-      }
 
       const worldCandidate = Array.isArray(hands.worldLandmarks?.[i])
         ? hands.worldLandmarks[i]

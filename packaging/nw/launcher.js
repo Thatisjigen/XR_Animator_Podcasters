@@ -243,7 +243,7 @@ async function start() {
   const port = await canBind(DEFAULT_PORT) ? DEFAULT_PORT : await freePort();
   serverProcess = childProcess.spawn(SERVER_PATH, ['--port', String(port), '--no-browser'], {
     cwd: APP_ROOT,
-    stdio: 'ignore',
+    stdio: 'inherit',
     windowsHide: true
   });
   serverProcess.once('error', error => showError(`Avvio del server fallito: ${error.message}`));

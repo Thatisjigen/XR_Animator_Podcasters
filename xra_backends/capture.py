@@ -460,7 +460,10 @@ class _OpenCVGrabber:
         for attempt in range(max_attempts):
             cap = cv2.VideoCapture()
             try:
-                opened = cap.open(source, backend) if backend is not None else cap.open(source)
+                if backend is not None:
+                    opened = cap.open(source, backend)
+                if not opened or not cap.isOpened():
+                    opened = cap.open(source)
                 if opened and cap.isOpened():
                     break
             except Exception as exc:
@@ -722,6 +725,9 @@ class CaptureSource:
         self._body_last_good_at = [0.0] * 33
         self._hand_last_good = {"leftHand": None, "rightHand": None}
         self._hand_last_good_at = {"leftHand": 0.0, "rightHand": 0.0}
+        self._hand_moving_down = {"leftHand": False, "rightHand": False}
+        self._wrist_moving_down = {15: False, 16: False}
+        self._wrist_moving_up = {15: False, 16: False}
         self._held_joints = 0
         self._dropped_hands = 0
         self._phantom_counter = 0
@@ -1263,18 +1269,207 @@ class CaptureSource:
         self._hand_wrist_rel = {17: None, 18: None, 19: None, 20: None, 21: None, 22: None}
         self._hand_last_good = {"leftHand": None, "rightHand": None}
         self._hand_last_good_at = {"leftHand": 0.0, "rightHand": 0.0}
+        self._hand_was_live = {"leftHand": False, "rightHand": False}
+        self._hand_moving_down = {"leftHand": False, "rightHand": False}
+        self._wrist_moving_down = {15: False, 16: False}
+        self._wrist_moving_up = {15: False, 16: False}
         self._held_joints = 0
         self._dropped_hands = 0
 
     @staticmethod
     def _fast_copy_point(point):
-        if not isinstance(point, dict):
-            return point
-        out = dict(point)
-        pos = point.get("position")
-        if isinstance(pos, dict):
-            out["position"] = dict(pos)
-        return out
+        if isinstance(point, dict):
+            out = dict(point)
+            pos = point.get("position")
+            if isinstance(pos, dict):
+                out["position"] = dict(pos)
+            return out
+        if isinstance(point, list):
+            return list(point)
+        return point
+
+    def _check_hand_validity(
+        self,
+        hand: Any,
+        hand_key: str,
+        body: Optional[list],
+        width: int,
+        height: int,
+        torso: float,
+        now: float,
+        payload: Optional[dict] = None,
+    ) -> tuple[bool, bool]:
+        """Validate hand candidates against confidence and physical/kinematic feasibility.
+
+        Returns: (is_valid, is_phantom)
+        - is_valid=True: genuine active hand to track and pass downstream.
+        - is_valid=False, is_phantom=True: rejected phantom/hallucination; MUST NOT be held.
+        - is_valid=False, is_phantom=False: normal frame loss/occlusion; eligible for brief holding.
+        """
+        if not (isinstance(hand, list) and len(hand) >= 21):
+            return False, False
+
+        valid_pts = [self._point_xy(p) for p in hand]
+        if sum(p is not None for p in valid_pts) < 18:
+            return False, True
+
+        scores = [self._point_score(p) for p in hand]
+        w_sc = scores[0] if scores else 0.0
+        knuckles = [scores[idx] for idx in (0, 1, 5, 9, 13, 17)] if len(scores) >= 18 else []
+        avg_knuckles = sum(knuckles) / 6.0 if knuckles else 0.0
+        median_sc = float(np.median(scores)) if scores else 0.0
+
+        max_finger_avg = 0.0
+        if len(scores) >= 21:
+            for start in (1, 5, 9, 13, 17):
+                f_sc = [scores[i] for i in range(start, start + 4)]
+                max_finger_avg = max(max_finger_avg, sum(f_sc) / 4.0)
+
+        effective_conf = max(median_sc, avg_knuckles, max_finger_avg)
+
+        was_live = self._hand_was_live.get(hand_key, False)
+        last_good_at = self._hand_last_good_at.get(hand_key, 0.0)
+        age = now - last_good_at
+        is_continuous = was_live and (age < 0.35)
+
+        # Baseline confidence gate:
+        # Continuously tracked hands tolerate lower confidence during dips (Test 7 & Test 21).
+        # New hand candidates require higher confidence to initiate tracking.
+        if not is_continuous:
+            if effective_conf < 0.30 and w_sc < 0.35 and max_finger_avg < 0.32:
+                return False, True
+        else:
+            if effective_conf < 0.15 and max_finger_avg < 0.20 and w_sc < 0.15:
+                return False, False
+
+        h_w_xy = valid_pts[0]
+        if h_w_xy is None:
+            return False, True
+
+        hw_px = (h_w_xy[0] * width, h_w_xy[1] * height) if (width and h_w_xy[0] <= 1.5) else h_w_xy
+
+        if isinstance(body, list) and len(body) == 33:
+            is_left = (hand_key == "leftHand")
+            sh_idx = 11 if is_left else 12
+            el_idx = 13 if is_left else 14
+            bw_idx = 15 if is_left else 16
+
+            sh_xy = self._point_xy(body[sh_idx])
+            sh_sc = self._point_score(body[sh_idx])
+            el_xy = self._point_xy(body[el_idx])
+            el_sc = self._point_score(body[el_idx])
+            bw_xy = self._point_xy(body[bw_idx])
+            bw_sc = self._point_score(body[bw_idx])
+
+            sh_px = (sh_xy[0] * width, sh_xy[1] * height) if (sh_xy and width and sh_xy[0] <= 1.5) else sh_xy
+            el_px = (el_xy[0] * width, el_xy[1] * height) if (el_xy and width and el_xy[0] <= 1.5) else el_xy
+            bw_px = (bw_xy[0] * width, bw_xy[1] * height) if (bw_xy and width and bw_xy[0] <= 1.5) else bw_xy
+
+            ls_xy = self._point_xy(body[11])
+            rs_xy = self._point_xy(body[12])
+            ls_sc = self._point_score(body[11])
+            rs_sc = self._point_score(body[12])
+            mid_sh_y = 0.0
+            if ls_xy and rs_xy and ls_sc >= 0.20 and rs_sc >= 0.20:
+                ls_px = (ls_xy[0] * width, ls_xy[1] * height) if (width and ls_xy[0] <= 1.5) else ls_xy
+                rs_px = (rs_xy[0] * width, rs_xy[1] * height) if (width and rs_xy[0] <= 1.5) else rs_xy
+                mid_sh_y = (ls_px[1] + rs_px[1]) * 0.5
+            elif sh_px and sh_sc >= 0.20:
+                mid_sh_y = sh_px[1]
+
+            # 1. Whole-arm maximum span check: hand cannot be farther than physical arm length
+            if sh_px and sh_sc >= 0.20:
+                dist_sh = ((hw_px[0] - sh_px[0]) ** 2 + (hw_px[1] - sh_px[1]) ** 2) ** 0.5
+                max_reach = max(torso * 2.3, height * 0.55 if height else 300.0)
+                if dist_sh > max_reach:
+                    return False, True
+
+            # 2. Forearm reach check: if elbow is live, hand cannot be detached from forearm
+            if el_px and el_sc >= 0.25:
+                dist_el = ((hw_px[0] - el_px[0]) ** 2 + (hw_px[1] - el_px[1]) ** 2) ** 0.5
+                len_se = ((el_px[0] - sh_px[0]) ** 2 + (el_px[1] - sh_px[1]) ** 2) ** 0.5 if (sh_px and sh_sc >= 0.20) else (torso * 0.70)
+                max_forearm = max(len_se * 1.35, torso * 1.05, height * 0.32 if height else 180.0)
+                if dist_el > max_forearm:
+                    return False, True
+
+            # 3. Resting Arm Global Guard:
+            # If arm K is resting downwards at desk/lap (elbow below shoulder, and body wrist confirmed down below elbow),
+            # any hand candidate high up (chest, face, head, or air above elbow) is physically impossible for arm K.
+            if el_px and el_sc >= 0.25 and mid_sh_y > 0.0:
+                if el_px[1] > mid_sh_y + torso * 0.45:
+                    is_resting_arm = False
+                    if bw_px and bw_sc >= 0.40 and bw_px[1] > el_px[1] + torso * 0.05:
+                        is_resting_arm = True
+
+                    if is_resting_arm and hw_px[1] < el_px[1] - torso * 0.10:
+                        return False, True
+
+            # 4. Chest / Collar Phantom Hand Rejection Zone:
+            if ls_xy and rs_xy and ls_sc >= 0.20 and rs_sc >= 0.20:
+                min_sh_x = min(ls_px[0], rs_px[0]) - torso * 0.15
+                max_sh_x = max(ls_px[0], rs_px[0]) + torso * 0.15
+                collar_top = mid_sh_y - torso * 0.40
+                chest_bottom = mid_sh_y + torso * 0.70
+
+                in_chest_zone = (min_sh_x <= hw_px[0] <= max_sh_x) and (collar_top <= hw_px[1] <= chest_bottom)
+
+                if in_chest_zone:
+                    arm_raised_to_chest = False
+                    if el_px and el_sc >= 0.25:
+                        if el_px[1] <= mid_sh_y + torso * 0.45:
+                            arm_raised_to_chest = True
+                        elif hw_px[1] < el_px[1] - torso * 0.12:
+                            if bw_px and bw_sc >= 0.35 and bw_px[1] > el_px[1]:
+                                arm_raised_to_chest = False
+                            else:
+                                arm_raised_to_chest = True
+
+                    bw_corroborates = False
+                    if bw_px and bw_sc >= 0.30:
+                        dist_bw = ((hw_px[0] - bw_px[0]) ** 2 + (hw_px[1] - bw_px[1]) ** 2) ** 0.5
+                        if dist_bw <= torso * 0.45:
+                            bw_corroborates = True
+
+                    high_conf = (effective_conf >= 0.60 and w_sc >= 0.55)
+
+                    if not (is_continuous or arm_raised_to_chest or bw_corroborates or high_conf):
+                        return False, True
+
+            # 5. Double-Hand Superposition Check (Global: applies at chest, face, head, air):
+            # When MediaPipe detects the SAME physical hand as both leftHand and rightHand,
+            # or hallucinates a twin hand superimposed on top of the real hand (distance < torso * 0.15):
+            if payload:
+                other_key = "rightHand" if hand_key == "leftHand" else "leftHand"
+                other_h = payload.get(other_key)
+                if isinstance(other_h, list) and len(other_h) >= 21:
+                    other_w = self._point_xy(other_h[0])
+                    if other_w:
+                        other_px = (other_w[0] * width, other_w[1] * height) if (width and other_w[0] <= 1.5) else other_w
+                        dist_between = ((hw_px[0] - other_px[0]) ** 2 + (hw_px[1] - other_px[1]) ** 2) ** 0.5
+                        if dist_between < torso * 0.15:
+                            other_sh_idx = 12 if is_left else 11
+                            other_el_idx = 14 if is_left else 13
+                            other_bw_idx = 16 if is_left else 15
+                            o_el_xy = self._point_xy(body[other_el_idx])
+                            o_el_sc = self._point_score(body[other_el_idx])
+                            o_el_px = (o_el_xy[0] * width, o_el_xy[1] * height) if (o_el_xy and width and o_el_xy[0] <= 1.5) else o_el_xy
+                            o_bw_xy = self._point_xy(body[other_bw_idx])
+                            o_bw_sc = self._point_score(body[other_bw_idx])
+                            o_bw_px = (o_bw_xy[0] * width, o_bw_xy[1] * height) if (o_bw_xy and width and o_bw_xy[0] <= 1.5) else o_bw_xy
+
+                            this_resting = bool(el_px and el_sc >= 0.25 and mid_sh_y > 0 and el_px[1] > mid_sh_y + torso * 0.40 and
+                                                not (bw_px and bw_sc >= 0.35 and bw_px[1] < el_px[1] - torso * 0.10))
+                            other_resting = bool(o_el_px and o_el_sc >= 0.25 and mid_sh_y > 0 and o_el_px[1] > mid_sh_y + torso * 0.40 and
+                                                 not (o_bw_px and o_bw_sc >= 0.35 and o_bw_px[1] < o_el_px[1] - torso * 0.10))
+
+                            if this_resting and not other_resting:
+                                return False, True
+                            elif not this_resting and other_resting:
+                                pass
+                            # When neither arm is resting (both raised), both hands are genuine (clapping, praying, joined hands).
+                            # Never delete a hand when both arms are active!
+
+        return True, False
 
     def _stabilize_payload(self, payload: dict, width: int, height: int) -> dict:
         """Reject low-confidence/kinematically implausible limb hallucinations.
@@ -1295,12 +1490,18 @@ class CaptureSource:
         copy_fn = self._fast_copy_point
         body = payload.get("keypoints")
         body3 = payload.get("keypoints3D")
-        def _is_active_hand(h):
-            if isinstance(h, list) and len(h) >= 21:
-                return self._point_score(h[0]) >= 0.18
-            return False
-        has_left_hand = _is_active_hand(payload.get("leftHand"))
-        has_right_hand = _is_active_hand(payload.get("rightHand"))
+
+        torso = max(24.0, height * 0.12 if height else 24.0)
+        if isinstance(body, list) and len(body) == 33:
+            ls, rs = self._point_xy(body[11]), self._point_xy(body[12])
+            lh, rh = self._point_xy(body[23]), self._point_xy(body[24])
+            if ls and rs and lh and rh:
+                shoulder_mid = ((ls[0] + rs[0]) * 0.5, (ls[1] + rs[1]) * 0.5)
+                hip_mid = ((lh[0] + rh[0]) * 0.5, (lh[1] + rh[1]) * 0.5)
+                torso = max(torso, ((shoulder_mid[0] - hip_mid[0]) ** 2 + (shoulder_mid[1] - hip_mid[1]) ** 2) ** 0.5)
+
+        has_left_hand = self._check_hand_validity(payload.get("leftHand"), "leftHand", body, width, height, torso, now, payload)[0]
+        has_right_hand = self._check_hand_validity(payload.get("rightHand"), "rightHand", body, width, height, torso, now, payload)[0]
 
         if isinstance(body, list) and len(body) == 33:
             parent = {
@@ -1358,17 +1559,113 @@ class CaptureSource:
                 threshold = thresholds.get(index, default_threshold)
 
                 # If hands are active and detected, accept wrist flexibly so tracking never drops
-                if index in {15, 17, 19, 21} and has_left_hand:
-                    threshold = 0.12
-                elif index in {16, 18, 20, 22} and has_right_hand:
-                    threshold = 0.12
+                has_hand = has_left_hand if index in {15, 17, 19, 21} else (has_right_hand if index in {16, 18, 20, 22} else False)
+                if has_hand and index in {15, 16}:
+                    hand_key = "leftHand" if index == 15 else "rightHand"
+                    h_obj = payload.get(hand_key)
+                    h_w_xy = self._point_xy(h_obj[0]) if (isinstance(h_obj, list) and len(h_obj) >= 21) else None
+                    if h_w_xy is not None:
+                        # Ground truth priority: Hand landmark 0 is the true physical wrist!
+                        xy = h_w_xy
+                        score = 0.85
+                        part_name = "leftWrist" if index == 15 else "rightWrist"
+                        body[index] = {
+                            "position": {"x": xy[0], "y": xy[1], "z": 0.0},
+                            "x": xy[0], "y": xy[1], "z": 0.0,
+                            "score": score, "visibility": score,
+                            "part": part_name
+                        }
+                        point = body[index]
+                        accepted[index] = True
+                        sane = True
 
-                sane = xy is not None and score >= threshold
+                        # Kinematic arm validation: Ensure elbow connects shoulder and wrist naturally
+                        pidx = parent.get(index)  # elbow: 13 for left, 14 for right
+                        sh_idx = 11 if index == 15 else 12
+                        sh_xy = self._point_xy(body[sh_idx])
+                        el_xy = self._point_xy(body[pidx])
+                        el_score = self._point_score(body[pidx])
+
+                        need_synth_elbow = False
+                        if el_xy is None or el_score < 0.20:
+                            need_synth_elbow = True
+                        elif sh_xy is not None:
+                            dist_se = ((el_xy[0] - sh_xy[0]) ** 2 + (el_xy[1] - sh_xy[1]) ** 2) ** 0.5
+                            max_arm_span = max(torso * 2.2, height * 0.45)
+                            if dist_se > max_arm_span:
+                                need_synth_elbow = True
+
+                        if need_synth_elbow and sh_xy is not None:
+                            other_sh_idx = 12 if index == 15 else 11
+                            other_sh_pt = body[other_sh_idx] if 0 <= other_sh_idx < len(body) else None
+                            other_sh_xy = self._point_xy(other_sh_pt)
+                            if other_sh_xy is not None:
+                                side_sign = 1.0 if sh_xy[0] >= other_sh_xy[0] else -1.0
+                            else:
+                                side_sign = 1.0 if index == 15 else -1.0
+                            if xy[1] <= sh_xy[1] + torso * 0.40:
+                                mx = (sh_xy[0] + xy[0]) * 0.5
+                                my = (sh_xy[1] + xy[1]) * 0.5
+                                synth_ex = mx + side_sign * max(22.0, torso * 0.22)
+                                synth_ey = max(sh_xy[1] + torso * 0.18, my + torso * 0.12)
+                            else:
+                                synth_ex = sh_xy[0] + side_sign * max(20.0, torso * 0.20)
+                                synth_ey = sh_xy[1] + max(40.0, torso * 0.70)
+                            el_part = "leftElbow" if pidx == 13 else "rightElbow"
+                            body[pidx] = {
+                                "position": {"x": synth_ex, "y": synth_ey, "z": 0.0},
+                                "x": synth_ex, "y": synth_ey, "z": 0.0,
+                                "score": 0.55, "visibility": 0.55,
+                                "part": el_part
+                            }
+                            accepted[pidx] = True
+
+                        el_xy = self._point_xy(body[pidx])
+                        if previous is not None:
+                            prev_w_xy = self._point_xy(previous[0])
+                            if prev_w_xy is not None and xy is not None:
+                                dy_w = xy[1] - prev_w_xy[1]
+                                moving_thresh = max(6.0, torso * 0.05)
+                                is_descending_to_rest = (el_xy is not None and xy[1] >= el_xy[1] - torso * 0.12)
+                                self._wrist_moving_down[index] = bool(dy_w > moving_thresh and is_descending_to_rest)
+                                self._wrist_moving_up[index] = bool(dy_w < -moving_thresh)
+                            else:
+                                self._wrist_moving_down[index] = False
+                                self._wrist_moving_up[index] = False
+                        else:
+                            self._wrist_moving_down[index] = False
+                            self._wrist_moving_up[index] = False
+
+                        if el_xy is not None and xy is not None:
+                            rel_2d = (xy[0] - el_xy[0], xy[1] - el_xy[1])
+                            rel_3d = None
+                            if isinstance(body3, list) and len(body3) == 33:
+                                w_xyz3 = self._point_xyz(body3[index])
+                                e_xyz3 = self._point_xyz(body3[pidx])
+                                if w_xyz3 is not None and e_xyz3 is not None:
+                                    rel_3d = (w_xyz3[0] - e_xyz3[0], w_xyz3[1] - e_xyz3[1], w_xyz3[2] - e_xyz3[2])
+                            self._wrist_elbow_rel[index] = (rel_2d, rel_3d)
+
+                        saved3 = copy_fn(body3[index]) if isinstance(body3, list) and len(body3) == 33 else None
+                        self._body_last_good[index] = (copy_fn(point), saved3)
+                        self._body_last_good_at[index] = now
+                        self._joint_recovery[index] = 3
+                        continue
+                    else:
+                        sane = (xy is not None and score >= 0.12)
+                else:
+                    if index in {15, 17, 19, 21} and has_left_hand:
+                        threshold = 0.12
+                    elif index in {16, 18, 20, 22} and has_right_hand:
+                        threshold = 0.12
+                    sane = xy is not None and score >= threshold
 
                 if sane and index in distal:
-                    x, y = xy
-                    # Distal landmarks outside the real image are never valid.
-                    sane = (0.0 <= x <= width and 0.0 <= y <= height)
+                    if xy is not None:
+                        x, y = xy
+                        sane = (0.0 <= x <= width and 0.0 <= y <= height)
+                    else:
+                        sane = False
 
                 pidx = parent.get(index)
                 if sane and pidx is not None:
@@ -1376,22 +1673,73 @@ class CaptureSource:
                     parent_score = self._point_score(body[pidx])
                     parent_xy = self._point_xy(body[pidx])
                     if parent_xy is None or parent_score < max(0.18, thresholds.get(pidx, 0.18) * 0.75):
-                        # Wrists (15, 16): If smart_arm_sync is enabled, real 21-pt hand is detected,
-                        # and wrist is confident, synthesize elbow.
-                        # Never synthesize when smart_arm_sync is False or when hands are absent (prevents phantom desk wrists).
+                        # Wrists (15, 16): If a real hand is detected, anchor wrist to the hand
+                        # and synthesize the elbow between shoulder and wrist.
                         is_smart_sync = getattr(self, "_smart_arm_sync", True)
                         has_hand = has_left_hand if index == 15 else has_right_hand
                         sh_idx = 11 if index == 15 else 12
                         sh_score = self._point_score(body[sh_idx])
                         sh_xy = self._point_xy(body[sh_idx])
-                        if is_smart_sync and has_hand and index in {15, 16} and sh_score >= 0.25 and sh_xy is not None and score >= 0.35:
-                            synth_x = (sh_xy[0] + xy[0]) * 0.5
-                            synth_y = (sh_xy[1] + xy[1]) * 0.5
+                        hand_key = "leftHand" if index == 15 else "rightHand"
+                        hand_obj = payload.get(hand_key)
+                        h_wrist_xy = self._point_xy(hand_obj[0]) if (isinstance(hand_obj, list) and len(hand_obj) >= 21) else None
+                        if index in {15, 16} and has_hand and sh_score >= 0.20 and sh_xy is not None and h_wrist_xy is not None:
+                            synth_x, synth_y = h_wrist_xy
+                            body[index] = {
+                                "position": {"x": synth_x, "y": synth_y, "z": 0.0},
+                                "x": synth_x, "y": synth_y, "z": 0.0,
+                                "score": max(score, 0.70), "visibility": max(score, 0.70),
+                                "part": "leftWrist" if index == 15 else "rightWrist"
+                            }
+                            xy = (synth_x, synth_y)
+                            score = max(score, 0.70)
+                            accepted[index] = True
+                            sane = True
                             if body[pidx] is None or self._point_score(body[pidx]) < 0.20:
+                                other_sh_idx = 12 if index == 15 else 11
+                                other_sh_pt = body[other_sh_idx] if 0 <= other_sh_idx < len(body) else None
+                                other_sh_xy = self._point_xy(other_sh_pt)
+                                if other_sh_xy is not None:
+                                    side_sign = 1.0 if sh_xy[0] >= other_sh_xy[0] else -1.0
+                                else:
+                                    side_sign = 1.0 if index == 15 else -1.0
+                                if h_wrist_xy[1] <= sh_xy[1] + torso * 0.40:
+                                    # Hand is raised: natural triangular bend outward between shoulder and hand
+                                    mx = (sh_xy[0] + h_wrist_xy[0]) * 0.5
+                                    my = (sh_xy[1] + h_wrist_xy[1]) * 0.5
+                                    synth_ex = mx + side_sign * max(22.0, torso * 0.22)
+                                    synth_ey = max(sh_xy[1] + torso * 0.18, my + torso * 0.12)
+                                else:
+                                    synth_ex = sh_xy[0] + side_sign * max(20.0, torso * 0.20)
+                                    synth_ey = sh_xy[1] + max(40.0, torso * 0.70)
                                 body[pidx] = {
-                                    "position": {"x": synth_x, "y": synth_y, "z": 0.0},
-                                    "x": synth_x, "y": synth_y, "z": 0.0,
-                                    "score": 0.35, "visibility": 0.35,
+                                    "position": {"x": synth_ex, "y": synth_ey, "z": 0.0},
+                                    "x": synth_ex, "y": synth_ey, "z": 0.0,
+                                    "score": 0.50, "visibility": 0.50,
+                                    "part": "leftElbow" if pidx == 13 else "rightElbow"
+                                }
+                                accepted[pidx] = True
+                        elif is_smart_sync and index in {15, 16} and sh_score >= 0.25 and sh_xy is not None and ((has_hand and score >= 0.25) or (score >= 0.50 and xy is not None and xy[1] <= sh_xy[1] + torso * 0.40)):
+                            if body[pidx] is None or self._point_score(body[pidx]) < 0.20:
+                                other_sh_idx = 12 if index == 15 else 11
+                                other_sh_pt = body[other_sh_idx] if 0 <= other_sh_idx < len(body) else None
+                                other_sh_xy = self._point_xy(other_sh_pt)
+                                if other_sh_xy is not None:
+                                    side_sign = 1.0 if sh_xy[0] >= other_sh_xy[0] else -1.0
+                                else:
+                                    side_sign = 1.0 if index == 15 else -1.0
+                                if xy[1] <= sh_xy[1] + torso * 0.40:
+                                    mx = (sh_xy[0] + xy[0]) * 0.5
+                                    my = (sh_xy[1] + xy[1]) * 0.5
+                                    synth_ex = mx + side_sign * max(22.0, torso * 0.22)
+                                    synth_ey = max(sh_xy[1] + torso * 0.18, my + torso * 0.12)
+                                else:
+                                    synth_ex = sh_xy[0] + side_sign * max(20.0, torso * 0.20)
+                                    synth_ey = sh_xy[1] + max(40.0, torso * 0.70)
+                                body[pidx] = {
+                                    "position": {"x": synth_ex, "y": synth_ey, "z": 0.0},
+                                    "x": synth_ex, "y": synth_ey, "z": 0.0,
+                                    "score": 0.40, "visibility": 0.40,
                                     "part": "leftElbow" if pidx == 13 else "rightElbow"
                                 }
                                 accepted[pidx] = True
@@ -1417,7 +1765,8 @@ class CaptureSource:
                 # Recovering a distal point after it was absent
                 if sane and previous is None and index in distal:
                     self._joint_recovery[index] += 1
-                    target_rec = 1 if (index in {15, 16} or score >= 0.50 or ((index in {15,17,19,21} and has_left_hand) or (index in {16,18,20,22} and has_right_hand))) else 2
+                    is_rising = getattr(self, "_wrist_moving_up", {}).get(index, False)
+                    target_rec = 1 if (has_hand or score >= 0.40 or is_rising) else 2
                     if self._joint_recovery[index] < target_rec:
                         sane = False
                 elif sane:
@@ -1426,6 +1775,22 @@ class CaptureSource:
                     self._joint_recovery[index] = 0
 
                 if sane:
+                    if index in {13, 14} and previous is not None:
+                        prev_score = self._point_score(previous[0])
+                        # Only apply LERP smoothing when re-acquiring an elbow from occlusion/synthesis
+                        if prev_score < 0.25:
+                            prev_xy = self._point_xy(previous[0])
+                            prev_age = now - self._body_last_good_at[index]
+                            if prev_xy is not None and prev_age <= 0.35:
+                                lerp_k = 0.60
+                                lx = prev_xy[0] * (1.0 - lerp_k) + xy[0] * lerp_k
+                                ly = prev_xy[1] * (1.0 - lerp_k) + xy[1] * lerp_k
+                                point["x"] = lx
+                                point["y"] = ly
+                                if isinstance(point.get("position"), dict):
+                                    point["position"]["x"] = lx
+                                    point["position"]["y"] = ly
+                                xy = (lx, ly)
                     saved3 = copy_fn(body3[index]) if isinstance(body3, list) and len(body3) == 33 else None
                     self._body_last_good[index] = (copy_fn(point), saved3)
                     self._body_last_good_at[index] = now
@@ -1434,6 +1799,20 @@ class CaptureSource:
                     if index in {15, 16}:
                         el_idx = 13 if index == 15 else 14
                         el_xy = self._point_xy(body[el_idx]) if 0 <= el_idx < len(body) else None
+                        if previous is not None:
+                            prev_w_xy = self._point_xy(previous[0])
+                            if prev_w_xy is not None and xy is not None:
+                                dy_w = xy[1] - prev_w_xy[1]
+                                moving_thresh = max(6.0, torso * 0.05)
+                                is_descending_to_rest = (el_xy is not None and xy[1] >= el_xy[1] - torso * 0.12)
+                                self._wrist_moving_down[index] = bool(dy_w > moving_thresh and is_descending_to_rest)
+                                self._wrist_moving_up[index] = bool(dy_w < -moving_thresh)
+                            else:
+                                self._wrist_moving_down[index] = False
+                                self._wrist_moving_up[index] = False
+                        else:
+                            self._wrist_moving_down[index] = False
+                            self._wrist_moving_up[index] = False
                         if el_xy is not None and xy is not None:
                             rel_2d = (xy[0] - el_xy[0], xy[1] - el_xy[1])
                             rel_3d = None
@@ -1455,19 +1834,27 @@ class CaptureSource:
 
                 # Wrists (15, 16): Kinematic tracking
                 if index in {15, 16}:
+                    # If wrist is not sane/not detected on this frame, it is not actively rising
+                    self._wrist_moving_up[index] = False
                     is_left = (index == 15)
                     sh_idx = 11 if is_left else 12
                     el_idx = 13 if is_left else 14
+                    other_sh_idx = 12 if is_left else 11
                     part_name = "leftWrist" if is_left else "rightWrist"
                     name3 = "left_wrist" if is_left else "right_wrist"
-                    side_sign = -1.0 if is_left else 1.0
 
                     sh_pt = body[sh_idx] if 0 <= sh_idx < len(body) else None
                     el_pt = body[el_idx] if 0 <= el_idx < len(body) else None
+                    other_sh_pt = body[other_sh_idx] if 0 <= other_sh_idx < len(body) else None
                     sh_xy = self._point_xy(sh_pt)
                     el_xy = self._point_xy(el_pt)
+                    other_sh_xy = self._point_xy(other_sh_pt)
                     sh_score = self._point_score(sh_pt)
                     el_score = self._point_score(el_pt)
+                    if sh_xy is not None and other_sh_xy is not None:
+                        side_sign = 1.0 if sh_xy[0] >= other_sh_xy[0] else -1.0
+                    else:
+                        side_sign = 1.0 if is_left else -1.0
 
                     # Determine if upper arm is truly active in space (pointing up, far lateral, or forearm raised)
                     # When smart_arm_sync is False, never synthesize or inject phantom arm postures.
@@ -1484,12 +1871,20 @@ class CaptureSource:
                             se_len = max(1.0, (dx_se * dx_se + dy_se * dy_se) ** 0.5)
                             u_y = dy_se / se_len
                             u_x = abs(dx_se) / se_len
-                            # Active upper arm: raised above shoulder (dy_se <= 0),
-                            # or angled away from vertical resting pose (u_y <= 0.85 or dy_se <= torso * 0.45 or u_x >= 0.38)
-                            if dy_se <= 0.0 or (u_y <= 0.85 and dy_se <= torso * 0.50) or (u_x >= 0.38 and dy_se <= torso * 0.40) or (abs(dx_se) >= max(35.0, torso * 0.45) and dy_se <= torso * 0.35):
+                            if dy_se <= 0.0:
                                 arm_active = True
-                            elif has_hand and rel and rel[0] is not None and rel[0][1] < -torso * 0.15 and age <= 0.30:
-                                arm_active = True
+                            elif has_hand:
+                                if (u_y <= 0.85 and dy_se <= torso * 0.50) or (u_x >= 0.38 and dy_se <= torso * 0.40) or (abs(dx_se) >= max(35.0, torso * 0.45) and dy_se <= torso * 0.35):
+                                    arm_active = True
+                            elif rel and rel[0] is not None and rel[0][1] < -torso * 0.10 and age <= 0.35:
+                                hand_key = "leftHand" if is_left else "rightHand"
+                                was_moving_down = getattr(self, "_hand_moving_down", {}).get(hand_key, False) or getattr(self, "_wrist_moving_down", {}).get(index, False)
+                                if not was_moving_down:
+                                    arm_active = True
+
+                    debug_arm = os.environ.get("XRA_DEBUG_ARM", "0") in {"1", "true", "yes"}
+                    if debug_arm:
+                        print(f"[{time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d}] [XRA_CAPTURE_ARM] {part_name}: arm_active={arm_active} el_score={el_score:.2f} rising={getattr(self, '_wrist_moving_up', {}).get(index, False)}", flush=True)
 
                     if is_smart_sync and arm_active and el_xy is not None:
                         # 1. Arm is active in space: DO NOT put to rest!
@@ -1499,15 +1894,17 @@ class CaptureSource:
                         if rel and rel[0] is not None:
                             f_dx, f_dy = rel[0]
                             rel_3d = rel[1]
-                            # If upper arm is pointing down and not active, transition downward directly.
-                            if dy_se > 0 and f_dy < 0 and not arm_active:
+                            # If upper arm is pointing down and wrist was pointing up, do not keep it up if hand is absent
+                            if dy_se > 0 and f_dy < 0 and not has_hand:
                                 f_dx = (dx_se / se_len) * forearm_len
                                 f_dy = abs(dy_se / se_len) * forearm_len
                                 rel_3d = None
+                                self._wrist_elbow_rel[index] = None
                         else:
                             f_dx = (dx_se / se_len) * forearm_len
-                            f_dy = (dy_se / se_len) * forearm_len
+                            f_dy = abs(dy_se / se_len) * forearm_len
                             rel_3d = None
+                            self._wrist_elbow_rel[index] = None
 
                         cur_w_x = el_xy[0] + f_dx
                         cur_w_y = el_xy[1] + f_dy
@@ -1542,62 +1939,85 @@ class CaptureSource:
                                 }
                         self._held_joints += 1
                         accepted[index] = True
-                    elif previous is not None and age <= 0.25:
-                        # 2. Arm is occluded, within 250ms grace period (absorbs transient webcam jitter)
-                        held2, held3 = previous
-                        body[index] = copy_fn(held2)
-                        body[index]["score"] = 0.08
-                        if isinstance(body[index].get("position"), dict):
-                            body[index]["visibility"] = 0.08
-                        if isinstance(body3, list) and len(body3) == 33 and held3 is not None:
-                            body3[index] = copy_fn(held3)
-                            if isinstance(body3[index], dict):
-                                body3[index]["score"] = 0.08
-                        self._held_joints += 1
                     else:
-                        # 3. Arm downward and occluded > 180ms: naturally transition to rest!
-                        self._body_last_good[index] = None
-                        if el_xy is not None and el_score >= 0.20:
-                            # Live elbow visible: anchor wrist downward from live elbow
-                            proj_x = el_xy[0]
-                            proj_y = el_xy[1] + max(35.0, torso * 0.65)
-                        elif sh_xy is not None:
-                            # Elbow also occluded: project downward along torso flank
-                            proj_x = sh_xy[0] + side_sign * 25.0
-                            proj_y = sh_xy[1] + max(torso * 1.70, 140.0)
+                        hand_key = "leftHand" if is_left else "rightHand"
+                        was_moving_down = getattr(self, "_hand_moving_down", {}).get(hand_key, False) or getattr(self, "_wrist_moving_down", {}).get(index, False)
+                        max_wrist_grace = 0.05 if was_moving_down else 0.18
+                        if previous is not None and age <= max_wrist_grace:
+                            # 2. Arm is occluded, within grace period (absorbs transient webcam jitter)
+                            held2, held3 = previous
+                            body[index] = copy_fn(held2)
+                            body[index]["score"] = 0.08
+                            if isinstance(body[index].get("position"), dict):
+                                body[index]["visibility"] = 0.08
+                            if isinstance(body3, list) and len(body3) == 33 and held3 is not None:
+                                body3[index] = copy_fn(held3)
+                                if isinstance(body3[index], dict):
+                                    body3[index]["score"] = 0.08
+                            self._held_joints += 1
+                            accepted[index] = True
                         else:
-                            proj_x, proj_y = 0.0, 0.0
-
-                        body[index] = {
-                            "position": {"x": proj_x, "y": proj_y, "z": 0.0},
-                            "x": proj_x, "y": proj_y, "z": 0.0,
-                            "score": 0.0, "visibility": 0.0, "part": part_name
-                        }
-                        if isinstance(body3, list) and len(body3) == 33:
-                            el_xyz3 = self._point_xyz(body3[el_idx]) if 0 <= el_idx < len(body3) else None
-                            sh_xyz3 = self._point_xyz(body3[sh_idx]) if 0 <= sh_idx < len(body3) else None
-                            if el_xyz3 is not None and el_score >= 0.20:
-                                res_x, res_y, res_z = el_xyz3[0], el_xyz3[1] + 0.25, el_xyz3[2]
-                            elif sh_xyz3 is not None:
-                                res_x = sh_xyz3[0] + side_sign * 0.05
-                                res_y = sh_xyz3[1] + 0.52
-                                res_z = sh_xyz3[2]
+                            # 3. Arm downward and occluded: naturally transition to rest!
+                            self._body_last_good[index] = None
+                            self._wrist_moving_down[index] = False
+                            self._wrist_elbow_rel[index] = None
+                            if el_xy is not None and el_score >= 0.20:
+                                # Live elbow visible: anchor wrist downward from live elbow
+                                proj_x = el_xy[0]
+                                proj_y = el_xy[1] + max(35.0, torso * 0.65)
+                            elif sh_xy is not None:
+                                # Elbow also occluded: project downward along torso flank
+                                proj_x = sh_xy[0] + side_sign * 25.0
+                                proj_y = sh_xy[1] + max(torso * 1.70, 140.0)
                             else:
-                                res_x, res_y, res_z = 0.0, 0.0, 0.0
-                            body3[index] = {
-                                "position": {"x": res_x, "y": res_y, "z": res_z},
-                                "x": res_x, "y": res_y, "z": res_z,
-                                "score": 0.0, "visibility": 0.0, "name": name3
+                                proj_x, proj_y = 0.0, 0.0
+
+                            body[index] = {
+                                "position": {"x": proj_x, "y": proj_y, "z": 0.0},
+                                "x": proj_x, "y": proj_y, "z": 0.0,
+                                "score": 0.0, "visibility": 0.0, "part": part_name
                             }
+                            if isinstance(body3, list) and len(body3) == 33:
+                                el_xyz3 = self._point_xyz(body3[el_idx]) if 0 <= el_idx < len(body3) else None
+                                sh_xyz3 = self._point_xyz(body3[sh_idx]) if 0 <= sh_idx < len(body3) else None
+                                if el_xyz3 is not None and el_score >= 0.20:
+                                    res_x, res_y, res_z = el_xyz3[0], el_xyz3[1] + 0.25, el_xyz3[2]
+                                elif sh_xyz3 is not None:
+                                    side_sign_3d = 1.0 if float(sh_xyz3[0]) >= 0 else -1.0
+                                    res_x = sh_xyz3[0] + side_sign_3d * 0.05
+                                    res_y = sh_xyz3[1] + 0.52
+                                    res_z = sh_xyz3[2]
+                                else:
+                                    res_x, res_y, res_z = 0.0, 0.0, 0.0
+                                body3[index] = {
+                                    "position": {"x": res_x, "y": res_y, "z": res_z},
+                                    "x": res_x, "y": res_y, "z": res_z,
+                                    "score": 0.0, "visibility": 0.0, "name": name3
+                                }
                     continue
 
                 # Elbows (13, 14): Kinematic tracking
                 if index in {13, 14}:
                     is_left = (index == 13)
                     sh_idx = 11 if is_left else 12
+                    other_sh_idx = 12 if is_left else 11
                     part_name = "leftElbow" if is_left else "rightElbow"
                     name3 = "left_elbow" if is_left else "right_elbow"
-                    side_sign = -1.0 if is_left else 1.0
+
+                    sh_pt = body[sh_idx] if 0 <= sh_idx < len(body) else None
+                    other_sh_pt = body[other_sh_idx] if 0 <= other_sh_idx < len(body) else None
+                    sh_xy = self._point_xy(sh_pt)
+                    other_sh_xy = self._point_xy(other_sh_pt)
+                    if sh_xy is not None and other_sh_xy is not None:
+                        side_sign = 1.0 if sh_xy[0] >= other_sh_xy[0] else -1.0
+                    else:
+                        side_sign = 1.0 if is_left else -1.0
+
+                    w_idx = 15 if is_left else 16
+                    w_pt = body[w_idx] if 0 <= w_idx < len(body) else None
+                    w_xy = self._point_xy(w_pt)
+                    w_score = self._point_score(w_pt)
+                    has_hand = has_left_hand if is_left else has_right_hand
 
                     if previous is not None and age <= 0.18:
                         held2, held3 = previous
@@ -1611,26 +2031,51 @@ class CaptureSource:
                                 body3[index]["score"] = 0.08
                         self._held_joints += 1
                     else:
-                        self._body_last_good[index] = None
-                        sh_pt = body[sh_idx] if 0 <= sh_idx < len(body) else None
-                        sh_xy = self._point_xy(sh_pt)
+                        is_hand_up = (sh_xy is not None and w_xy is not None and (w_score >= 0.20 or has_hand) and w_xy[1] <= sh_xy[1] + torso * 0.40)
                         if sh_xy:
-                            proj_x = sh_xy[0] + side_sign * 15.0
-                            proj_y = sh_xy[1] + max(torso * 0.85, 70.0)
+                            if is_hand_up:
+                                mx = (sh_xy[0] + w_xy[0]) * 0.5
+                                my = (sh_xy[1] + w_xy[1]) * 0.5
+                                proj_x = mx + side_sign * max(18.0, torso * 0.22)
+                                proj_y = max(sh_xy[1] + torso * 0.18, my + torso * 0.12)
+                                synth_sc = 0.18
+                            else:
+                                proj_x = sh_xy[0] + side_sign * 15.0
+                                proj_y = sh_xy[1] + max(torso * 0.85, 70.0)
+                                synth_sc = 0.0
+
                             body[index] = {
                                 "position": {"x": proj_x, "y": proj_y, "z": 0.0},
                                 "x": proj_x, "y": proj_y, "z": 0.0,
-                                "score": 0.0, "visibility": 0.0, "part": part_name
+                                "score": synth_sc, "visibility": synth_sc, "part": part_name
                             }
                         if isinstance(body3, list) and len(body3) == 33:
                             sh_pt3 = body3[sh_idx] if 0 <= sh_idx < len(body3) else None
                             sh_xyz3 = self._point_xyz(sh_pt3)
+                            w_pt3 = body3[w_idx] if 0 <= w_idx < len(body3) else None
+                            w_xyz3 = self._point_xyz(w_pt3) if w_pt3 else None
                             if sh_xyz3:
-                                body3[index] = {
-                                    "position": {"x": sh_xyz3[0] + side_sign * 0.03, "y": sh_xyz3[1] + 0.27, "z": sh_xyz3[2]},
-                                    "x": sh_xyz3[0] + side_sign * 0.03, "y": sh_xyz3[1] + 0.27, "z": sh_xyz3[2],
-                                    "score": 0.0, "visibility": 0.0, "name": name3
-                                }
+                                side_sign_3d = 1.0 if float(sh_xyz3[0]) >= 0 else -1.0
+                                if is_hand_up and w_xyz3:
+                                    mx3 = (sh_xyz3[0] + w_xyz3[0]) * 0.5 + side_sign_3d * 0.08
+                                    my3 = max(sh_xyz3[1] + 0.12, (sh_xyz3[1] + w_xyz3[1]) * 0.5 + 0.06)
+                                    mz3 = (sh_xyz3[2] + w_xyz3[2]) * 0.5 - 0.04
+                                    body3[index] = {
+                                        "position": {"x": mx3, "y": my3, "z": mz3},
+                                        "x": mx3, "y": my3, "z": mz3,
+                                        "score": synth_sc, "visibility": synth_sc, "name": name3
+                                    }
+                                else:
+                                    body3[index] = {
+                                        "position": {"x": sh_xyz3[0] + side_sign_3d * 0.03, "y": sh_xyz3[1] + 0.27, "z": sh_xyz3[2]},
+                                        "x": sh_xyz3[0] + side_sign_3d * 0.03, "y": sh_xyz3[1] + 0.27, "z": sh_xyz3[2],
+                                        "score": 0.0, "visibility": 0.0, "name": name3
+                                    }
+                        if is_hand_up and sh_xy:
+                            self._body_last_good[index] = (copy_fn(body[index]), copy_fn(body3[index]) if isinstance(body3, list) and len(body3) == 33 else None)
+                            self._body_last_good_at[index] = now
+                        else:
+                            self._body_last_good[index] = None
                     continue
 
                 # Distal hand points (17, 18, 19, 20, 21, 22)
@@ -1685,53 +2130,116 @@ class CaptureSource:
 
         for key in ("leftHand", "rightHand"):
             hand = payload.get(key)
-            wrist_idx = 15 if key == "leftHand" else 16
-            wrist_pt = body[wrist_idx] if isinstance(body, list) and 0 <= wrist_idx < len(body) else None
-            wrist_score = float(wrist_pt.get("score", 0.0)) if isinstance(wrist_pt, dict) else 0.0
-            wrist_live = wrist_score >= 0.15
+            is_valid, is_phantom = self._check_hand_validity(hand, key, body, width, height, torso, now, payload)
 
-            valid = isinstance(hand, list) and len(hand) == 21
-            scores = [self._point_score(p) for p in hand] if valid else []
-            finite = valid and sum(self._point_xy(p) is not None for p in hand) >= 18
-            median = float(np.median(scores)) if scores else 0.0
-            hand_wrist_score = scores[0] if scores else 0.0
+            previous_hand = self._hand_last_good.get(key)
+            was_live = self._hand_was_live.get(key, False)
+            age = now - self._hand_last_good_at.get(key, 0.0)
 
-            # When the arm wrist is live, use relaxed thresholds so that partially-occluded
-            # hand landmarks (e.g. touching hands, fingers overlapping) are still accepted.
-            # When the arm wrist is absent (hand under desk), keep strict thresholds to block
-            # phantom MediaPipe hallucinations.
-            if wrist_live:
-                threshold = 0.18
-                wrist_threshold = 0.15
-            else:
-                threshold = 0.35
-                wrist_threshold = 0.30
-            # Hand is only sane if landmark confidence is solid AND the associated arm wrist is live!
-            # If the arm/wrist is occluded or lost under the desk, reject phantom hands!
-            hand_sane = (finite and median >= threshold and hand_wrist_score >= wrist_threshold and wrist_live)
+            if is_valid and isinstance(hand, list):
+                # Adaptive speed-sensitive smoothing: smooth landmark noise on still/slow hands (alpha ~ 0.32),
+                # ramp to responsive high-speed tracking (alpha ~ 0.85) on fast gestures.
+                lerp_alpha = 0.55
+                if previous_hand and len(previous_hand) > 0 and was_live and age < 0.35:
+                    prev_w = self._point_xy(previous_hand[0])
+                    curr_w = self._point_xy(hand[0])
+                    if prev_w and curr_w:
+                        w_disp = ((curr_w[0] - prev_w[0]) ** 2 + (curr_w[1] - prev_w[1]) ** 2) ** 0.5
+                        if curr_w[0] <= 1.5 and width:
+                            w_disp *= width
+                        if w_disp < 5.0:
+                            lerp_alpha = 0.32
+                        elif w_disp < 30.0:
+                            lerp_alpha = 0.32 + 0.43 * ((w_disp - 5.0) / 25.0)
+                        else:
+                            lerp_alpha = 0.85
 
-            if hand_sane:
-                self._hand_last_good[key] = [copy_fn(p) for p in hand]
+                smoothed_hand = []
+                for i, p in enumerate(hand):
+                    p_copy = copy_fn(p)
+                    if previous_hand and i < len(previous_hand) and was_live and age < 0.35:
+                        prev_p = previous_hand[i]
+                        p_xy = self._point_xy(p_copy)
+                        prev_xy = self._point_xy(prev_p)
+                        if p_xy and prev_xy:
+                            lx = round(float(prev_xy[0] * (1.0 - lerp_alpha) + p_xy[0] * lerp_alpha), 3)
+                            ly = round(float(prev_xy[1] * (1.0 - lerp_alpha) + p_xy[1] * lerp_alpha), 3)
+                            pz = p_copy.get("z", 0.0) if isinstance(p_copy, dict) else (p_copy[2] if isinstance(p_copy, (list, tuple)) and len(p_copy) > 2 else 0.0)
+                            prev_z = prev_p.get("z", 0.0) if isinstance(prev_p, dict) else (prev_p[2] if isinstance(prev_p, (list, tuple)) and len(prev_p) > 2 else 0.0)
+                            lz = round(float(prev_z * (1.0 - lerp_alpha) + pz * lerp_alpha), 3)
+
+                            if isinstance(p_copy, dict):
+                                if isinstance(p_copy.get("position"), dict):
+                                    p_copy["position"]["x"] = lx
+                                    p_copy["position"]["y"] = ly
+                                    p_copy["position"]["z"] = lz
+                                p_copy["x"] = lx
+                                p_copy["y"] = ly
+                                p_copy["z"] = lz
+                            elif isinstance(p_copy, (list, tuple)) and len(p_copy) >= 3:
+                                p_copy = [lx, ly, lz] + list(p_copy[3:])
+                            elif isinstance(p_copy, (list, tuple)) and len(p_copy) >= 2:
+                                p_copy = [lx, ly] + list(p_copy[2:])
+                    smoothed_hand.append(p_copy)
+                payload[key] = smoothed_hand
+                # Track downward hand motion
+                is_moving_down = False
+                if previous_hand and len(previous_hand) > 0:
+                    prev_p = self._point_xy(previous_hand[0])
+                    curr_p = self._point_xy(smoothed_hand[0])
+                    if prev_p and curr_p:
+                        dy = curr_p[1] - prev_p[1]
+                        is_moving_down = dy > (0.005 if curr_p[1] <= 1.5 else 2.0)
+                self._hand_moving_down[key] = is_moving_down
+                self._hand_last_good[key] = [copy_fn(p) for p in smoothed_hand]
                 self._hand_last_good_at[key] = now
+                self._hand_was_live[key] = True
             else:
-                previous_hand = self._hand_last_good.get(key)
-                age = now - self._hand_last_good_at.get(key, 0.0)
-                # Only hold hand decay if the wrist is still live/visible.
-                # If the arm/wrist is lost or occluded under the desk, drop immediately!
-                if previous_hand is not None and age <= 0.40 and wrist_live:
-                    decay = max(0.0, 1.0 - (age / 0.30))
-                    held_hand = []
-                    for p in previous_hand:
-                        cp = copy_fn(p)
-                        if isinstance(cp, dict):
-                            cp["score"] = float(cp.get("score", 0.5)) * decay
-                        held_hand.append(cp)
-                    payload[key] = held_hand
-                else:
+                if is_phantom:
+                    # Phantom detection: drop immediately, do NOT hold!
                     payload[key] = []
                     if previous_hand is not None:
                         self._dropped_hands += 1
-                        self._hand_last_good[key] = None
+                    self._hand_last_good[key] = None
+                    self._hand_was_live[key] = False
+                    self._hand_moving_down[key] = False
+                else:
+                    # Holding block: If the hand was live recently, hold position linearly
+                    # across short tracking gaps to prevent flashing/drops.
+                    was_moving_down = getattr(self, "_hand_moving_down", {}).get(key, False)
+                    prev_wrist_xy = self._point_xy(previous_hand[0]) if (previous_hand and len(previous_hand) > 0) else None
+                    prev_y_norm = (prev_wrist_xy[1] / height) if (prev_wrist_xy and height and prev_wrist_xy[1] > 1.5) else (prev_wrist_xy[1] if prev_wrist_xy else 0.5)
+                    is_low_hand = prev_y_norm > 0.58
+                    # If lowering the arm or near desk, release fast (~80ms / 2-3 frames) so it doesn't feel sluggish!
+                    max_hold_sec = 0.08 if (was_moving_down or is_low_hand) else 0.26
+
+                    # Anti-ghosting: if the other hand is active near this held position,
+                    # or if handedness flipped to the other hand, do NOT hold duplicate!
+                    other_hand = payload.get("rightHand" if key == "leftHand" else "leftHand")
+                    is_other_active = isinstance(other_hand, list) and len(other_hand) >= 21
+                    is_coincident = False
+                    if is_other_active and prev_wrist_xy:
+                        ow_xy = self._point_xy(other_hand[0])
+                        if ow_xy:
+                            ow_px = (ow_xy[0] * width, ow_xy[1] * height) if (width and ow_xy[0] <= 1.5) else ow_xy
+                            pw_px = (prev_wrist_xy[0] * width, prev_wrist_xy[1] * height) if (width and prev_wrist_xy[0] <= 1.5) else prev_wrist_xy
+                            d_other = ((pw_px[0] - ow_px[0]) ** 2 + (pw_px[1] - ow_px[1]) ** 2) ** 0.5
+                            if d_other < max(torso * 0.20, 60.0):
+                                is_coincident = True
+
+                    if previous_hand is not None and age <= max_hold_sec and was_live and not is_coincident:
+                        held_hand = []
+                        for p in previous_hand:
+                            held_hand.append(copy_fn(p))
+                        payload[key] = held_hand
+                    else:
+                        payload[key] = []
+                        if previous_hand is not None:
+                            self._dropped_hands += 1
+                            self._hand_last_good[key] = None
+                            self._hand_was_live[key] = False
+                            self._hand_moving_down[key] = False
+                            self._hand_moving_down[key] = False
         return payload
 
     def _landmark_summary(

@@ -296,9 +296,24 @@
 
   function technicalFaceMeshEvidence(force = false) {
     if (globalThis.XRA?.xraBackend?.active) {
-      const facePoints = globalThis.XRA?.xraBackend?.face?.landmarks?.length || 0;
-      technicalMeshSample = { available: true, present: facePoints > 0, source: 'native-backend' };
-      return technicalMeshSample;
+      const snap = globalThis.XRA?.xraBackend?.snapshot?.();
+      const snapFace = Number(snap?.capture?.landmarks?.output?.face_points ?? snap?.capture?.landmarks?.raw?.face_points ?? 0);
+      if (snapFace > 0) {
+        technicalMeshSample = { available: true, present: true, source: 'native-backend' };
+        return technicalMeshSample;
+      }
+      const wfFaces = window.System?._browser?.camera?.facemesh?.wireframe?._data?.faces
+        || window.System?._browser?.camera?.poseNet?.wireframe?._data?.faces;
+      if (Array.isArray(wfFaces) && wfFaces.length > 0 && (wfFaces[0]?.scaledMesh?.length > 0 || wfFaces[0]?.mesh?.length > 0)) {
+        technicalMeshSample = { available: true, present: true, source: 'native-wireframe' };
+        return technicalMeshSample;
+      }
+      if (faceSignal.available && faceSignal.present && (performance.now() - faceSignal.lastUpdateAt < 700)) {
+        technicalMeshSample = { available: true, present: true, source: 'native-signal' };
+        return technicalMeshSample;
+      }
+      // If direct landmark queries did not find points, fall through to sample
+      // the actual rendered wireframe canvas so visible cyan mesh lines prove presence.
     }
     const now = performance.now();
     if (!force && now - technicalMeshSampleAt < 40) return technicalMeshSample;
@@ -880,7 +895,7 @@
           leftHandVisible = true;
           onHandStatusChange('Left', true);
         }
-      } else if (leftHandVisible && (now - leftHandLastSeen > 200)) {
+      } else if (leftHandVisible && (now - leftHandLastSeen > 450)) {
         leftHandVisible = false;
         onHandStatusChange('Left', false);
       }
@@ -893,7 +908,7 @@
           rightHandVisible = true;
           onHandStatusChange('Right', true);
         }
-      } else if (rightHandVisible && (now - rightHandLastSeen > 200)) {
+      } else if (rightHandVisible && (now - rightHandLastSeen > 450)) {
         rightHandVisible = false;
         onHandStatusChange('Right', false);
       }
@@ -921,11 +936,11 @@
 
     checkHandRuntimeEvidence(now);
 
-    if (leftHandVisible && (now - leftHandLastSeen > 300)) {
+    if (leftHandVisible && (now - leftHandLastSeen > 450)) {
       leftHandVisible = false;
       onHandStatusChange('Left', false);
     }
-    if (rightHandVisible && (now - rightHandLastSeen > 300)) {
+    if (rightHandVisible && (now - rightHandLastSeen > 450)) {
       rightHandVisible = false;
       onHandStatusChange('Right', false);
     }
@@ -1482,16 +1497,28 @@
       const pose = Array.isArray(candidate) ? candidate[0] : candidate;
       const points = pose?.keypoints || pose?.poseLandmarks || pose?.landmarks;
       if (!Array.isArray(points) || !points.length) continue;
-      let total = 0, count = 0;
+      let shoulderTotal = 0, shoulderCount = 0;
+      let hipTotal = 0, hipCount = 0;
       // MediaPipe: shoulders 11/12, hips 23/24. TFJS names are handled too.
       for (let i = 0; i < points.length; i++) {
         const point = points[i] || {};
         const name = String(point.name || point.part || '').toLowerCase();
-        if (![11, 12, 23, 24].includes(i) && !/(shoulder|hip)/.test(name)) continue;
+        const isShoulder = [11, 12].includes(i) || /shoulder/.test(name);
+        const isHip = [23, 24].includes(i) || /hip/.test(name);
+        if (!isShoulder && !isHip) continue;
         const value = Number(point.visibility ?? point.score ?? point.presence);
-        if (Number.isFinite(value)) { total += util.clamp(value, 0, 1); count++; }
+        if (Number.isFinite(value)) {
+          const clamped = util.clamp(value, 0, 1);
+          if (isShoulder) { shoulderTotal += clamped; shoulderCount++; }
+          else if (isHip) { hipTotal += clamped; hipCount++; }
+        }
       }
-      if (count) return total / count;
+      if (shoulderCount && hipCount) {
+        // Upper-body guard prioritizes shoulder stability (70%) over occluded hips (30%)
+        return (shoulderTotal / shoulderCount) * 0.70 + (hipTotal / hipCount) * 0.30;
+      }
+      if (shoulderCount) return shoulderTotal / shoulderCount;
+      if (hipCount) return hipTotal / hipCount;
     }
     return null;
   }
@@ -1560,13 +1587,13 @@
     // Preserve the raw live pose before a possible last-good overwrite below.
     if (bones) snapshotMap(MMD_GUARD_BONES, name => bones[name], guardRawMMD);
     if (modelX?.getBoneNode) snapshotMap(VRM_GUARD_BONES, name => modelX.getBoneNode(name), guardRawVRM);
+    const isAbruptJump = rawMaxJump > jumpLimit || rawMaxLimbJump > jumpLimit * 1.25;
+    const isUnstableJump = rawMaxJump > jumpLimit * .55 && lowConfidence;
     return {
       // Tracking loss is handled by applyHeadLossGuard. This independent guard
       // rejects only abrupt/low-confidence motion, so turning on hysteresis does
       // not implicitly turn on the face-loss protection.
-      invalid: !lossGuardRecovering && (
-        rawMaxJump > jumpLimit * .55 || rawMaxLimbJump > jumpLimit || lowConfidence
-      ),
+      invalid: !lossGuardRecovering && (isAbruptJump || isUnstableJump),
       maxJump: Math.max(maxJump, maxLimbJump),
       rawJump,
       jumpLimit,
@@ -1588,7 +1615,8 @@
     const suspicious = guardMotionWindow.filter(sample => sample.suspicious).length;
     const lowConfidence = guardMotionWindow.filter(sample => sample.lowConfidence).length;
     const angularPath = guardMotionWindow.reduce((sum, sample) => sum + sample.jump, 0);
-    return lowConfidence >= 2 || (suspicious >= 2 && angularPath >= check.jumpLimit * 1.15);
+    return (lowConfidence >= 3 && angularPath >= check.jumpLimit * 0.65) ||
+           (suspicious >= 2 && angularPath >= check.jumpLimit * 1.15);
   }
 
   function snapshotMap(names, getter, map) {
@@ -1679,6 +1707,8 @@
 
   function applyUpperBodyGuard() {
     let mode = guardMode();
+    const guardStrength = util.clamp(config.tracking?.upper_body_guard_strength ?? 0.70, 0, 1);
+    if (mode === 'guard' && guardStrength <= 0.001) return;
     const now = performance.now();
     let releaseMix = 1;
     let releasing = false;
@@ -1720,7 +1750,7 @@
     const previousMMD = guardLastMMD, previousVRM = guardLastVRM;
     const check = guardLooksInvalid();
     const rapidSequence = guardRapidSequence(check, now);
-    let invalid = !!guardInvalidSince || rapidSequence;
+    let invalid = (!!guardInvalidSince || rapidSequence) && guardStrength > 0.001;
 
     if (invalid) {
       if (!guardInvalidSince) {
@@ -1738,7 +1768,11 @@
       if (!rapidSequence && !check.invalid && check.confidence >= .25) guardRecoveryFrames++;
       else guardRecoveryFrames = 0;
 
-      if (now >= guardHoldUntil && guardRecoveryFrames >= 4) {
+      // Hard ceiling: never allow the guard to freeze the avatar indefinitely
+      const maxHold = Math.max(1200, holdMs * 2.0);
+      const timedOut = guardInvalidSince && (now - guardInvalidSince) >= maxHold;
+
+      if ((now >= guardHoldUntil && guardRecoveryFrames >= 4) || timedOut) {
         invalid = false;
         guardInvalidSince = 0;
         guardHoldUntil = 0;
@@ -1757,7 +1791,11 @@
         for (const [name, t] of guardLastVRM) guardReacquireVRM.set(name, cloneTransform(t));
 
         snapshotGuardLast();
-        events.emit('upper-body-guard-reacquired', { coherentFrames:4, confidence:check.confidence });
+        events.emit('upper-body-guard-reacquired', {
+          coherentFrames: guardRecoveryFrames,
+          confidence: check.confidence,
+          timedOut: !!timedOut
+        });
       }
       else {
         events.emit('upper-body-guard-reject', { degrees: check.maxJump, confidence: check.confidence, until: guardHoldUntil });
@@ -1800,7 +1838,7 @@
       }
     }
 
-    if (invalid) {
+    if (invalid && guardStrength > 0.001) {
       // Hold the most recent accepted pose until tracking is trustworthy again.
       // Transition gradually towards the held pose to prevent an abrupt 1-frame snap.
       const mmdTarget = guardLastMMD;
@@ -1849,7 +1887,7 @@
       return;
     }
 
-    const strength = util.clamp(config.tracking?.upper_body_guard_strength ?? 0.70, 0, 1);
+    const strength = guardStrength;
     // Valid tracking: stabilize rotation only. Translation remains 100% live.
     // The INVALID branch above still holds full transforms to prevent pretzels.
     const bones = getMMDMesh()?.bones_by_name;
@@ -2099,23 +2137,67 @@
     const f = window.System?._browser?.camera?.facemesh;
     if (!f || !f.enabled) return { available:false, present:false, strong:false, hardLost:false, reason:'facemesh-disabled', source:'none' };
 
-    // Split Face+Body does not send face state through our pose worker, but the
-    // native facemesh runtime exposes the same current-frame detection flag it
-    // uses internally. Once a face has been seen, zero is a real loss signal.
-    // This catches a covered lens even if PoseNet hallucinates a plausible body.
+    const now = performance.now();
+
+    // 1. Fresh worker/native event wins. It is the only source that can prove an
+    // empty detection even if the native facemesh object keeps stale mesh data.
+    if (faceSignal.available && now - faceSignal.lastUpdateAt < 700) {
+      if (faceSignal.present) {
+        faceRuntimeEverPresent = true;
+        faceRuntimeLastPresentAt = now;
+      }
+      return {
+        available:true,
+        present:faceSignal.present,
+        strong:faceSignal.present && (faceSignal.confidence == null || faceSignal.confidence >= .25),
+        hardLost:!faceSignal.present,
+        confidence:faceSignal.confidence,
+        signature:faceSignal.signature,
+        reason:faceSignal.present ? 'face-live' : 'face-missing',
+        source:faceSignal.source || 'worker'
+      };
+    }
+
+    // 2. Check wireframe cached face data (updated on every mocap frame by 00_core.js)
+    const wfFaces = f.wireframe?._data?.faces || window.System?._browser?.camera?.poseNet?.wireframe?._data?.faces;
+    if (Array.isArray(wfFaces) && wfFaces.length > 0 && (wfFaces[0]?.scaledMesh?.length > 0 || wfFaces[0]?.mesh?.length > 0)) {
+      faceRuntimeEverPresent = true;
+      faceRuntimeLastPresentAt = now;
+      return {
+        available:true, present:true, strong:true, hardLost:false,
+        confidence:null, signature:'wf-face:1', stale:false,
+        reason:'wireframe-face-live', source:'wireframe'
+      };
+    }
+
+    // 3. Check native backend snapshot
+    if (globalThis.XRA?.xraBackend?.active) {
+      const snap = globalThis.XRA?.xraBackend?.snapshot?.();
+      const pts = Number(snap?.capture?.landmarks?.output?.face_points ?? snap?.capture?.landmarks?.raw?.face_points ?? 0);
+      if (pts > 0) {
+        faceRuntimeEverPresent = true;
+        faceRuntimeLastPresentAt = now;
+        return {
+          available:true, present:true, strong:true, hardLost:false,
+          confidence:null, signature:`snap-face:${pts}`, stale:false,
+          reason:'snapshot-face-live', source:'native-backend'
+        };
+      }
+    }
+
+    // 4. Split Face+Body numeric data_detected counter
     let nativeDetected = false;
     try { nativeDetected = Number(f.data_detected || 0) > 0; } catch (e) {}
-    const nativeNow = performance.now();
     if (nativeDetected) {
       faceRuntimeEverPresent = true;
-      faceRuntimeLastPresentAt = nativeNow;
+      faceRuntimeLastPresentAt = now;
       return {
         available:true, present:true, strong:true, hardLost:false,
         confidence:null, signature:'native-face:1', stale:false,
         reason:'native-face-live', source:'native-facemesh'
       };
     }
-    if (faceRuntimeEverPresent) {
+    if (faceRuntimeEverPresent && !globalThis.XRA?.xraBackend?.active) {
       return {
         available:true, present:false, strong:false, hardLost:true,
         confidence:0, signature:'native-face:0', stale:false,
@@ -2140,22 +2222,6 @@
       }
     }
 
-    // Fresh worker/native event wins. It is the only source that can prove an
-    // empty detection even if the native facemesh object keeps stale mesh data.
-    const now = performance.now();
-    if (faceSignal.available && now - faceSignal.lastUpdateAt < 700) {
-      return {
-        available:true,
-        present:faceSignal.present,
-        strong:faceSignal.present && (faceSignal.confidence == null || faceSignal.confidence >= .25),
-        hardLost:!faceSignal.present,
-        confidence:faceSignal.confidence,
-        signature:faceSignal.signature,
-        reason:faceSignal.present ? 'face-live' : 'face-missing',
-        source:faceSignal.source || 'worker'
-      };
-    }
-
     if (found) {
       const signature = String(found.signature || '');
       if (signature && signature !== faceRuntimeSignature) {
@@ -2172,9 +2238,6 @@
       const strong = !!found.present && (confidence == null || confidence >= .20);
       const stale = !!(signature && now - faceRuntimeChangedAt > 280);
 
-      // A random empty property on the facemesh settings object is not enough
-      // evidence to hide the avatar. Treat runtime "missing" as authoritative
-      // only after the same runtime has previously exposed a real face.
       const negativeTrusted = !found.present && faceRuntimeEverPresent &&
         now - faceRuntimeLastPresentAt < 5000;
       if (!found.present && !negativeTrusted) {
@@ -2198,8 +2261,6 @@
       };
     }
 
-    // If native face processing is known to be running but no inspectable
-    // result is exposed, do not falsely hide a visible avatar.
     return {
       available:false, present:false, strong:false, hardLost:false,
       confidence:null, signature:'', reason:'face-signal-unknown', source:'unknown'
@@ -2221,20 +2282,17 @@
         source:'technical-preview'
       } : null;
 
-    // Positive evidence wins across sources. XR Animator can clear its numeric
-    // data_detected counter before our render hook even though the current
-    // technical mesh is visible; treating that transient zero as authoritative
-    // caused the false FROZEN state shown in podcast framing.
     if (technicalEvidence?.present) return technicalEvidence;
     if (face.available && face.present) return face;
+
+    const pose = poseHeadTrackingEvidence();
+    if (pose.available && pose.strong && !pose.hardLost) {
+      return { ...pose, source:'pose-head-confident' };
+    }
+
     if (face.available) return face;
     if (technicalEvidence) return technicalEvidence;
 
-    const pose = poseHeadTrackingEvidence();
-    // With facemesh enabled but no authoritative face result exposed, do not
-    // interpret ordinary confidence dips / geometry wobble as face loss. Those
-    // false positives are exactly what can make a hand/finger in front of the
-    // webcam jerk the avatar. Only a clearly off-frame/missing pose is trusted.
     if (facemeshEnabled()) {
       const conservativeLost = !!pose?.hardLost && ['off-frame','no-head-landmarks'].includes(String(pose?.reason || ''));
       return { ...pose, hardLost: conservativeLost, source:'pose-fallback-conservative' };
@@ -2478,16 +2536,23 @@
   function trackingLossEvidence() {
     const body = bodyTrackingEvidence();
     const face = headTrackingEvidence();
-    // With facemesh active, it is the loss authority in both directions: a
-    // visible face keeps tracking live even when hips are outside a podcast crop,
-    // and a missing face vetoes a hallucinated positive body pose.
+    const now = performance.now();
+
+    // If body tracking is confident and active, a human is sitting right in front
+    // of the camera. Do not allow transient/unresolved face mesh state to permanently
+    // lock the entire avatar in a frozen departure pose.
+    if (body.available && body.present && body.strong) {
+      if (!face.available || !face.present) {
+        return { ...body, reason:'body-live-face-pending', at:now };
+      }
+    }
     if (facemeshEnabled() && face.available) {
-      return { ...face, at:faceSignal.lastUpdateAt || technicalMeshSampleAt || performance.now() };
+      return { ...face, at:now };
     }
     if (body.available) {
-      return body;
+      return { ...body, at:now };
     }
-    return { ...face, at:faceSignal.lastUpdateAt || technicalMeshSampleAt || performance.now() };
+    return { ...face, at:now };
   }
 
   function emitFaceLossState(name, payload = {}) {
@@ -2521,7 +2586,7 @@
     const evidence = trackingLossEvidence();
     const now = performance.now();
     const sampleAt = Number(evidence.at || now);
-    const newSample = sampleAt !== faceLossLastDecisionSampleAt;
+    const newSample = Math.abs(sampleAt - faceLossLastDecisionSampleAt) >= 12;
     if (newSample) faceLossLastDecisionSampleAt = sampleAt;
 
     if (!evidence.available) {
@@ -2705,6 +2770,7 @@
         // Broken custom/native tracking-loss hiding was removed. Always leave
         // avatar visibility under XR Animator's normal render path.
         try { camera.poseNet.hide_avatar_on_tracking_loss = 0; } catch (e) {}
+        try { camera.poseNet.limb_entry_duration_percent = Number(config.tracking?.limb_entry_duration_percent ?? 0); } catch (e) {}
       }
       if ('avatar_loss_hide_mode' in config.tracking) config.tracking.avatar_loss_hide_mode = 0;
     }
