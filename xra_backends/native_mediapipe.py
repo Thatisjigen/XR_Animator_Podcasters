@@ -252,7 +252,7 @@ class HolisticTasksEngine:
                 "min_face_landmarks_confidence": self._min_face_confidence,
                 "min_pose_detection_confidence": self._min_pose_confidence,
                 "min_pose_landmarks_confidence": self._min_tracking_confidence,
-                "min_hand_landmarks_confidence": self._min_tracking_confidence,
+                "min_hand_landmarks_confidence": max(0.20, self._min_tracking_confidence * 0.50),
             }
             # Keep optional fields feature-detected for MediaPipe API compatibility.
             option_fields = getattr(

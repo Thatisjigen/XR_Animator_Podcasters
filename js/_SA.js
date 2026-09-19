@@ -2717,6 +2717,25 @@ function _SA_ensure_heartbeat() {
   }
 }
 
+function _SA_resume_foreground_render() {
+  _SA_raf_stalled = false
+  _SA_last_anim_time = (typeof performance !== 'undefined' ? performance.now() : Date.now())
+  if (use_RAF && EV_sync_update.requestAnimationFrame_auto && !EV_sync_update.RAF_paused) {
+    if (RAF_timerID) {
+      if (RAF_is_timeout)
+        clearTimeout(RAF_timerID)
+      else
+        cancelAnimationFrame(RAF_timerID)
+      RAF_timerID = null
+    }
+    RAF_is_timeout = false
+    RAF_timerID = requestAnimationFrame(function (ts) {
+      _SA_raf_stalled = false
+      Animate_RAF(ts)
+    })
+  }
+}
+
 function _SA_on_heartbeat_tick() {
   if (!use_RAF || !EV_sync_update.requestAnimationFrame_auto || EV_sync_update.RAF_paused) {
     return
@@ -2729,12 +2748,15 @@ function _SA_on_heartbeat_tick() {
     : (window.XRA_render_fps_limit === 0 ? 120 : 60)
   var target_interval = 1000 / target_fps
 
-  // When RAF is running, threshold is 1.35x target interval (giving RAF full priority).
-  // Once stalled (or if window is hidden), threshold is 0.75x target interval to maintain steady FPS.
-  var stall_threshold = _SA_raf_stalled ? (target_interval * 0.75) : (target_interval * 1.35)
+  var is_visible = !document.hidden || (typeof document.hasFocus === 'function' && document.hasFocus())
+  // When visible or focused, threshold is at least 1.5x target interval (giving RAF vsync full priority).
+  // When truly hidden in background, threshold is 0.85x target interval.
+  var stall_threshold = is_visible
+    ? Math.max(22, target_interval * 1.5)
+    : (target_interval * 0.85)
   var elapsed = now - _SA_last_anim_time
 
-  if (document.hidden || elapsed >= stall_threshold) {
+  if (!is_visible || elapsed >= stall_threshold) {
     _SA_raf_stalled = true
     _SA_heartbeat_busy = true
     try {
@@ -2745,6 +2767,8 @@ function _SA_on_heartbeat_tick() {
     } finally {
       _SA_heartbeat_busy = false
     }
+  } else if (is_visible && _SA_raf_stalled) {
+    _SA_resume_foreground_render()
   }
 }
 
@@ -2756,7 +2780,8 @@ var Animate_RAF = function (timestamp) {
   _SA_ensure_heartbeat()
 
   if (EV_sync_update.requestAnimationFrame_auto) {
-    if (!document.hidden) {
+    var is_visible = !document.hidden || (typeof document.hasFocus === 'function' && document.hasFocus())
+    if (is_visible) {
       RAF_is_timeout = false
       RAF_timerID = requestAnimationFrame(function (ts) {
         _SA_raf_stalled = false
@@ -2852,33 +2877,34 @@ var Animate_RAF = function (timestamp) {
   }
   catch (err) { console.error(err) }
 */
-  Animate()
+  try {
+    Animate()
+  } catch (renderErr) {
+    console.error('[XRA] Animate render error:', renderErr)
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('focus', _SA_resume_foreground_render, { passive: true })
+  window.addEventListener('pageshow', _SA_resume_foreground_render, { passive: true })
+  window.addEventListener('pointerdown', _SA_resume_foreground_render, { passive: true })
+  window.addEventListener('keydown', _SA_resume_foreground_render, { passive: true })
+  try {
+    if (window.nw?.Window) {
+      var nwWin = nw.Window.get()
+      nwWin.on('focus', _SA_resume_foreground_render)
+      nwWin.on('restore', _SA_resume_foreground_render)
+    }
+  } catch (_e) {}
 }
 
 if (typeof document !== 'undefined' && document.addEventListener) {
   document.addEventListener('visibilitychange', function () {
-    if (RAF_timerID) {
-      if (RAF_is_timeout)
-        clearTimeout(RAF_timerID)
-      else
-        cancelAnimationFrame(RAF_timerID)
-      RAF_timerID = null
-    }
-
-    if (use_RAF && EV_sync_update.requestAnimationFrame_auto && !EV_sync_update.RAF_paused) {
-      if (document.hidden) {
-        _SA_raf_stalled = true
-        _SA_on_heartbeat_tick()
-      }
-      else {
-        _SA_raf_stalled = false
-        _SA_last_anim_time = performance.now()
-        RAF_is_timeout = false
-        RAF_timerID = requestAnimationFrame(function (ts) {
-          _SA_raf_stalled = false
-          Animate_RAF(ts)
-        })
-      }
+    if (document.hidden) {
+      _SA_raf_stalled = true
+      _SA_on_heartbeat_tick()
+    } else {
+      _SA_resume_foreground_render()
     }
   })
 }

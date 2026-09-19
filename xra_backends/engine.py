@@ -10,7 +10,18 @@ import atexit
 import math
 import os
 import threading
+import time
 from typing import Optional
+
+
+def _write_debug_log(msg: str) -> None:
+    log_file = os.environ.get("XRA_DEBUG_LOG")
+    if log_file:
+        try:
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(msg + "\n")
+        except Exception:
+            pass
 
 import numpy as np
 
@@ -62,9 +73,17 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
 
     def _normalized_point(point):
         position = _pos(point)
-        nx = _r4(_float(position.get("x")) / width)
-        ny = _r4(_float(position.get("y")) / height)
-        nz = _r4(_float(position.get("z")) / width)
+        x_raw = _float(position.get("x"))
+        y_raw = _float(position.get("y"))
+        z_raw = _float(position.get("z"))
+        if abs(x_raw) <= 1.5 and abs(y_raw) <= 1.5 and width > 1.5:
+            nx = _r4(x_raw)
+            ny = _r4(y_raw)
+            nz = _r4(z_raw)
+        else:
+            nx = _r4(x_raw / width)
+            ny = _r4(y_raw / height)
+            nz = _r4(z_raw / width)
         res = {"x": nx, "y": ny, "z": nz, "position": {"x": nx, "y": ny, "z": nz}}
         if isinstance(point, dict):
             for k in ("score", "visibility", "part", "name"):
@@ -233,7 +252,7 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
         wire_face["blendshapes"] = blendshapes
 
     # -----------------------------------------------------------------------
-    # Phase 2a: joint confidence suppression and kinematic guard
+    # Fase 2a – tracker confidence suppression + kinematic guard
     # XRA_JOINT_CONF_MIN (float, default 0.25): joints with score below this
     #   threshold are zeroed-out (score=0, position zeroed) instead of being
     #   sent with bogus coordinates that hallucinate limbs out of frame.
@@ -271,12 +290,7 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
 
     for wrist_idx, hand_key in ((15, "leftHand"), (16, "rightHand")):
         hand_pts = payload.get(hand_key) or []
-        has_active_hand = False
-        if isinstance(hand_pts, list) and len(hand_pts) >= 21:
-            first_pt = hand_pts[0]
-            first_score = float(first_pt.get("score", 0.0)) if isinstance(first_pt, dict) else (float(first_pt[3]) if hasattr(first_pt, "__len__") and len(first_pt) > 3 else 0.5)
-            if first_score >= 0.30:
-                has_active_hand = True
+        has_active_hand = isinstance(hand_pts, list) and len(hand_pts) >= 21
         active_hands[hand_key] = has_active_hand
 
         if wrist_idx >= len(keypoints):
@@ -296,7 +310,170 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
             w_sc = w_kp.get("score", 0.0)
             el_pos = el_kp.get("position") or el_kp
 
-            if sh_sc >= 0.18 and el_sc >= 0.18:
+            if not hasattr(ENGINE, "_arm_active_state"):
+                ENGINE._arm_active_state = {15: False, 16: False}
+            if not hasattr(ENGINE, "_arm_down_frames"):
+                ENGINE._arm_down_frames = {15: 0, 16: 0}
+
+            prev_active = ENGINE._arm_active_state.get(wrist_idx, False)
+
+            if has_active_hand and isinstance(hand_pts, list) and len(hand_pts) >= 21:
+                sh_pos = sh_kp.get("position") or sh_kp
+                sx, sy = _float(sh_pos.get("x")), _float(sh_pos.get("y"))
+                ex, ey = _float(el_pos.get("x")), _float(el_pos.get("y"))
+                t_span = torso_span if torso_span > 0.02 else 0.25
+
+                h_pt = hand_pts[0]
+                norm_h = _normalized_point(h_pt)
+                hx, hy, hz = norm_h["x"], norm_h["y"], norm_h["z"]
+                dy_ew = hy - ey
+
+                # Top-most point of the detected hand (fingertip or knuckle)
+                hand_min_y = min(_float(_normalized_point(p).get("y", 1.0)) for p in hand_pts)
+
+                # Schmitt Trigger Hysteresis for Hand Raising / Gesture Detection:
+                # - When already active (prev_active=True): stay active down to y < 0.86 (or torso span + 10%)
+                # - When entering from rest (prev_active=False): require hand above y < 0.75 (or shoulder + 85% torso)
+                if prev_active:
+                    is_hand_raised = bool(hand_min_y < (sy + t_span * 1.10) or hand_min_y < 0.86)
+                else:
+                    is_hand_raised = bool(hand_min_y < (sy + t_span * 0.85) or hand_min_y < 0.75)
+
+                # Anatomical wrist clamp: if landmark 0 plunges downward due to model noise,
+                # keep it attached to the palm (MCP 9 is middle knuckle)
+                if len(hand_pts) > 9:
+                    mcp9 = _normalized_point(hand_pts[9])
+                    mcp9_y = _float(mcp9.get("y", hy))
+                    max_wrist_drop = max(0.12, t_span * 0.40)
+                    if hy > mcp9_y + max_wrist_drop:
+                        hy = _r4(mcp9_y + max_wrist_drop)
+                    dy_ew = hy - ey
+
+                if is_hand_raised:
+                    # Hand is in the air / active zone: ALWAYS ACTIVE, never resting low!
+                    arm_active = True
+                    ENGINE._arm_down_frames[wrist_idx] = 0
+                elif not desk_guard_enabled:
+                    # Desk guard off: hand is deep at the very bottom edge (y >= 0.86)
+                    is_resting_low = (dy_ew >= 0.04 and hy >= sy + t_span * 0.80) or (hy >= 0.88)
+                    if prev_active:
+                        if is_resting_low:
+                            ENGINE._arm_down_frames[wrist_idx] = ENGINE._arm_down_frames.get(wrist_idx, 0) + 1
+                            arm_active = bool(ENGINE._arm_down_frames[wrist_idx] < 6)
+                        else:
+                            arm_active = True
+                            ENGINE._arm_down_frames[wrist_idx] = 0
+                    else:
+                        if is_resting_low:
+                            arm_active = False
+                            ENGINE._arm_down_frames[wrist_idx] = ENGINE._arm_down_frames.get(wrist_idx, 0) + 1
+                        else:
+                            arm_active = True
+                            ENGINE._arm_down_frames[wrist_idx] = 0
+                else:
+                    # Desk guard on:
+                    if prev_active:
+                        if (dy_ew >= 0.02 and hy >= sy + t_span * 0.75) or hy >= 0.86:
+                            ENGINE._arm_down_frames[wrist_idx] = ENGINE._arm_down_frames.get(wrist_idx, 0) + 1
+                            arm_active = bool(ENGINE._arm_down_frames[wrist_idx] < 6)
+                        else:
+                            ENGINE._arm_down_frames[wrist_idx] = 0
+                            arm_active = True
+                    else:
+                        if dy_ew <= -t_span * 0.05 or hy <= sy + t_span * 0.65:
+                            arm_active = True
+                            ENGINE._arm_down_frames[wrist_idx] = 0
+                        else:
+                            arm_active = False
+
+                if arm_active:
+                    keypoints[wrist_idx] = {
+                        "x": hx, "y": hy, "z": hz,
+                        "score": 0.85, "visibility": 0.85,
+                        "position": {"x": hx, "y": hy, "z": hz}
+                    }
+
+                    dist_sh = ((hx - sx) ** 2 * aspect ** 2 + (hy - sy) ** 2) ** 0.5
+                    arm_len = t_span * 0.92
+                    half_d = min(arm_len * 0.49, dist_sh * 0.5)
+                    sagitta = max(0.04, (max(0.0, (arm_len * 0.50) ** 2 - half_d ** 2)) ** 0.5)
+
+                    dist_se = ((ex - sx) ** 2 * aspect ** 2 + (ey - sy) ** 2) ** 0.5
+                    if el_sc < 0.20 or dist_se > max(t_span * 2.2, 0.60):
+                        side_sign = -1.0 if wrist_idx == 15 else 1.0
+                        # Idea B: smooth anatomical triangular bend when elbow is occluded during active arm motion
+                        mx = (sx + hx) * 0.5
+                        my = (sy + hy) * 0.5
+                        synth_el_x = _r4(mx + side_sign * (sagitta / aspect if aspect > 0 else sagitta))
+                        synth_el_y = _r4(max(sy + t_span * 0.16, my + t_span * 0.10))
+
+                        keypoints[el_idx] = {
+                            "x": synth_el_x, "y": synth_el_y, "z": hz,
+                            "score": 0.55, "visibility": 0.55,
+                            "position": {"x": synth_el_x, "y": synth_el_y, "z": hz}
+                        }
+                        el_pos = keypoints[el_idx]
+
+                    # In 3D: anchor 3D wrist relative to 3D elbow along the forearm direction towards the hand.
+                    if wrist_idx < len(keypoints3d) and el_idx < len(keypoints3d):
+                        el_3d = keypoints3d[el_idx]
+                        # If 3D elbow is occluded or suppressed, anchor it naturally:
+                        if _float(el_3d.get("score", 0.0)) < 0.20 and sh_idx < len(keypoints3d):
+                            sh_3d = keypoints3d[sh_idx]
+                            side_sign = -1.0 if wrist_idx == 15 else 1.0
+                            mx3 = _float(sh_3d.get("x", 0.0)) + side_sign * max(0.06, sagitta * 0.7)
+                            my3 = _float(sh_3d.get("y", 0.0)) + max(0.12, (hy - sy) * 0.55)
+                            mz3 = _float(sh_3d.get("z", 0.0)) - 0.04
+                            el_3d = {
+                                "x": _r4(mx3), "y": _r4(my3), "z": _r4(mz3),
+                                "score": 0.55, "visibility": 0.55,
+                                "position": {"x": 0.0, "y": 0.0, "z": 0.0}
+                            }
+                            el_3d["position"] = {"x": el_3d["x"], "y": el_3d["y"], "z": el_3d["z"]}
+                            keypoints3d[el_idx] = el_3d
+
+                        ex = _float(el_pos.get("x"))
+                        ey = _float(el_pos.get("y"))
+                        dx_h = (hx - ex) * aspect
+                        dy_h = hy - ey
+                        len_h = max(0.001, (dx_h * dx_h + dy_h * dy_h) ** 0.5)
+                        p3d_x = _r4(_float(el_3d.get("x", 0.0)) + (dx_h / len_h) * 0.25)
+                        p3d_y = _r4(_float(el_3d.get("y", 0.0)) + (dy_h / len_h) * 0.25)
+                        p3d_z = _r4(_float(el_3d.get("z", 0.0)) - 0.08)
+                        keypoints3d[wrist_idx] = {
+                            "x": p3d_x, "y": p3d_y, "z": p3d_z,
+                            "score": 0.85, "visibility": 0.85,
+                            "position": {"x": p3d_x, "y": p3d_y, "z": p3d_z}
+                        }
+                else:
+                    # Hand is resting low downwards: keep arm calm at rest
+                    side_sign = -1.0 if wrist_idx == 15 else 1.0
+                    dist_se = ((ex - sx) ** 2 * aspect ** 2 + (ey - sy) ** 2) ** 0.5
+                    if el_sc < 0.20 or dist_se > max(t_span * 2.2, 0.60):
+                        synth_el_x = _r4(sx + side_sign * 0.04)
+                        synth_el_y = _r4(sy + t_span * 0.50)
+                        keypoints[el_idx] = {
+                            "x": synth_el_x, "y": synth_el_y, "z": hz,
+                            "score": 0.55, "visibility": 0.55,
+                            "position": {"x": synth_el_x, "y": synth_el_y, "z": hz}
+                        }
+                        el_pos = keypoints[el_idx]
+                    keypoints[wrist_idx] = {
+                        "x": _r4(sx + side_sign * 0.05),
+                        "y": _r4(sy + t_span * 0.85),
+                        "z": hz,
+                        "score": 0.55, "visibility": 0.55,
+                        "position": {"x": _r4(sx + side_sign * 0.05), "y": _r4(sy + t_span * 0.85), "z": hz}
+                    }
+                    if wrist_idx < len(keypoints3d):
+                        keypoints3d[wrist_idx] = {
+                            "x": _r4(sx + side_sign * 0.05),
+                            "y": _r4(sy + t_span * 0.85),
+                            "z": 0.0,
+                            "score": 0.55, "visibility": 0.55,
+                            "position": {"x": _r4(sx + side_sign * 0.05), "y": _r4(sy + t_span * 0.85), "z": 0.0}
+                        }
+            elif sh_sc >= 0.18 and el_sc >= 0.18:
                 sh_pos = sh_kp.get("position") or sh_kp
                 w_pos = w_kp.get("position") or w_kp
                 dx_se = _float(el_pos.get("x")) - _float(sh_pos.get("x"))
@@ -308,78 +485,45 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
                 u_y = dy_se / (len_se if len_se > 0.001 else 1.0)
                 u_x = abs(dx_se * aspect) / (len_se if len_se > 0.001 else 1.0)
 
-                # 1. Upper arm raised, angled outwards, or lateral:
-                # Normal seated rest: upper arm points almost vertically down (u_y >= 0.88, small u_x, dy_se >= 0.40*torso).
-                # Raising arm from desk:
-                # - Elbow physically at/above shoulder (dy_se <= 0)
-                # - Elbow lifted up towards chest (dy_se <= t_span * 0.45 and u_y <= 0.85)
-                # - Upper arm angled outwards/laterally (u_x >= 0.38 and dy_se <= t_span * 0.40)
-                # - Upper arm extended lateral (abs(dx_se) >= max(0.14, t_span * 0.50) and dy_se <= t_span * 0.35)
-                if dy_se <= 0.0 or (u_y <= 0.85 and dy_se <= t_span * 0.45) or (u_x >= 0.38 and dy_se <= t_span * 0.40) or (abs(dx_se) >= max(0.14, t_span * 0.50) and dy_se <= t_span * 0.35):
-                    if has_active_hand or el_sc >= 0.30:
+                # 1. Upper arm raised above shoulder level:
+                if dy_se <= 0.0:
+                    if el_sc >= 0.30:
                         arm_active = True
-                # 2. Forearm raised:
-                # If a real hand is visible, ensure wrist is at or above mid-chest level (w_y <= sh_y + t_span * 0.40).
-                # If NO real hand is visible (not has_active_hand):
-                #   Require wrist significantly above elbow (dy_ew <= -t_span * 0.15)
-                #   and raised into chest/chin/head zone (w_y <= sh_y + t_span * 0.25).
-                #   Phantom desk wrists hover down near desk level (w_y > sh_y + 0.35*t_span),
-                #   so they are cleanly rejected while intentional chin/chest raises are preserved.
-                elif dy_ew <= -t_span * 0.10:
-                    sh_y = _float(sh_pos.get("y"))
-                    w_y = _float(w_pos.get("y"))
-                    if has_active_hand and w_y <= (sh_y + t_span * 0.50):
+                # 2. Forearm curled/raised upwards (hand at chin, scratch face, fist raised):
+                elif dy_ew <= -t_span * 0.12:
+                    min_w_sc = 0.38 if not has_active_hand else 0.25
+                    if w_sc >= min_w_sc:
                         arm_active = True
-                    elif not has_active_hand and w_sc >= 0.35 and el_sc >= 0.40:
-                        if dy_ew <= -t_span * 0.15 and w_y <= (sh_y + t_span * 0.25):
+                # 3. Upper arm raised horizontally/laterally (T-pose, reaching sideways):
+                elif dy_se <= t_span * 0.25 and (u_x >= 0.50 or abs(dx_se) >= max(0.14, t_span * 0.50)):
+                    if el_sc >= 0.30:
+                        if dy_ew > 0.0 and w_sc < desk_thresh:
+                            pass
+                        else:
                             arm_active = True
+                # 4. Raising arm outward/forward with occluded wrist from under desk (Test 20):
+                elif dy_se <= t_span * 0.35 and u_x >= 0.60 and el_sc >= 0.35 and w_sc < 0.20:
+                    arm_active = True
 
-                # 3. Direct active hand elevation check:
-                # If a confident hand is detected and raised above mid-chest level,
-                # the arm is active even if the body pose landmarker was weak/occluded on the wrist.
-                if not arm_active and has_active_hand and isinstance(hand_pts, list) and len(hand_pts) > 0:
-                    h_pos = _pos(hand_pts[0])
-                    hy = _float(h_pos.get("y")) / height if height > 0 else _float(h_pos.get("y"))
-                    sh_y = _float(sh_pos.get("y"))
-                    if hy <= (sh_y + t_span * 0.55):
-                        arm_active = True
+                debug_arm = os.environ.get("XRA_DEBUG_ARM", "0") in {"1", "true", "yes"}
+                if debug_arm:
+                    cur_w_pt = keypoints[wrist_idx] if wrist_idx < len(keypoints) else {}
+                    cur_w_sc = _float(cur_w_pt.get("score", 0.0))
+                    msg = f"[{time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d}] [XRA_DEBUG_ARM] {hand_key}: arm_active={arm_active} w_sc={cur_w_sc:.2f} el_sc={el_sc:.2f} has_hand={has_active_hand}"
+                    print(msg, flush=True)
+                    _write_debug_log(msg)
 
                 if smart_arm_sync:
                     if arm_active:
-                        # Case A: Arm active/raised.
-                        # If wrist is weak/occluded (< 0.35) or lagging behind the active hand:
-                        if w_sc < 0.35 or has_active_hand:
-                            if has_active_hand and isinstance(hand_pts, list) and len(hand_pts) > 0:
-                                h_pt = hand_pts[0]
-                                norm_h = _normalized_point(h_pt)
-                                hx = norm_h["x"]
-                                hy = norm_h["y"]
-                                hz = norm_h["z"]
-                                keypoints[wrist_idx] = {
-                                    "x": hx, "y": hy, "z": hz,
-                                    "score": 0.65, "visibility": 0.65,
-                                    "position": {"x": hx, "y": hy, "z": hz}
-                                }
-                                if wrist_idx < len(keypoints3d):
-                                    el_3d = keypoints3d[el_idx]
-                                    dx_h = (hx - _float(el_pos.get("x"))) * aspect
-                                    dy_h = hy - _float(el_pos.get("y"))
-                                    len_h = max(0.001, (dx_h * dx_h + dy_h * dy_h) ** 0.5)
-                                    p3d_x = _r4(_float(el_3d.get("x", 0.0)) + (dx_h / len_h) * 0.25)
-                                    p3d_y = _r4(_float(el_3d.get("y", 0.0)) + (dy_h / len_h) * 0.25)
-                                    p3d_z = _r4(_float(el_3d.get("z", 0.0)))
-                                    keypoints3d[wrist_idx] = {
-                                        "x": p3d_x, "y": p3d_y, "z": p3d_z,
-                                        "score": 0.65, "visibility": 0.65,
-                                        "position": {"x": p3d_x, "y": p3d_y, "z": p3d_z}
-                                    }
-                            else:
-                                # When upper arm is raised/active but hand/wrist is occluded under desk:
-                                # Project wrist straight along the shoulder -> elbow vector!
-                                if len_se < 0.05:
-                                    len_se = t_span * 0.65
-                                forearm_len = 0.85 * len_se
+                        # If wrist is weak/occluded (< 0.35):
+                        if w_sc < 0.35:
+                            if len_se < 0.05:
+                                len_se = t_span * 0.65
+                            forearm_len = 0.85 * len_se
 
+                            # Only project straight along shoulder->elbow when the upper arm itself is raised
+                            # or reaching outward (not when elbow is down near desk):
+                            if dy_se <= 0.0 or (u_y <= 0.80 and dy_se <= t_span * 0.40):
                                 udir_x = dx_se / (len_se if len_se > 0 else 1.0)
                                 udir_y = dy_se / (len_se if len_se > 0 else 1.0)
 
@@ -391,13 +535,13 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
                                     "score": 0.65, "visibility": 0.65,
                                     "position": {"x": proj_x, "y": proj_y, "z": proj_z}
                                 }
-                                if wrist_idx < len(keypoints3d):
+                                if wrist_idx < len(keypoints3d) and el_idx < len(keypoints3d) and sh_idx < len(keypoints3d):
                                     el_3d = keypoints3d[el_idx]
                                     sh_3d = keypoints3d[sh_idx]
                                     dx3 = _float(el_3d.get("x", 0.0)) - _float(sh_3d.get("x", 0.0))
                                     dy3 = _float(el_3d.get("y", 0.0)) - _float(sh_3d.get("y", 0.0))
                                     dz3 = _float(el_3d.get("z", 0.0)) - _float(sh_3d.get("z", 0.0))
-                                    len3 = max(0.001, (dx3*dx3 + dy3*dy3 + dz3*dz3) ** 0.5)
+                                    len3 = max(0.001, (dx3 * dx3 + dy3 * dy3 + dz3 * dz3) ** 0.5)
                                     p3d_x = _r4(_float(el_3d.get("x", 0.0)) + (dx3 / len3) * 0.25)
                                     p3d_y = _r4(_float(el_3d.get("y", 0.0)) + (dy3 / len3) * 0.25)
                                     p3d_z = _r4(_float(el_3d.get("z", 0.0)) + (dz3 / len3) * 0.25)
@@ -407,44 +551,43 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
                                         "position": {"x": p3d_x, "y": p3d_y, "z": p3d_z}
                                     }
                     else:
-                        # Case B: Arm at rest / not active.
-                        # If hands not visible and wrist is either weak or hovering at desk/abdomen level,
-                        # continue forearm naturally DOWNWARDS following the elbow line.
-                        # NEVER emit synthetic hands when at rest to prevent triggering unwanted Arm IK!
-                        if not has_active_hand:
-                            if len_se < 0.05:
-                                len_se = t_span * 0.65
-                            forearm_len = 0.85 * len_se
+                        # Arm at rest: continue forearm naturally DOWNWARDS following the elbow line.
+                        if len_se < 0.05:
+                            len_se = t_span * 0.65
+                        forearm_len = 0.85 * len_se
 
-                            # Threshold for rest alignment: desk_thresh if desk_wrist_guard is active, else 0.30
-                            effective_thresh = desk_thresh if desk_guard_enabled else 0.30
-                            if dy_ew < 0.02 or w_sc < effective_thresh:
-                                udir_x = dx_se / (len_se if len_se > 0 else 1.0)
-                                udir_y = max(0.40, dy_se / (len_se if len_se > 0 else 1.0))
-                                proj_x = _r4(_float(el_pos.get("x")) + udir_x * (forearm_len * 0.70) / aspect)
-                                proj_y = _r4(_float(el_pos.get("y")) + udir_y * forearm_len)
-                                proj_z = _r4(_float(el_pos.get("z", 0.0)))
-                                keypoints[wrist_idx] = {
-                                    "x": proj_x, "y": proj_y, "z": proj_z,
+                        # When arm is at rest:
+                        # Desk guard suppresses weak phantom wrists (< desk_thresh) and occluded wrists (< 0.30)
+                        is_phantom_desk_wrist = (desk_guard_enabled and w_sc < desk_thresh)
+                        if is_phantom_desk_wrist or w_sc < 0.30:
+                            udir_x = dx_se / (len_se if len_se > 0 else 1.0)
+                            udir_y = max(0.40, dy_se / (len_se if len_se > 0 else 1.0))
+                            proj_x = _r4(_float(el_pos.get("x")) + udir_x * (forearm_len * 0.70) / aspect)
+                            proj_y = _r4(_float(el_pos.get("y")) + udir_y * forearm_len)
+                            proj_z = _r4(_float(el_pos.get("z", 0.0)))
+                            keypoints[wrist_idx] = {
+                                "x": proj_x, "y": proj_y, "z": proj_z,
+                                "score": 0.55, "visibility": 0.55,
+                                "position": {"x": proj_x, "y": proj_y, "z": proj_z}
+                            }
+                            if wrist_idx < len(keypoints3d):
+                                el_3d = keypoints3d[el_idx]
+                                p3d_x = _r4(_float(el_3d.get("x", 0.0)) + udir_x * 0.20)
+                                p3d_y = _r4(_float(el_3d.get("y", 0.0)) + udir_y * 0.25)
+                                p3d_z = _r4(_float(el_3d.get("z", 0.0)))
+                                keypoints3d[wrist_idx] = {
+                                    "x": p3d_x, "y": p3d_y, "z": p3d_z,
                                     "score": 0.55, "visibility": 0.55,
-                                    "position": {"x": proj_x, "y": proj_y, "z": proj_z}
+                                    "position": {"x": p3d_x, "y": p3d_y, "z": p3d_z}
                                 }
-                                if wrist_idx < len(keypoints3d):
-                                    el_3d = keypoints3d[el_idx]
-                                    p3d_x = _r4(_float(el_3d.get("x", 0.0)) + udir_x * 0.20)
-                                    p3d_y = _r4(_float(el_3d.get("y", 0.0)) + udir_y * 0.25)
-                                    p3d_z = _r4(_float(el_3d.get("z", 0.0)))
-                                    keypoints3d[wrist_idx] = {
-                                        "x": p3d_x, "y": p3d_y, "z": p3d_z,
-                                        "score": 0.55, "visibility": 0.55,
-                                        "position": {"x": p3d_x, "y": p3d_y, "z": p3d_z}
-                                    }
+
+            ENGINE._arm_active_state[wrist_idx] = arm_active
+            active_hands[hand_key] = bool(has_active_hand and arm_active)
 
         if not arm_active and desk_guard_enabled and not has_active_hand:
             cur_w_pos = keypoints[wrist_idx].get("position") or keypoints[wrist_idx]
-            cur_dy_ew = (_float(cur_w_pos.get("y")) - _float(el_pos.get("y"))) if el_pos is not None else 0.0
             w_score = keypoints[wrist_idx].get("score", 0.0)
-            if (not smart_arm_sync and w_score < desk_thresh) or cur_dy_ew <= -0.05 or el_pos is None:
+            if (not smart_arm_sync and w_score < desk_thresh) or el_pos is None:
                 keypoints[wrist_idx] = _suppress_joint(keypoints[wrist_idx])
                 if wrist_idx < len(keypoints3d):
                     keypoints3d[wrist_idx] = _suppress_joint(keypoints3d[wrist_idx])
@@ -507,11 +650,11 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
             dy_2d = l_wrist_2d["y"] - r_wrist_2d["y"]
             dist_2d = (dx_2d * dx_2d + dy_2d * dy_2d) ** 0.5
 
-            if dist_2d < 0.22:
+            if dist_2d < 0.08:
                 # Hands are meeting in 2D space. BlazePose 3D body pose has an artificial
                 # ~15cm lateral separation bias between wrists. We interpolate 3D wrists
                 # towards contact so palms can touch flush together.
-                k_contact = max(0.0, min(1.0, 1.0 - (dist_2d / 0.22)))
+                k_contact = max(0.0, min(1.0, 1.0 - (dist_2d / 0.08)))
                 lw_3d = keypoints3d[15]
                 rw_3d = keypoints3d[16]
                 if lw_3d.get("score", 0.0) > 0 and rw_3d.get("score", 0.0) > 0:
@@ -572,7 +715,7 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
         "leftHandWorld": payload.get("leftHandWorld", []) if active_hands.get("leftHand") else [],
         "rightHandWorld": payload.get("rightHandWorld", []) if active_hands.get("rightHand") else [],
     }
-    # Phase 2b: raw hand landmarks for diagnostics (no smoothing/filtering).
+    # Fase 2b – raw hand landmarks for diagnostics (no smoothing/filtering).
     # Set XRA_RAW_HANDS_DEBUG=1 to include raw_hands in the wire payload.
     # Frontend can use this to distinguish data-level defects from adapter bugs.
     if os.environ.get("XRA_RAW_HANDS_DEBUG", "0").lower() in {"1", "true", "yes"}:
