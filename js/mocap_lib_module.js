@@ -1965,14 +1965,7 @@ function get_wrist(i) {
 // assumed mirrored
     const kp = pose.keypoints[get_pose_index((_side=='Left')?10:9)];
     const thresh = from_native_backend ? 0.15 : score_threshold;
-    if (!kp || kp.score < thresh) {
-      const kp_sh = pose.keypoints[get_pose_index((_side=='Left')?6:5)];
-      if (kp_sh && ((kp_sh.score || 0) >= 0.18 || (kp_sh.visibility || 0) >= 0.18)) {
-        wrist = [kp_sh.position?.x ?? kp_sh.x, kp_sh.position?.y ?? kp_sh.y];
-        return true;
-      }
-      return false;
-    }
+    if (!kp || kp.score < thresh) return false;
 
     wrist = [kp.position?.x ?? kp.x, kp.position?.y ?? kp.y];
     return true;
