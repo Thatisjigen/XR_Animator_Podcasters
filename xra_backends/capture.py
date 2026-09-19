@@ -1336,7 +1336,7 @@ class CaptureSource:
         # Continuously tracked hands tolerate lower confidence during dips (Test 7 & Test 21).
         # New hand candidates require higher confidence to initiate tracking.
         if not is_continuous:
-            if effective_conf < 0.30 and w_sc < 0.35 and max_finger_avg < 0.32:
+            if effective_conf < 0.22 and w_sc < 0.25 and max_finger_avg < 0.22:
                 return False, True
         else:
             if effective_conf < 0.15 and max_finger_avg < 0.20 and w_sc < 0.15:
@@ -1390,7 +1390,14 @@ class CaptureSource:
                 len_se = ((el_px[0] - sh_px[0]) ** 2 + (el_px[1] - sh_px[1]) ** 2) ** 0.5 if (sh_px and sh_sc >= 0.20) else (torso * 0.70)
                 max_forearm = max(len_se * 1.35, torso * 1.05, height * 0.32 if height else 180.0)
                 if dist_el > max_forearm:
-                    return False, True
+                    is_desk_stuck_elbow = bool(
+                        sh_px and sh_sc >= 0.20
+                        and dist_sh <= max_reach * 0.75
+                        and hw_px[1] <= mid_sh_y + torso * 0.25
+                        and el_px[1] > mid_sh_y + torso * 0.35
+                    )
+                    if not is_desk_stuck_elbow:
+                        return False, True
 
             # 3. Resting Arm Global Guard:
             # If arm K is resting downwards at desk/lap (elbow below shoulder, and body wrist confirmed down below elbow),
@@ -1495,6 +1502,9 @@ class CaptureSource:
         if isinstance(body, list) and len(body) == 33:
             ls, rs = self._point_xy(body[11]), self._point_xy(body[12])
             lh, rh = self._point_xy(body[23]), self._point_xy(body[24])
+            if ls and rs:
+                shoulder_span = ((ls[0] - rs[0]) ** 2 + (ls[1] - rs[1]) ** 2) ** 0.5
+                torso = max(torso, shoulder_span * 1.25)
             if ls and rs and lh and rh:
                 shoulder_mid = ((ls[0] + rs[0]) * 0.5, (ls[1] + rs[1]) * 0.5)
                 hip_mid = ((lh[0] + rh[0]) * 0.5, (lh[1] + rh[1]) * 0.5)
@@ -1532,6 +1542,9 @@ class CaptureSource:
             torso = max(24.0, height * 0.12)
             ls, rs = self._point_xy(body[11]), self._point_xy(body[12])
             lh, rh = self._point_xy(body[23]), self._point_xy(body[24])
+            if ls and rs:
+                shoulder_span = ((ls[0] - rs[0]) ** 2 + (ls[1] - rs[1]) ** 2) ** 0.5
+                torso = max(torso, shoulder_span * 1.25)
             if ls and rs and lh and rh:
                 shoulder_mid = ((ls[0] + rs[0]) * 0.5, (ls[1] + rs[1]) * 0.5)
                 hip_mid = ((lh[0] + rh[0]) * 0.5, (lh[1] + rh[1]) * 0.5)
@@ -1695,7 +1708,13 @@ class CaptureSource:
                             score = max(score, 0.70)
                             accepted[index] = True
                             sane = True
-                            if body[pidx] is None or self._point_score(body[pidx]) < 0.20:
+                            cur_el_sc = self._point_score(body[pidx])
+                            cur_el_xy = self._point_xy(body[pidx])
+                            el_contradicts_raised = bool(
+                                cur_el_xy and h_wrist_xy[1] <= sh_xy[1] + torso * 0.25
+                                and cur_el_xy[1] > sh_xy[1] + torso * 0.40
+                            )
+                            if body[pidx] is None or cur_el_sc < 0.20 or el_contradicts_raised:
                                 other_sh_idx = 12 if index == 15 else 11
                                 other_sh_pt = body[other_sh_idx] if 0 <= other_sh_idx < len(body) else None
                                 other_sh_xy = self._point_xy(other_sh_pt)
@@ -2137,50 +2156,7 @@ class CaptureSource:
             age = now - self._hand_last_good_at.get(key, 0.0)
 
             if is_valid and isinstance(hand, list):
-                # Adaptive speed-sensitive smoothing: smooth landmark noise on still/slow hands (alpha ~ 0.32),
-                # ramp to responsive high-speed tracking (alpha ~ 0.85) on fast gestures.
-                lerp_alpha = 0.55
-                if previous_hand and len(previous_hand) > 0 and was_live and age < 0.35:
-                    prev_w = self._point_xy(previous_hand[0])
-                    curr_w = self._point_xy(hand[0])
-                    if prev_w and curr_w:
-                        w_disp = ((curr_w[0] - prev_w[0]) ** 2 + (curr_w[1] - prev_w[1]) ** 2) ** 0.5
-                        if curr_w[0] <= 1.5 and width:
-                            w_disp *= width
-                        if w_disp < 5.0:
-                            lerp_alpha = 0.32
-                        elif w_disp < 30.0:
-                            lerp_alpha = 0.32 + 0.43 * ((w_disp - 5.0) / 25.0)
-                        else:
-                            lerp_alpha = 0.85
-
-                smoothed_hand = []
-                for i, p in enumerate(hand):
-                    p_copy = copy_fn(p)
-                    if previous_hand and i < len(previous_hand) and was_live and age < 0.35:
-                        prev_p = previous_hand[i]
-                        p_xy = self._point_xy(p_copy)
-                        prev_xy = self._point_xy(prev_p)
-                        if p_xy and prev_xy:
-                            lx = round(float(prev_xy[0] * (1.0 - lerp_alpha) + p_xy[0] * lerp_alpha), 3)
-                            ly = round(float(prev_xy[1] * (1.0 - lerp_alpha) + p_xy[1] * lerp_alpha), 3)
-                            pz = p_copy.get("z", 0.0) if isinstance(p_copy, dict) else (p_copy[2] if isinstance(p_copy, (list, tuple)) and len(p_copy) > 2 else 0.0)
-                            prev_z = prev_p.get("z", 0.0) if isinstance(prev_p, dict) else (prev_p[2] if isinstance(prev_p, (list, tuple)) and len(prev_p) > 2 else 0.0)
-                            lz = round(float(prev_z * (1.0 - lerp_alpha) + pz * lerp_alpha), 3)
-
-                            if isinstance(p_copy, dict):
-                                if isinstance(p_copy.get("position"), dict):
-                                    p_copy["position"]["x"] = lx
-                                    p_copy["position"]["y"] = ly
-                                    p_copy["position"]["z"] = lz
-                                p_copy["x"] = lx
-                                p_copy["y"] = ly
-                                p_copy["z"] = lz
-                            elif isinstance(p_copy, (list, tuple)) and len(p_copy) >= 3:
-                                p_copy = [lx, ly, lz] + list(p_copy[3:])
-                            elif isinstance(p_copy, (list, tuple)) and len(p_copy) >= 2:
-                                p_copy = [lx, ly] + list(p_copy[2:])
-                    smoothed_hand.append(p_copy)
+                smoothed_hand = [copy_fn(p) for p in hand]
                 payload[key] = smoothed_hand
                 # Track downward hand motion
                 is_moving_down = False

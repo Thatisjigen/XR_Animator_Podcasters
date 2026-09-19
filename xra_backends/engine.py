@@ -112,6 +112,8 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
     hip_mid_norm = ((lh[0] + rh[0]) * 0.5 * aspect, (lh[1] + rh[1]) * 0.5)
     torso_span = ((shoulder_mid[0] - hip_mid_norm[0]) ** 2
                   + (shoulder_mid[1] - hip_mid_norm[1]) ** 2) ** 0.5
+    if shoulder_span > 0.01:
+        torso_span = max(torso_span, shoulder_span * 1.25)
 
     def _score(point):
         if not isinstance(point, dict):
@@ -337,7 +339,7 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
                 if prev_active:
                     is_hand_raised = bool(hand_min_y < (sy + t_span * 1.10) or hand_min_y < 0.86)
                 else:
-                    is_hand_raised = bool(hand_min_y < (sy + t_span * 0.85) or hand_min_y < 0.75)
+                    is_hand_raised = bool(hand_min_y < (sy + t_span * 0.95) or hand_min_y < 0.84 or dy_ew <= 0.0)
 
                 # Anatomical wrist clamp: if landmark 0 plunges downward due to model noise,
                 # keep it attached to the palm (MCP 9 is middle knuckle)
@@ -380,7 +382,7 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
                             ENGINE._arm_down_frames[wrist_idx] = 0
                             arm_active = True
                     else:
-                        if dy_ew <= -t_span * 0.05 or hy <= sy + t_span * 0.65:
+                        if dy_ew <= 0.0 or hy <= sy + t_span * 0.75:
                             arm_active = True
                             ENGINE._arm_down_frames[wrist_idx] = 0
                         else:
@@ -582,7 +584,11 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
                                 }
 
             ENGINE._arm_active_state[wrist_idx] = arm_active
-            active_hands[hand_key] = bool(has_active_hand and arm_active)
+            is_downward_desk_noise = False
+            if has_active_hand and isinstance(hand_pts, list) and len(hand_pts) >= 21:
+                h_y = _float(_normalized_point(hand_pts[0]).get("y", 1.0))
+                is_downward_desk_noise = bool(not arm_active and h_y >= 0.86 and dy_ew >= 0.02)
+            active_hands[hand_key] = bool(has_active_hand and not is_downward_desk_noise)
 
         if not arm_active and desk_guard_enabled and not has_active_hand:
             cur_w_pos = keypoints[wrist_idx].get("position") or keypoints[wrist_idx]
