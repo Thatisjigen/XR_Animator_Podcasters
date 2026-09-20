@@ -257,6 +257,7 @@ def save_profile(profile, rotate_backup=True):
         infer_mode = perf.get("infer_mode")
         infer_w = perf.get("infer_width")
         infer_h = perf.get("infer_height")
+        inference_headroom = perf.get("inference_headroom")
         kwargs = {}
         if fps is not None:
             kwargs["fps"] = float(fps)
@@ -269,6 +270,8 @@ def save_profile(profile, rotate_backup=True):
         if infer_w is not None and infer_h is not None:
             kwargs["infer_width"] = int(infer_w)
             kwargs["infer_height"] = int(infer_h)
+        if inference_headroom is not None:
+            kwargs["inference_headroom"] = float(inference_headroom)
         tracking = (profile.get("custom") or {}).get("tracking") or {}
         if "arm_steady_hold" in tracking:
             kwargs["arm_steady_hold"] = bool(tracking["arm_steady_hold"])
@@ -309,6 +312,8 @@ def load_profile():
                 if infer_w is not None and infer_h is not None:
                     kw["infer_width"] = int(infer_w)
                     kw["infer_height"] = int(infer_h)
+                if "inference_headroom" in perf:
+                    kw["inference_headroom"] = float(perf["inference_headroom"])
                 if "arm_steady_hold" in tracking:
                     kw["arm_steady_hold"] = bool(tracking["arm_steady_hold"])
                 backend_capture.CAPTURE.configure(**kw)
@@ -1251,6 +1256,10 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
 
+        if path == "/__xra_obs/camera.mjpg":
+            self._serve_obs_camera_preview()
+            return
+
         # Native mocap backend: WebSocket upgrade and JSON status routes.
         if path == "/__xra_backend/ws":
             if BACKENDS_OK and backend_server.maybe_upgrade(self):
@@ -1357,6 +1366,82 @@ class Handler(SimpleHTTPRequestHandler):
             return
 
         super().do_GET()
+
+    def _serve_obs_camera_preview(self):
+        """Stream the camera already owned by the mocap process to OBS."""
+        if not BACKENDS_OK:
+            self.send_error(503, "Native camera backend unavailable")
+            return
+        try:
+            from xra_backends import capture as backend_capture
+            source = backend_capture.CAPTURE
+            if not source.begin_obs_preview():
+                self.send_error(404, "OBS camera preview is disabled")
+                return
+        except Exception as exc:
+            self.send_error(503, f"OBS camera preview unavailable: {exc}")
+            return
+
+        try:
+            try:
+                import cv2
+
+                def encode_jpeg(frame, jpeg_quality):
+                    ok, encoded = cv2.imencode(
+                        ".jpg", frame,
+                        [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality],
+                    )
+                    return encoded.tobytes() if ok else None
+            except ImportError:
+                # Source-tree development may run under a Python without
+                # OpenCV even though the bundled runtime always includes it.
+                from io import BytesIO
+                from PIL import Image
+
+                def encode_jpeg(frame, jpeg_quality):
+                    output = BytesIO()
+                    Image.fromarray(frame[:, :, ::-1]).save(
+                        output, format="JPEG", quality=jpeg_quality
+                    )
+                    return output.getvalue()
+
+            preview = source.obs_preview_status()
+            interval = 1.0 / max(1.0, float(preview.get("fps") or 15.0))
+            quality = int(preview.get("quality") or 75)
+            self.send_response(200)
+            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+            self.send_header("Connection", "close")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.close_connection = True
+
+            sequence = -1
+            while True:
+                sequence, frame = source.wait_obs_preview_frame(sequence, timeout=1.0)
+                if frame is None:
+                    if not source.obs_preview_status().get("enabled"):
+                        break
+                    continue
+                started = time.monotonic()
+                jpeg = encode_jpeg(frame, quality)
+                if not jpeg:
+                    continue
+                self.wfile.write(b"--frame\r\n")
+                self.wfile.write(b"Content-Type: image/jpeg\r\n")
+                self.wfile.write(f"Content-Length: {len(jpeg)}\r\n\r\n".encode("ascii"))
+                self.wfile.write(jpeg)
+                self.wfile.write(b"\r\n")
+                self.wfile.flush()
+                remaining = interval - (time.monotonic() - started)
+                if remaining > 0.0:
+                    time.sleep(remaining)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+        except Exception as exc:
+            if os.environ.get("XRA_VERBOSE", "0").lower() in {"1", "true", "yes", "on"}:
+                print(f"[XRA] OBS preview stream stopped: {exc}", flush=True)
+        finally:
+            source.end_obs_preview()
 
     def _backend_status(self):
         """Lightweight status payload for the Performance tab."""

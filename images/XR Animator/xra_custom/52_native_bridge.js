@@ -1,4 +1,3 @@
-// XRA_PERFORMANCE_RUNTIME_V7
 (() => {
   'use strict';
 
@@ -1633,8 +1632,8 @@
 
 ;(() => {
   'use strict';
-  if (globalThis.__XRA_NATIVE_BACKEND_ROUTE_V5__) return;
-  globalThis.__XRA_NATIVE_BACKEND_ROUTE_V5__ = true;
+  if (globalThis.__XRA_NATIVE_BACKEND_ROUTE__) return;
+  globalThis.__XRA_NATIVE_BACKEND_ROUTE__ = true;
 
   function install(attempt = 0) {
     const XRA = globalThis.XRA;

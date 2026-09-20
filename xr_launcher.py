@@ -84,7 +84,9 @@ def open_browser_when_ready(port: int, chat: bool) -> None:
                     nw_cmd.extend(["--ignore-gpu-blocklist", "--enable-gpu-rasterization"])
                 else:
                     print(f"[XRA] Launching NW.js runtime with System / Integrated GPU ({gpu_pref})")
-                    env["DRI_PRIME"] = "0"
+                    # DRI_PRIME=0 is rejected by Mesa ("Should be > 0"); remove it
+                    # entirely to let the driver use the default/integrated GPU.
+                    env.pop("DRI_PRIME", None)
                     env.pop("__NV_PRIME_RENDER_OFFLOAD", None)
                     env.pop("__GLX_VENDOR_LIBRARY_NAME", None)
                     env.pop("__VK_LAYER_NV_optimus", None)
@@ -122,11 +124,33 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=None, help="local port (default: 8000 with fallback to free port)")
     parser.add_argument("--no-browser", action="store_true", help="start server only")
     parser.add_argument("--chat", action="store_true", help="open Studio Link directly")
+    parser.add_argument(
+        "--obs-preview",
+        action="store_true",
+        help="publish the owned camera at /__xra_obs/camera.mjpg for OBS",
+    )
+    parser.add_argument(
+        "--obs-debug",
+        action="store_true",
+        help="enable the OBS camera preview plus an asynchronous MediaPipe JSONL trace",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    obs_preview = bool(args.obs_preview or args.obs_debug)
+    if obs_preview:
+        os.environ["XRA_OBS_PREVIEW"] = "1"
+        if args.obs_debug:
+            os.environ["XRA_MEDIAPIPE_LOG"] = "1"
+        try:
+            from xra_backends import capture as backend_capture
+            backend_capture.CAPTURE.configure_obs_preview(True)
+            if args.obs_debug:
+                backend_capture.CAPTURE.configure_tracking_log(True)
+        except Exception as exc:
+            print(f"[XRA] OBS camera preview unavailable: {exc}")
     explicit_port = args.port is not None
     port = args.port or DEFAULT_PORT
 
@@ -160,6 +184,15 @@ def main() -> int:
     url = app_url(port, args.chat)
     print("XR Animator · local launcher")
     print(url)
+    if obs_preview:
+        print(f"[XRA] OBS camera preview: http://{HOST}:{port}/__xra_obs/camera.mjpg")
+    if args.obs_debug:
+        try:
+            log_path = backend_capture.CAPTURE.tracking_log_status().get("path")
+        except Exception:
+            log_path = None
+        if log_path:
+            print(f"[XRA] MediaPipe trace: {log_path}")
     print("Press Ctrl+C to stop the server.")
 
     if not args.no_browser:

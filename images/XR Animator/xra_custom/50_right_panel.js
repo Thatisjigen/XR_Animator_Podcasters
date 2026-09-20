@@ -1398,7 +1398,30 @@
       await XRA.profileService.save();
     };
     row(secWebcam.body, 'Skip frames on overload', frameSkip, {
-      sub: 'Se l\'inferenza subisce un picco che buca la deadline, riutilizza la posa precedente per 1 frame evitando accumulo di ritardi.'
+      sub: 'If inference spikes past the frame deadline, reuses the previous pose for 1 frame to prevent queue buildup.'
+    });
+
+    const headroom = select([
+      [1.0, 'Maximum smoothness (no limit)'],
+      [1.25, 'Balanced — 25% thermal margin (recommended)'],
+      [1.5, 'Power saving — 50% thermal margin (low-spec systems)'],
+    ]);
+    bindRefresh(() => { headroom.value = String(config.performance?.inference_headroom ?? 1.0); });
+    headroom.onchange = async () => {
+      config.performance ||= {};
+      config.performance.inference_headroom = Number(headroom.value);
+      markCustomPreset();
+      XRA.performance.apply();
+      await XRA.profileService.save();
+    };
+    row(secWebcam.body, 'Thermal headroom', headroom, {
+      reset: async () => {
+        if (!config.performance) config.performance = {};
+        config.performance.inference_headroom = 1.0;
+        XRA.performance.apply();
+      },
+      isDefault: () => (config.performance?.inference_headroom ?? 1.0) === 1.0,
+      sub: 'Leaves headroom above average inference time to prevent thermal throttling. "Balanced" reduces heat spikes with no visual impact on rendering.'
     });
 
     const cpuAffinity = document.createElement('input'); cpuAffinity.type = 'checkbox';
@@ -1411,7 +1434,7 @@
       await XRA.profileService.save();
     };
     row(secWebcam.body, 'CPU affinity optimization', cpuAffinity, {
-      sub: 'Vincola MediaPipe ai core ad alte prestazioni su Linux, eliminando jitter e picchi di latenza dovuti a E-core o Hyper-Threading.'
+      sub: 'Binds MediaPipe to performance cores on Linux, eliminating latency spikes from E-cores or hyper-threading.'
     });
 
     const fps = select([[20, '20 FPS'], [24, '24 FPS'], [30, '30 FPS']]);
@@ -1491,19 +1514,18 @@
       pipeline.disabled = true;
       try {
         await XRA.performance.setMocapMode(pipeline.value);
-        rowHardware.style.display = (pipeline.value === 'Face') ? '' : 'none';
       }
       finally { pipeline.disabled = false; refreshAll(); }
     };
     row(secTracking.body, 'Tracking / mocap mode', pipeline, {
-      sub: 'In Full Body il tracking completo calcola corpo, viso e mani su CPU (XNNPACK). In Face Only è attiva l\'accelerazione GPU.'
+      sub: 'Full Body uses native Holistic on CPU, or parallel native Face/Pose/Hands when a GPU is explicitly selected.'
     });
 
     const hardware = select([
-      ['Auto', 'Auto (Default)'],
-      ['high-performance', 'Dedicated GPU (High Performance)'],
-      ['low-power', 'Integrated GPU (Low Power · iGPU)'],
-      ['cpu', 'Disabled / CPU (XNNPACK)']
+      ['Auto', 'Auto (Stable CPU in Full Body)'],
+      ['high-performance', 'Dedicated GPU · Parallel split (Experimental)'],
+      ['low-power', 'Integrated GPU · Parallel split (Experimental)'],
+      ['cpu', 'CPU · Native Holistic (Stable)']
     ]);
 
     const updateDynamicHardwareGpus = () => {
@@ -1517,24 +1539,24 @@
         const dedicated = hwGpus.find(g => g.is_dedicated);
         const integrated = hwGpus.find(g => !g.is_dedicated);
         opts = [
-          ['Auto', 'Auto / System (Default)'],
-          ['high-performance', `GPU Dedicata (${dedicated?.name || 'Dedicata'})`],
-          ['low-power', `GPU Integrata (${integrated?.name || 'iGPU · Risparmio'})`],
-          ['cpu', 'Disabled / CPU (XNNPACK)']
+          ['Auto', 'Auto (Stable CPU in Full Body)'],
+          ['high-performance', `Dedicated GPU · Split (${dedicated?.name || 'Dedicated'})`],
+          ['low-power', `Integrated GPU · Split (${integrated?.name || 'iGPU'})`],
+          ['cpu', 'CPU · Native Holistic (Stable)']
         ];
       } else if (hwGpus.length >= 1) {
         const single = hwGpus[0];
         opts = [
-          ['Auto', 'Auto (Default)'],
-          ['low-power', `GPU (${single?.name || 'Hardware'})`],
-          ['cpu', 'Disabled / CPU (XNNPACK)']
+          ['Auto', 'Auto (Stable CPU in Full Body)'],
+          ['low-power', `GPU · Split (${single?.name || 'Hardware'})`],
+          ['cpu', 'CPU · Native Holistic (Stable)']
         ];
       } else {
         opts = [
-          ['Auto', 'Auto (Default)'],
-          ['high-performance', 'Dedicated GPU (High Performance)'],
-          ['low-power', 'Integrated GPU (Low Power · iGPU)'],
-          ['cpu', 'Disabled / CPU (XNNPACK)']
+          ['Auto', 'Auto (Stable CPU in Full Body)'],
+          ['high-performance', 'Dedicated GPU · Parallel split (Experimental)'],
+          ['low-power', 'Integrated GPU · Parallel split (Experimental)'],
+          ['cpu', 'CPU · Native Holistic (Stable)']
         ];
       }
 
@@ -1558,13 +1580,10 @@
       config.performance = config.performance || {};
       config.performance.hardware_mode = hardware.value;
       config.performance.ai_gpu_preference = hardware.value;
-      if (typeof XRA.backend?.setHardwareMode === 'function') {
-        XRA.backend.setHardwareMode(hardware.value);
-      }
       markCustomPreset();
       await XRA.profileService.save();
       refreshAll();
-      XRA.promptRestart("La modifica dell'accelerazione hardware/GPU per MediaPipe richiede il riavvio dell'applicazione per essere applicata.");
+      XRA.promptRestart(XRA.i18n?.t?.("Changing the MediaPipe CPU/GPU engine requires restarting the application.") || "Changing the MediaPipe CPU/GPU engine requires restarting the application.");
     };
 
     const activeHardwareGpuText = () => {
@@ -1572,43 +1591,45 @@
       const name = snap?.gpuName;
       const mode = String(config.performance?.hardware_mode || 'Auto').toLowerCase();
       if (name && name !== 'Unknown GPU' && mode !== 'cpu') {
-        return `GPU attiva: ${name}. `;
+        return `${XRA.i18n?.t?.('Active GPU') || 'Active GPU'}: ${name}. `;
       }
       return '';
     };
+
+    const isPipelineFace = () => {
+      const current = XRA.performance.currentNativeType?.() || pipeline.value || 'Full Body';
+      return current === 'Face';
+    };
+
+    const hardwareHelpText = () => isPipelineFace()
+      ? `${activeHardwareGpuText()}${XRA.i18n?.t?.('Face Only uses native FaceLandmarker on the selected device.') || 'Face Only uses native FaceLandmarker on the selected device.'}`
+      : `${activeHardwareGpuText()}${XRA.i18n?.t?.('CPU uses stable native Holistic; iGPU/dGPU use parallel native Face, Pose, and Hands (experimental).') || 'CPU uses stable native Holistic; iGPU/dGPU use parallel native Face, Pose, and Hands (experimental).'}`;
 
     const rowHardware = row(secTracking.body, 'Hardware Acceleration', hardware, {
       reset: async () => {
         config.performance = config.performance || {};
         config.performance.hardware_mode = 'Auto';
         config.performance.ai_gpu_preference = 'Auto';
-        if (typeof XRA.backend?.setHardwareMode === 'function') XRA.backend.setHardwareMode('Auto');
         markCustomPreset();
         await XRA.profileService.save();
         refreshAll();
+        XRA.promptRestart(XRA.i18n?.t?.("Resetting the MediaPipe engine requires restarting the application.") || "Resetting the MediaPipe engine requires restarting the application.");
       },
       isDefault: () => (config.performance?.hardware_mode || 'Auto') === 'Auto',
-      sub: `${activeHardwareGpuText()}Seleziona la GPU dedicata o integrata per l'accelerazione MediaPipe, o disattiva per usare la CPU (richiede riavvio app).`
+      sub: hardwareHelpText()
     });
 
-    const isPipelineFace = () => {
-      const current = XRA.performance.currentNativeType?.() || pipeline.value || 'Full Body';
-      return current === 'Face';
-    };
-    rowHardware.style.display = isPipelineFace() ? '' : 'none';
-
     bindRefresh(() => {
-      rowHardware.style.display = isPipelineFace() ? '' : 'none';
       const sub = rowHardware.querySelector?.('.xra-sub');
       if (sub) {
-        sub.textContent = `${activeHardwareGpuText()}Seleziona la GPU dedicata o integrata per l'accelerazione MediaPipe, o disattiva per usare la CPU (richiede riavvio app).`;
+        sub.textContent = hardwareHelpText();
       }
     });
 
     XRA.events?.on?.('backend_status_changed', (msg) => {
       const sub = rowHardware.querySelector?.('.xra-sub');
       if (sub) {
-        sub.textContent = `${activeHardwareGpuText()}Seleziona la GPU dedicata o integrata per l'accelerazione MediaPipe, o disattiva per usare la CPU (richiede riavvio app).`;
+        sub.textContent = hardwareHelpText();
       }
       if (msg && msg.gpuAvailable === false) {
         for (const opt of hardware.options) {

@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
+from pathlib import Path
+import queue
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from io import BytesIO
@@ -109,11 +113,14 @@ _MAX_CAPTURE_HEIGHT = int(os.environ.get("XRA_MAX_CAPTURE_HEIGHT", "1080"))
 _MAX_INFER_WIDTH = int(os.environ.get("XRA_MAX_INFER_WIDTH", "640"))
 _MAX_INFER_HEIGHT = int(os.environ.get("XRA_MAX_INFER_HEIGHT", "480"))
 try:
-    # Overhead headroom for inference throttling. Default is 1.0 (unconstrained up to target FPS).
-    # Power users can override it explicitly via XRA_INFERENCE_HEADROOM (e.g. 1.25).
+    # Inference throttling headroom.  1.0 = unconstrained; 1.25 = leave 25%
+    # slack above the running average so the CPU/GPU has thermal breathing room.
+    # Exposed as a runtime-configurable value via configure(inference_headroom=…)
+    # and settable at startup via XRA_INFERENCE_HEADROOM env var.
     _INFERENCE_HEADROOM = max(1.0, min(3.0, float(os.environ.get("XRA_INFERENCE_HEADROOM", "1.0"))))
 except (TypeError, ValueError):
     _INFERENCE_HEADROOM = 1.0
+
 
 
 def _find_ffmpeg() -> Optional[str]:
@@ -725,7 +732,15 @@ class CaptureSource:
         self._body_last_good_at = [0.0] * 33
         self._hand_last_good = {"leftHand": None, "rightHand": None}
         self._hand_last_good_at = {"leftHand": 0.0, "rightHand": 0.0}
+        self._hand_world_last_good = {"leftHand": None, "rightHand": None}
+        self._hand_fist_state = {"leftHand": False, "rightHand": False}
+        self._hand_body_fallback = {"leftHand": False, "rightHand": False}
         self._hand_moving_down = {"leftHand": False, "rightHand": False}
+        self._hands_contact_active = False
+        self._hands_contact_last_close_at = 0.0
+        self._hands_contact_exit_frames = 0
+        self._hands_contact_wrist_delta = None
+        self._hands_contact_midpoint = None
         self._wrist_moving_down = {15: False, 16: False}
         self._wrist_moving_up = {15: False, 16: False}
         self._held_joints = 0
@@ -756,6 +771,44 @@ class CaptureSource:
         self._adaptive_frame_skip: bool = os.environ.get("XRA_ADAPTIVE_FRAME_SKIP", "0") in {"1", "true", "yes", "on"}
         self._cpu_affinity: bool = True
         self._last_wire: Optional[dict] = None
+        # Optional OBS/debug preview.  The camera is still opened exactly once:
+        # HTTP clients consume references to frames already acquired here.
+        # Encoding happens in the HTTP client thread so mocap inference is not
+        # burdened when the preview is disabled (the default).
+        self._obs_preview_condition = threading.Condition()
+        self._obs_preview_enabled = os.environ.get("XRA_OBS_PREVIEW", "0").lower() in {
+            "1", "true", "yes", "on"
+        }
+        self._obs_preview_clients = 0
+        self._obs_preview_sequence = 0
+        self._obs_preview_frame: Optional[np.ndarray] = None
+        try:
+            self._obs_preview_fps = max(
+                1.0, min(30.0, float(os.environ.get("XRA_OBS_PREVIEW_FPS", "15")))
+            )
+        except (TypeError, ValueError):
+            self._obs_preview_fps = 15.0
+        try:
+            self._obs_preview_quality = max(
+                40, min(95, int(os.environ.get("XRA_OBS_PREVIEW_QUALITY", "75")))
+            )
+        except (TypeError, ValueError):
+            self._obs_preview_quality = 75
+        # Optional OBS diagnostic: only landmark metadata is written, never
+        # camera pixels. A background writer keeps disk I/O off inference.
+        self._tracking_log_enabled = os.environ.get("XRA_MEDIAPIPE_LOG", "0").lower() in {
+            "1", "true", "yes", "on"
+        }
+        self._tracking_log_lock = threading.Lock()
+        self._tracking_log_queue: Optional[queue.Queue] = None
+        self._tracking_log_thread: Optional[threading.Thread] = None
+        self._tracking_log_stop = threading.Event()
+        self._tracking_log_path = ""
+        self._tracking_log_started_ms = 0
+        self._tracking_log_entries = 0
+        self._tracking_log_dropped = 0
+        self._tracking_log_error = ""
+        self._tracking_log_directory_override: Optional[Path] = None
         # Set when infer_mode/dimensions change while the engine is already running.
         # _run_inference will reload ENGINE before the next inference to avoid
         # the MediaPipe graph dimension-mismatch freeze.
@@ -784,7 +837,248 @@ class CaptureSource:
         with self._lock:
             return len(self._subscribers)
 
+    @property
+    def obs_preview_client_count(self) -> int:
+        with self._obs_preview_condition:
+            return self._obs_preview_clients
+
+    def configure_obs_preview(self, enabled: bool, *, fps=None, quality=None) -> dict:
+        """Enable the local OBS feed without opening another camera handle."""
+        with self._obs_preview_condition:
+            self._obs_preview_enabled = bool(enabled)
+            if fps is not None:
+                self._obs_preview_fps = max(1.0, min(30.0, float(fps)))
+            if quality is not None:
+                self._obs_preview_quality = max(40, min(95, int(quality)))
+            if not self._obs_preview_enabled:
+                self._obs_preview_frame = None
+            self._obs_preview_condition.notify_all()
+        self._subscribers_changed.set()
+        return self.obs_preview_status()
+
+    def obs_preview_status(self) -> dict:
+        with self._obs_preview_condition:
+            return {
+                "enabled": self._obs_preview_enabled,
+                "clients": self._obs_preview_clients,
+                "fps": self._obs_preview_fps,
+                "quality": self._obs_preview_quality,
+            }
+
+    def begin_obs_preview(self) -> bool:
+        with self._obs_preview_condition:
+            if not self._obs_preview_enabled:
+                return False
+            self._obs_preview_clients += 1
+            self._obs_preview_condition.notify_all()
+        self._subscribers_changed.set()
+        return True
+
+    def end_obs_preview(self) -> None:
+        with self._obs_preview_condition:
+            self._obs_preview_clients = max(0, self._obs_preview_clients - 1)
+            if self._obs_preview_clients == 0:
+                self._obs_preview_frame = None
+            self._obs_preview_condition.notify_all()
+        self._subscribers_changed.set()
+
+    def wait_obs_preview_frame(
+        self, after_sequence: int, timeout: float = 1.0
+    ) -> tuple[int, Optional[np.ndarray]]:
+        """Wait for and return the newest shared camera frame reference."""
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        with self._obs_preview_condition:
+            while (
+                self._obs_preview_enabled
+                and self._obs_preview_sequence <= after_sequence
+            ):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    break
+                self._obs_preview_condition.wait(remaining)
+            if not self._obs_preview_enabled:
+                return self._obs_preview_sequence, None
+            return self._obs_preview_sequence, self._obs_preview_frame
+
+    def _publish_obs_preview_frame(self, frame: np.ndarray) -> None:
+        with self._obs_preview_condition:
+            if not self._obs_preview_enabled or self._obs_preview_clients <= 0:
+                return
+            self._obs_preview_frame = frame
+            self._obs_preview_sequence += 1
+            self._obs_preview_condition.notify_all()
+
+    def _default_tracking_log_directory(self) -> Path:
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).resolve().parent / "tracking_logs"
+        return Path(__file__).resolve().parents[1] / "tracking_logs"
+
+    def configure_tracking_log(self, enabled: bool, *, directory=None) -> dict:
+        """Enable an asynchronous JSONL trace of raw/stabilized hands."""
+        with self._tracking_log_lock:
+            self._tracking_log_enabled = bool(enabled)
+            if directory is not None:
+                self._tracking_log_directory_override = Path(directory).expanduser().resolve()
+        if enabled:
+            self._start_tracking_log()
+        else:
+            self._stop_tracking_log()
+        return self.tracking_log_status()
+
+    def tracking_log_status(self) -> dict:
+        with self._tracking_log_lock:
+            thread = self._tracking_log_thread
+            return {
+                "enabled": self._tracking_log_enabled,
+                "active": bool(thread and thread.is_alive()),
+                "path": self._tracking_log_path,
+                "started_ms": self._tracking_log_started_ms or None,
+                "entries": self._tracking_log_entries,
+                "dropped": self._tracking_log_dropped,
+                "error": self._tracking_log_error,
+            }
+
+    def _start_tracking_log(self) -> None:
+        with self._tracking_log_lock:
+            if not self._tracking_log_enabled:
+                return
+            if self._tracking_log_thread and self._tracking_log_thread.is_alive():
+                return
+            directory = self._tracking_log_directory_override or self._default_tracking_log_directory()
+            try:
+                directory.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                self._tracking_log_enabled = False
+                self._tracking_log_error = str(exc)
+                return
+            stamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+            path = directory / f"mediapipe_obs_{stamp}_{os.getpid()}.jsonl"
+            log_queue: queue.Queue = queue.Queue(maxsize=2048)
+            self._tracking_log_queue = log_queue
+            self._tracking_log_stop.clear()
+            self._tracking_log_path = str(path)
+            self._tracking_log_started_ms = int(time.time() * 1000)
+            self._tracking_log_entries = 0
+            self._tracking_log_dropped = 0
+            self._tracking_log_error = ""
+            thread = threading.Thread(
+                target=self._tracking_log_writer,
+                args=(path, log_queue, self._tracking_log_started_ms),
+                name="xra-mediapipe-log",
+                daemon=True,
+            )
+            self._tracking_log_thread = thread
+            thread.start()
+        print(f"[XRA] MediaPipe OBS log: {path}", flush=True)
+
+    def _stop_tracking_log(self) -> None:
+        with self._tracking_log_lock:
+            thread = self._tracking_log_thread
+            log_queue = self._tracking_log_queue
+            self._tracking_log_stop.set()
+            if log_queue is not None:
+                try:
+                    log_queue.put_nowait(None)
+                except queue.Full:
+                    pass
+        if thread and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+        with self._tracking_log_lock:
+            self._tracking_log_thread = None
+            self._tracking_log_queue = None
+
+    def _tracking_log_writer(self, path: Path, log_queue: queue.Queue, started_ms: int) -> None:
+        header = {
+            "type": "session",
+            "version": 1,
+            "started_ms": started_ms,
+            "pid": os.getpid(),
+            "note": "raw=MediaPipe before stabilizer; stable=payload sent to retarget",
+        }
+        try:
+            with path.open("w", encoding="utf-8", buffering=1) as handle:
+                handle.write(json.dumps(header, separators=(",", ":")) + "\n")
+                while True:
+                    try:
+                        record = log_queue.get(timeout=0.5)
+                    except queue.Empty:
+                        if self._tracking_log_stop.is_set():
+                            break
+                        continue
+                    if record is None:
+                        break
+                    handle.write(json.dumps(record, separators=(",", ":"), ensure_ascii=False) + "\n")
+        except Exception as exc:
+            with self._tracking_log_lock:
+                self._tracking_log_error = str(exc)
+
+    @staticmethod
+    def _tracking_log_point(point: object) -> Optional[list]:
+        if isinstance(point, dict):
+            position = point.get("position") if isinstance(point.get("position"), dict) else point
+            values = (position.get("x"), position.get("y"), position.get("z", 0.0))
+            score = point.get("score", point.get("visibility", position.get("visibility", 1.0)))
+        elif isinstance(point, (list, tuple)) and len(point) >= 2:
+            values = (point[0], point[1], point[2] if len(point) > 2 else 0.0)
+            score = point[3] if len(point) > 3 else 1.0
+        else:
+            return None
+        try:
+            return [round(float(values[0]), 4), round(float(values[1]), 4),
+                    round(float(values[2]), 4), round(float(score), 3)]
+        except (TypeError, ValueError):
+            return None
+
+    def _tracking_log_snapshot(self, payload: Optional[dict]) -> dict:
+        payload = payload if isinstance(payload, dict) else {}
+
+        def points(name: str, limit: int) -> list:
+            source = payload.get(name)
+            if not isinstance(source, list):
+                return []
+            result = []
+            for point in source[:limit]:
+                compact = self._tracking_log_point(point)
+                if compact is not None:
+                    result.append(compact)
+            return result
+
+        body = payload.get("keypoints") if isinstance(payload.get("keypoints"), list) else []
+        arms = {}
+        for index, name in ((11, "left_shoulder"), (12, "right_shoulder"),
+                            (13, "left_elbow"), (14, "right_elbow"),
+                            (15, "left_wrist"), (16, "right_wrist")):
+            compact = self._tracking_log_point(body[index]) if index < len(body) else None
+            if compact is not None:
+                arms[name] = compact
+        return {
+            "left": points("leftHand", 21),
+            "right": points("rightHand", 21),
+            "left_world": points("leftHandWorld", 21),
+            "right_world": points("rightHandWorld", 21),
+            "arms": arms,
+        }
+
+    def _queue_tracking_log(self, record: dict) -> None:
+        with self._tracking_log_lock:
+            log_queue = self._tracking_log_queue
+            active = bool(
+                self._tracking_log_enabled
+                and self._tracking_log_thread
+                and self._tracking_log_thread.is_alive()
+                and log_queue is not None
+            )
+            if not active:
+                return
+            try:
+                log_queue.put_nowait(record)
+                self._tracking_log_entries += 1
+            except queue.Full:
+                self._tracking_log_dropped += 1
+
     def start(self) -> None:
+        if self._tracking_log_enabled:
+            self._start_tracking_log()
         with self._lock:
             self._last_error = ""
             self._available = False
@@ -821,6 +1115,7 @@ class CaptureSource:
         with self._lock:
             self._running = False
             self._thread = None
+        self._stop_tracking_log()
 
     def pause(self) -> None:
         self._paused.set()
@@ -832,7 +1127,7 @@ class CaptureSource:
         self._paused.clear()
         self._subscribers_changed.set()
 
-    def configure(self, *, index=None, device=None, width=None, height=None, fps=None, selfie_mode=None, mocap_mode=None, infer_width=None, infer_height=None, infer_mode=None, arm_steady_hold=None, smart_arm_sync=None, desk_wrist_guard=None, adaptive_frame_skip=None, cpu_affinity=None) -> dict:
+    def configure(self, *, index=None, device=None, width=None, height=None, fps=None, selfie_mode=None, mocap_mode=None, infer_width=None, infer_height=None, infer_mode=None, arm_steady_hold=None, smart_arm_sync=None, desk_wrist_guard=None, adaptive_frame_skip=None, cpu_affinity=None, inference_headroom=None) -> dict:
         requested_mode = None
         previous_mode = None
         needs_reopen = False
@@ -851,6 +1146,9 @@ class CaptureSource:
             except Exception:
                 device = str(index)
         with self._lock:
+            if inference_headroom is not None:
+                global _INFERENCE_HEADROOM
+                _INFERENCE_HEADROOM = max(1.0, min(3.0, float(inference_headroom)))
             if cpu_affinity is not None:
                 self._cpu_affinity = bool(cpu_affinity)
                 _pin_thread_to_physical_cores(self._cpu_affinity)
@@ -1008,6 +1306,8 @@ class CaptureSource:
                 "desk_wrist_guard": self._desk_wrist_guard,
                 "adaptive_frame_skip": self._adaptive_frame_skip,
                 "cpu_affinity": self._cpu_affinity,
+                "obs_preview": self.obs_preview_status(),
+                "tracking_log": self.tracking_log_status(),
                 "hardware": probe_hardware_info(self._device or "/dev/video0"),
             }
 
@@ -1063,9 +1363,9 @@ class CaptureSource:
 
                 # Keep the device open, but do not run inference when no pose
                 # client is listening. The worker subscription wakes this loop.
-                if self.subscriber_count == 0:
+                if self.subscriber_count == 0 and self.obs_preview_client_count == 0:
                     self._subscribers_changed.clear()
-                    if self.subscriber_count == 0:
+                    if self.subscriber_count == 0 and self.obs_preview_client_count == 0:
                         self._subscribers_changed.wait(1.0)
                     continue
 
@@ -1099,6 +1399,16 @@ class CaptureSource:
                         frame = cv2.flip(frame, 1)
                     except Exception:
                         frame = np.ascontiguousarray(frame[:, ::-1, :])
+
+                # OBS receives the same oriented frame that enters the mocap
+                # pipeline.  This only stores a reference and wakes the HTTP
+                # thread; JPEG compression never runs on the inference thread.
+                self._publish_obs_preview_frame(frame)
+
+                # A preview client can keep acquisition alive by itself.  If no
+                # pose client is connected, avoid wasting cycles on inference.
+                if self.subscriber_count == 0:
+                    continue
 
                 if getattr(self, "_just_recovered", False):
                     self._just_recovered = False
@@ -1269,8 +1579,16 @@ class CaptureSource:
         self._hand_wrist_rel = {17: None, 18: None, 19: None, 20: None, 21: None, 22: None}
         self._hand_last_good = {"leftHand": None, "rightHand": None}
         self._hand_last_good_at = {"leftHand": 0.0, "rightHand": 0.0}
+        self._hand_world_last_good = {"leftHand": None, "rightHand": None}
         self._hand_was_live = {"leftHand": False, "rightHand": False}
+        self._hand_fist_state = {"leftHand": False, "rightHand": False}
+        self._hand_body_fallback = {"leftHand": False, "rightHand": False}
         self._hand_moving_down = {"leftHand": False, "rightHand": False}
+        self._hands_contact_active = False
+        self._hands_contact_last_close_at = 0.0
+        self._hands_contact_exit_frames = 0
+        self._hands_contact_wrist_delta = None
+        self._hands_contact_midpoint = None
         self._wrist_moving_down = {15: False, 16: False}
         self._wrist_moving_up = {15: False, 16: False}
         self._held_joints = 0
@@ -1287,6 +1605,211 @@ class CaptureSource:
         if isinstance(point, list):
             return list(point)
         return point
+
+    @staticmethod
+    def _hand_world_key(hand_key: str) -> str:
+        return "leftHandWorld" if hand_key == "leftHand" else "rightHandWorld"
+
+    def _hand_bend_score(self, hand: Any) -> float:
+        """Return a cheap 0..1 curl estimate for the four non-thumb fingers."""
+        if not (isinstance(hand, list) and len(hand) >= 21):
+            return 0.0
+        total = 0.0
+        count = 0
+        for chain in ((5, 6, 7, 8), (9, 10, 11, 12),
+                      (13, 14, 15, 16), (17, 18, 19, 20)):
+            points = [self._point_xyz(hand[index]) for index in chain]
+            if any(point is None for point in points):
+                continue
+            for a, b, c in ((points[0], points[1], points[2]),
+                            (points[1], points[2], points[3])):
+                ab = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+                bc = (c[0] - b[0], c[1] - b[1], c[2] - b[2])
+                ab_len = (ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2]) ** 0.5
+                bc_len = (bc[0] * bc[0] + bc[1] * bc[1] + bc[2] * bc[2]) ** 0.5
+                if ab_len <= 1e-6 or bc_len <= 1e-6:
+                    continue
+                cosine = max(-1.0, min(1.0, (
+                    ab[0] * bc[0] + ab[1] * bc[1] + ab[2] * bc[2]
+                ) / (ab_len * bc_len)))
+                total += (1.0 - cosine) * 0.5
+                count += 1
+        return total / count if count else 0.0
+
+    def _hand_points_px(self, hand: Any, width: int, height: int) -> Optional[list]:
+        if not (isinstance(hand, list) and len(hand) >= 21):
+            return None
+        points = []
+        for point in hand[:21]:
+            xy = self._point_xy(point)
+            if xy is None:
+                return None
+            if width and height and abs(xy[0]) <= 1.5 and abs(xy[1]) <= 1.5:
+                points.append((xy[0] * width, xy[1] * height))
+            else:
+                points.append(xy)
+        return points
+
+    def _hand_contact_metrics(self, left: Any, right: Any, width: int, height: int) -> Optional[dict]:
+        """Measure two-hand contact without assuming that touching palms have touching wrists."""
+        left_px = self._hand_points_px(left, width, height)
+        right_px = self._hand_points_px(right, width, height)
+        if left_px is None or right_px is None:
+            return None
+
+        def hand_scale(points):
+            wrist = points[0]
+            return max(
+                ((point[0] - wrist[0]) ** 2 + (point[1] - wrist[1]) ** 2)
+                for point in points[1:]
+            ) ** 0.5
+
+        scale = max(8.0, (hand_scale(left_px) + hand_scale(right_px)) * 0.5)
+        # Fingers and palm edges can touch while the two wrist roots remain a
+        # full palm-width apart (prayer/clap pose).  Use the closest non-wrist
+        # landmarks for entry, and paired-landmark similarity only to identify
+        # MediaPipe's occasional duplicated-single-hand result.
+        closest = min(
+            ((left_px[i][0] - right_px[j][0]) ** 2
+             + (left_px[i][1] - right_px[j][1]) ** 2)
+            for i in range(1, 21) for j in range(1, 21)
+        ) ** 0.5
+        paired = sum(
+            ((left_px[i][0] - right_px[i][0]) ** 2
+             + (left_px[i][1] - right_px[i][1]) ** 2) ** 0.5
+            for i in range(21)
+        ) / 21.0
+        lw, rw = left_px[0], right_px[0]
+        wrist_distance = ((lw[0] - rw[0]) ** 2 + (lw[1] - rw[1]) ** 2) ** 0.5
+        return {
+            "close": closest <= scale * 0.52,
+            "duplicate": wrist_distance <= scale * 0.14 and paired <= scale * 0.18,
+            "ratio": closest / scale,
+            "left_wrist": lw,
+            "right_wrist": rw,
+            "midpoint": ((lw[0] + rw[0]) * 0.5, (lw[1] + rw[1]) * 0.5),
+            "delta": (lw[0] - rw[0], lw[1] - rw[1]),
+        }
+
+    def _update_hands_contact_state(
+        self,
+        raw_hands: dict,
+        hand_validity: dict,
+        width: int,
+        height: int,
+        now: float,
+    ) -> tuple[Optional[dict], bool]:
+        both_valid = all(hand_validity[key][0] for key in ("leftHand", "rightHand"))
+        metrics = self._hand_contact_metrics(
+            raw_hands.get("leftHand"), raw_hands.get("rightHand"), width, height
+        ) if both_valid else None
+
+        convincing_contact = bool(
+            metrics and metrics["close"] and not metrics["duplicate"]
+            and metrics["midpoint"][1] < height * 0.82
+        )
+        if convincing_contact:
+            # Enter immediately: in real prayer poses MediaPipe often provides
+            # only one clean contact frame before face occlusion begins.
+            self._hands_contact_active = True
+            self._hands_contact_last_close_at = now
+            self._hands_contact_exit_frames = 0
+            self._hands_contact_wrist_delta = metrics["delta"]
+            self._hands_contact_midpoint = metrics["midpoint"]
+        elif self._hands_contact_active:
+            within_occlusion_grace = (now - self._hands_contact_last_close_at) <= 0.70
+            if metrics and not metrics["duplicate"] and metrics["ratio"] > 0.95:
+                self._hands_contact_exit_frames += 1
+            elif metrics and metrics["ratio"] <= 0.95:
+                self._hands_contact_exit_frames = 0
+            if not within_occlusion_grace or self._hands_contact_exit_frames >= 2:
+                self._hands_contact_active = False
+                self._hands_contact_exit_frames = 0
+                self._hands_contact_wrist_delta = None
+                self._hands_contact_midpoint = None
+
+        untrusted_pair = bool(
+            self._hands_contact_active and metrics
+            and (metrics["duplicate"] or not metrics["close"])
+        )
+        return metrics, untrusted_pair
+
+    def _translate_hand_to_wrist(
+        self,
+        hand: Any,
+        target_wrist_px: tuple[float, float],
+        width: int,
+        height: int,
+    ) -> Optional[list]:
+        if not (isinstance(hand, list) and len(hand) >= 21):
+            return None
+        wrist = self._point_xy(hand[0])
+        if wrist is None:
+            return None
+        normalized = bool(abs(wrist[0]) <= 1.5 and abs(wrist[1]) <= 1.5)
+        target_x, target_y = target_wrist_px
+        if normalized:
+            target_x /= max(1, width)
+            target_y /= max(1, height)
+        dx, dy = target_x - wrist[0], target_y - wrist[1]
+        translated = []
+        for point in hand:
+            copied = self._fast_copy_point(point)
+            xy = self._point_xy(copied)
+            if xy is None:
+                return None
+            x, y = xy[0] + dx, xy[1] + dy
+            if isinstance(copied, dict):
+                copied["x"] = x
+                copied["y"] = y
+                copied["score"] = min(0.55, max(0.30, self._point_score(copied)))
+                copied["visibility"] = copied["score"]
+                if isinstance(copied.get("position"), dict):
+                    copied["position"]["x"] = x
+                    copied["position"]["y"] = y
+            elif isinstance(copied, (list, tuple)):
+                copied = [x, y, *list(copied[2:])]
+            translated.append(copied)
+        return translated
+
+    def _contact_held_hand(
+        self,
+        hand_key: str,
+        previous_hands: dict,
+        raw_hands: dict,
+        hand_validity: dict,
+        metrics: Optional[dict],
+        width: int,
+        height: int,
+    ) -> Optional[list]:
+        if not self._hands_contact_active or self._hands_contact_wrist_delta is None:
+            return None
+        previous = previous_hands.get(hand_key)
+        if not (isinstance(previous, list) and len(previous) >= 21):
+            return None
+
+        other_key = "rightHand" if hand_key == "leftHand" else "leftHand"
+        delta_x, delta_y = self._hands_contact_wrist_delta
+        target = None
+        if metrics is not None:
+            midpoint = metrics["midpoint"]
+            sign = 0.5 if hand_key == "leftHand" else -0.5
+            target = (midpoint[0] + delta_x * sign, midpoint[1] + delta_y * sign)
+            self._hands_contact_midpoint = midpoint
+        elif hand_validity.get(other_key, (False, False))[0]:
+            other_points = self._hand_points_px(raw_hands.get(other_key), width, height)
+            if other_points:
+                other_wrist = other_points[0]
+                if hand_key == "leftHand":
+                    target = (other_wrist[0] + delta_x, other_wrist[1] + delta_y)
+                else:
+                    target = (other_wrist[0] - delta_x, other_wrist[1] - delta_y)
+        elif self._hands_contact_midpoint is not None:
+            midpoint = self._hands_contact_midpoint
+            sign = 0.5 if hand_key == "leftHand" else -0.5
+            target = (midpoint[0] + delta_x * sign, midpoint[1] + delta_y * sign)
+
+        return self._translate_hand_to_wrist(previous, target, width, height) if target else None
 
     def _check_hand_validity(
         self,
@@ -1330,7 +1853,15 @@ class CaptureSource:
         was_live = self._hand_was_live.get(hand_key, False)
         last_good_at = self._hand_last_good_at.get(hand_key, 0.0)
         age = now - last_good_at
-        is_continuous = was_live and (age < 0.35)
+        # Temporal window for hand reacquisition during brief rotation dropouts
+        is_continuous = was_live and (age < 0.55)
+        strong_hand_evidence = bool(
+            is_continuous
+            or (
+                effective_conf >= 0.55
+                and (w_sc >= 0.45 or avg_knuckles >= 0.55)
+            )
+        )
 
         # Baseline confidence gate:
         # Continuously tracked hands tolerate lower confidence during dips (Test 7 & Test 21).
@@ -1400,15 +1931,21 @@ class CaptureSource:
                         return False, True
 
             # 3. Resting Arm Global Guard:
-            # If arm K is resting downwards at desk/lap (elbow below shoulder, and body wrist confirmed down below elbow),
-            # any hand candidate high up (chest, face, head, or air above elbow) is physically impossible for arm K.
+            # A stale BlazePose wrist often remains below the desk while the dedicated
+            # hand tracker has already reacquired a real raised hand. Treat the body
+            # pose as a veto only for weak, newly-entering candidates; otherwise the
+            # complete hand track is the more specific source of truth.
             if el_px and el_sc >= 0.25 and mid_sh_y > 0.0:
                 if el_px[1] > mid_sh_y + torso * 0.45:
                     is_resting_arm = False
                     if bw_px and bw_sc >= 0.40 and bw_px[1] > el_px[1] + torso * 0.05:
                         is_resting_arm = True
 
-                    if is_resting_arm and hw_px[1] < el_px[1] - torso * 0.10:
+                    if (
+                        is_resting_arm
+                        and hw_px[1] < el_px[1] - torso * 0.10
+                        and not strong_hand_evidence
+                    ):
                         return False, True
 
             # 4. Chest / Collar Phantom Hand Rejection Zone:
@@ -1477,6 +2014,108 @@ class CaptureSource:
                             # Never delete a hand when both arms are active!
 
         return True, False
+
+    def _anchor_held_hand_to_body_wrist(
+        self,
+        hand_key: str,
+        previous_hand: Optional[list],
+        body: Optional[list],
+        width: int,
+        height: int,
+        torso: float,
+    ) -> Optional[list]:
+        """Bridge a detailed-hand dropout while the body wrist proves the arm is up.
+
+        HolisticLandmarker can temporarily stop emitting one 21-point hand when
+        a palm rotates or remains still, even though its pose branch continues
+        to track the wrist.  Reuse the last hand shape, translated to that live
+        wrist, instead of deleting the hand and forcing the arm into a fallback
+        pose.  A low/resting wrist never qualifies, so hands still release
+        promptly when they move down to the desk or leave the frame.
+        """
+        if not (isinstance(previous_hand, list) and len(previous_hand) >= 21):
+            return None
+        if not (isinstance(body, list) and len(body) == 33):
+            return None
+
+        is_left = hand_key == "leftHand"
+        sh_idx = 11 if is_left else 12
+        el_idx = 13 if is_left else 14
+        wrist_idx = 15 if is_left else 16
+        sh_xy = self._point_xy(body[sh_idx])
+        el_xy = self._point_xy(body[el_idx])
+        wrist_xy = self._point_xy(body[wrist_idx])
+        prev_wrist_xy = self._point_xy(previous_hand[0])
+        sh_score = self._point_score(body[sh_idx])
+        el_score = self._point_score(body[el_idx])
+        wrist_score = self._point_score(body[wrist_idx])
+        if None in (sh_xy, el_xy, wrist_xy, prev_wrist_xy):
+            return None
+        if sh_score < 0.18 or el_score < 0.18 or wrist_score < 0.20:
+            return None
+
+        def to_pixels(xy):
+            if width and height and abs(xy[0]) <= 1.5 and abs(xy[1]) <= 1.5:
+                return xy[0] * width, xy[1] * height
+            return xy
+
+        sh_px = to_pixels(sh_xy)
+        el_px = to_pixels(el_xy)
+        wrist_px = to_pixels(wrist_xy)
+        if not (0.0 <= wrist_px[0] <= width and 0.0 <= wrist_px[1] <= height):
+            return None
+
+        shoulder_reach = ((wrist_px[0] - sh_px[0]) ** 2 + (wrist_px[1] - sh_px[1]) ** 2) ** 0.5
+        max_reach = max(torso * 2.3, height * 0.55 if height else 300.0)
+        if shoulder_reach > max_reach:
+            return None
+
+        # Forearm raised check: wrist level relative to elbow and shoulder.
+        wrist_is_raised = bool(
+            wrist_px[1] <= el_px[1] + torso * 0.30
+            or wrist_px[1] <= sh_px[1] + torso * 0.55
+        )
+        if not wrist_is_raised or wrist_px[1] >= height * 0.88:
+            return None
+
+        previous_is_normalized = bool(
+            abs(prev_wrist_xy[0]) <= 1.5 and abs(prev_wrist_xy[1]) <= 1.5
+        )
+        target_x, target_y = wrist_xy
+        if previous_is_normalized and not (
+            abs(target_x) <= 1.5 and abs(target_y) <= 1.5
+        ):
+            target_x /= max(1, width)
+            target_y /= max(1, height)
+        elif not previous_is_normalized and (
+            abs(target_x) <= 1.5 and abs(target_y) <= 1.5
+        ):
+            target_x *= width
+            target_y *= height
+
+        dx = target_x - prev_wrist_xy[0]
+        dy = target_y - prev_wrist_xy[1]
+        anchored = []
+        for point in previous_hand:
+            copied = self._fast_copy_point(point)
+            xy = self._point_xy(copied)
+            if xy is None:
+                return None
+            x, y = xy[0] + dx, xy[1] + dy
+            if isinstance(copied, dict):
+                copied["x"] = x
+                copied["y"] = y
+                copied["score"] = min(0.45, max(0.30, self._point_score(copied)))
+                copied["visibility"] = copied["score"]
+                if isinstance(copied.get("position"), dict):
+                    copied["position"]["x"] = x
+                    copied["position"]["y"] = y
+            elif isinstance(copied, (list, tuple)):
+                copied = [x, y, *list(copied[2:])]
+                if len(copied) > 3:
+                    copied[3] = min(0.45, max(0.30, float(copied[3])))
+            anchored.append(copied)
+        return anchored
 
     def _stabilize_payload(self, payload: dict, width: int, height: int) -> dict:
         """Reject low-confidence/kinematically implausible limb hallucinations.
@@ -2147,13 +2786,50 @@ class CaptureSource:
                     if isinstance(body3[index].get("position"), dict):
                         body3[index]["visibility"] = 0.0
 
-        for key in ("leftHand", "rightHand"):
-            hand = payload.get(key)
-            is_valid, is_phantom = self._check_hand_validity(hand, key, body, width, height, torso, now, payload)
+        # Evaluate both raw candidates before modifying either payload entry.
+        # This keeps a fallback for one side from influencing the other side's
+        # duplicate/superposition checks.
+        raw_hands = {key: payload.get(key) for key in ("leftHand", "rightHand")}
+        hand_validity = {
+            key: self._check_hand_validity(raw_hands[key], key, body, width, height, torso, now, payload)
+            for key in ("leftHand", "rightHand")
+        }
+        previous_hands = {
+            key: self._hand_last_good.get(key) for key in ("leftHand", "rightHand")
+        }
+        contact_metrics, contact_pair_untrusted = self._update_hands_contact_state(
+            raw_hands, hand_validity, width, height, now
+        )
 
-            previous_hand = self._hand_last_good.get(key)
+        for key in ("leftHand", "rightHand"):
+            hand = raw_hands[key]
+            is_valid, is_phantom = hand_validity[key]
+
+            previous_hand = previous_hands[key]
             was_live = self._hand_was_live.get(key, False)
             age = now - self._hand_last_good_at.get(key, 0.0)
+            world_key = self._hand_world_key(key)
+            world_candidate = payload.get(world_key)
+
+            # Once two independently observed hands have made contact, treat
+            # them as a coupled pair across a short occlusion.  This is evaluated
+            # before the body-wrist fallback because wrists are often the first
+            # pose landmarks to become unreliable in front of the face.
+            contact_hand = None
+            if self._hands_contact_active and (not is_valid or contact_pair_untrusted):
+                contact_hand = self._contact_held_hand(
+                    key, previous_hands, raw_hands, hand_validity,
+                    contact_metrics, width, height,
+                )
+            if contact_hand is not None:
+                payload[key] = contact_hand
+                self._hand_last_good[key] = [copy_fn(p) for p in contact_hand]
+                self._hand_was_live[key] = True
+                self._hand_body_fallback[key] = True
+                self._hand_moving_down[key] = False
+                held_world = self._hand_world_last_good.get(key)
+                payload[world_key] = held_world if isinstance(held_world, list) else []
+                continue
 
             if is_valid and isinstance(hand, list):
                 smoothed_hand = [copy_fn(p) for p in hand]
@@ -2170,14 +2846,67 @@ class CaptureSource:
                 self._hand_last_good[key] = [copy_fn(p) for p in smoothed_hand]
                 self._hand_last_good_at[key] = now
                 self._hand_was_live[key] = True
+                self._hand_body_fallback[key] = False
+                if isinstance(world_candidate, list) and len(world_candidate) >= 21:
+                    self._hand_world_last_good[key] = world_candidate
+                else:
+                    self._hand_world_last_good[key] = None
+
+                curl_source = (
+                    world_candidate
+                    if isinstance(world_candidate, list) and len(world_candidate) >= 21
+                    else smoothed_hand
+                )
+                curl = self._hand_bend_score(curl_source)
+                if curl >= 0.22:
+                    self._hand_fist_state[key] = True
+                elif curl <= 0.12:
+                    self._hand_fist_state[key] = False
             else:
+                anchored_hand = self._anchor_held_hand_to_body_wrist(
+                    key, previous_hand, body, width, height, torso
+                )
+                if anchored_hand is not None:
+                    payload[key] = anchored_hand
+                    # Keep the translated shape as next frame's spatial base,
+                    # but retain last_good_at as the age of the last *real*
+                    # hand detection.  Reacquisition therefore still uses the
+                    # stricter new-candidate confidence rules.
+                    self._hand_last_good[key] = [copy_fn(p) for p in anchored_hand]
+                    self._hand_was_live[key] = True
+                    self._hand_body_fallback[key] = True
+                    self._hand_moving_down[key] = False
+                    held_world = self._hand_world_last_good.get(key)
+                    payload[world_key] = held_world if isinstance(held_world, list) else []
+                    continue
+
                 if is_phantom:
+                    # A closed fist self-occludes many finger joints and can be
+                    # classified as a malformed candidate for a few frames.
+                    # Preserve only a previously confirmed fist, never infer a
+                    # fist from a missing/open hand.
+                    if (
+                        self._hand_fist_state.get(key, False)
+                        and previous_hand is not None
+                        and was_live
+                        and age <= 0.65
+                    ):
+                        payload[key] = [copy_fn(p) for p in previous_hand]
+                        held_world = self._hand_world_last_good.get(key)
+                        payload[world_key] = held_world if isinstance(held_world, list) else []
+                        self._hand_body_fallback[key] = True
+                        self._hand_moving_down[key] = False
+                        continue
                     # Phantom detection: drop immediately, do NOT hold!
                     payload[key] = []
+                    payload[world_key] = []
                     if previous_hand is not None:
                         self._dropped_hands += 1
                     self._hand_last_good[key] = None
+                    self._hand_world_last_good[key] = None
                     self._hand_was_live[key] = False
+                    self._hand_fist_state[key] = False
+                    self._hand_body_fallback[key] = False
                     self._hand_moving_down[key] = False
                 else:
                     # Holding block: If the hand was live recently, hold position linearly
@@ -2186,8 +2915,12 @@ class CaptureSource:
                     prev_wrist_xy = self._point_xy(previous_hand[0]) if (previous_hand and len(previous_hand) > 0) else None
                     prev_y_norm = (prev_wrist_xy[1] / height) if (prev_wrist_xy and height and prev_wrist_xy[1] > 1.5) else (prev_wrist_xy[1] if prev_wrist_xy else 0.5)
                     is_low_hand = prev_y_norm > 0.58
-                    # If lowering the arm or near desk, release fast (~80ms / 2-3 frames) so it doesn't feel sluggish!
-                    max_hold_sec = 0.08 if (was_moving_down or is_low_hand) else 0.26
+                    # A raised hand gets a longer temporal bridge for brief
+                    # Holistic dropouts.  Deliberate lowering/desk motion still
+                    # releases in ~80 ms, so this does not make resting hands
+                    # sticky.  Longer gaps are handled only when a raised body
+                    # wrist corroborates them (see _anchor_held_hand_to_body_wrist).
+                    max_hold_sec = 0.08 if (was_moving_down or is_low_hand) else 0.65
 
                     # Anti-ghosting: if the other hand is active near this held position,
                     # or if handedness flipped to the other hand, do NOT hold duplicate!
@@ -2208,14 +2941,21 @@ class CaptureSource:
                         for p in previous_hand:
                             held_hand.append(copy_fn(p))
                         payload[key] = held_hand
+                        held_world = self._hand_world_last_good.get(key)
+                        payload[world_key] = held_world if isinstance(held_world, list) else []
                     else:
                         payload[key] = []
+                        payload[world_key] = []
                         if previous_hand is not None:
                             self._dropped_hands += 1
                             self._hand_last_good[key] = None
+                            self._hand_world_last_good[key] = None
                             self._hand_was_live[key] = False
+                            self._hand_fist_state[key] = False
+                            self._hand_body_fallback[key] = False
                             self._hand_moving_down[key] = False
-                            self._hand_moving_down[key] = False
+        if self._hands_contact_active:
+            payload["_hands_contact_active"] = True
         return payload
 
     def _landmark_summary(
@@ -2276,9 +3016,12 @@ class CaptureSource:
         self._committed_infer_geometry = self._last_inference_geometry
         started = time.perf_counter()
         held_before = self._held_joints
+        tracking_raw = None
         try:
             payload = engine.ENGINE.infer(frame)
             raw_summary = self._landmark_summary(payload, frame.shape[1], frame.shape[0])
+            if self._tracking_log_enabled:
+                tracking_raw = self._tracking_log_snapshot(payload)
             if payload is not None:
                 payload = self._stabilize_payload(payload, frame.shape[1], frame.shape[0])
             # Auto-unstick / Phantom suppression:
@@ -2317,6 +3060,10 @@ class CaptureSource:
             payload["keypoints3D"] = []
             payload["leftHand"] = []
             payload["rightHand"] = []
+        tracking_stable = (
+            self._tracking_log_snapshot(payload)
+            if self._tracking_log_enabled else None
+        )
         wire = engine.to_wire(payload, capture_hint=(width, height))
         self._frames += 1
         self._last_frame_at = time.time()
@@ -2365,6 +3112,28 @@ class CaptureSource:
             "geometry_reason": geometry_reason,
             "held_this_frame": self._held_joints - held_before,
         }
+        if tracking_raw is not None and tracking_stable is not None:
+            timestamp_ms = int(self._last_frame_at * 1000)
+            self._queue_tracking_log({
+                "type": "frame",
+                "frame_id": self._frames,
+                "timestamp_ms": timestamp_ms,
+                "elapsed_ms": max(0, timestamp_ms - self._tracking_log_started_ms),
+                "inference_ms": round(self._last_infer_ms, 3),
+                "capture": list(self._last_raw_geometry),
+                "inference": [width, height],
+                "raw": tracking_raw,
+                "stable": tracking_stable,
+                "state": {
+                    "left_fallback": bool(self._hand_body_fallback.get("leftHand")),
+                    "right_fallback": bool(self._hand_body_fallback.get("rightHand")),
+                    "left_fist": bool(self._hand_fist_state.get("leftHand")),
+                    "right_fist": bool(self._hand_fist_state.get("rightHand")),
+                    "hands_contact": bool(self._hands_contact_active),
+                    "held_joints": self._held_joints - held_before,
+                    "deadline_misses": self._deadline_misses,
+                },
+            })
         log_now = time.monotonic()
         first_frames = self._frames <= 3
         periodic = log_now - self._last_frame_log_at >= 5.0
@@ -2406,6 +3175,7 @@ class CaptureSource:
         if cached is None:
             return
         wire = copy.deepcopy(cached)
+        source_frame_id = wire.get("frame_id")
         self._frames += 1
         self._last_frame_at = time.time()
         wire["frame_id"] = self._frames
@@ -2418,6 +3188,18 @@ class CaptureSource:
             self._measured_fps = self._rate_window_frames / rate_elapsed
             self._rate_window_at = rate_now
             self._rate_window_frames = 0
+        if self._tracking_log_enabled:
+            timestamp_ms = int(self._last_frame_at * 1000)
+            self._queue_tracking_log({
+                "type": "cached",
+                "frame_id": self._frames,
+                "source_frame_id": source_frame_id,
+                "timestamp_ms": timestamp_ms,
+                "elapsed_ms": max(0, timestamp_ms - self._tracking_log_started_ms),
+                "reason": "adaptive_frame_skip",
+                "stable": self._tracking_log_snapshot(wire),
+                "state": {"deadline_misses": self._deadline_misses},
+            })
         for callback in subscribers:
             try:
                 callback(wire)

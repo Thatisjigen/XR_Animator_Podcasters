@@ -584,11 +584,10 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
                                 }
 
             ENGINE._arm_active_state[wrist_idx] = arm_active
-            is_downward_desk_noise = False
-            if has_active_hand and isinstance(hand_pts, list) and len(hand_pts) >= 21:
-                h_y = _float(_normalized_point(hand_pts[0]).get("y", 1.0))
-                is_downward_desk_noise = bool(not arm_active and h_y >= 0.86 and dy_ew >= 0.02)
-            active_hands[hand_key] = bool(has_active_hand and not is_downward_desk_noise)
+            # Capture has already validated the complete 21-point hand group.
+            # Desk posture may keep the arm solver in its calm/resting state, but it
+            # must not erase a genuine hand or disable finger tracking near the desk.
+            active_hands[hand_key] = has_active_hand
 
         if not arm_active and desk_guard_enabled and not has_active_hand:
             cur_w_pos = keypoints[wrist_idx].get("position") or keypoints[wrist_idx]
@@ -656,11 +655,16 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
             dy_2d = l_wrist_2d["y"] - r_wrist_2d["y"]
             dist_2d = (dx_2d * dx_2d + dy_2d * dy_2d) ** 0.5
 
-            if dist_2d < 0.08:
-                # Hands are meeting in 2D space. BlazePose 3D body pose has an artificial
-                # ~15cm lateral separation bias between wrists. We interpolate 3D wrists
-                # towards contact so palms can touch flush together.
-                k_contact = max(0.0, min(1.0, 1.0 - (dist_2d / 0.08)))
+            contact_active = bool(payload.get("_hands_contact_active"))
+            if contact_active or dist_2d < 0.08:
+                # BlazePose body-world wrists retain a lateral separation bias even
+                # when detailed hand landmarks show palm/finger contact.  Capture's
+                # contact state also covers prayer poses where the palm surfaces
+                # touch while the wrist roots are naturally farther apart.
+                k_contact = (
+                    1.0 if contact_active
+                    else max(0.0, min(1.0, 1.0 - (dist_2d / 0.08)))
+                )
                 lw_3d = keypoints3d[15]
                 rw_3d = keypoints3d[16]
                 if lw_3d.get("score", 0.0) > 0 and rw_3d.get("score", 0.0) > 0:
@@ -668,11 +672,15 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
                     mid_y = (_float(lw_3d.get("y")) + _float(rw_3d.get("y"))) * 0.5
                     mid_z = (_float(lw_3d.get("z")) + _float(rw_3d.get("z"))) * 0.5
 
-                    # Hand palm thickness allowance: 4cm each side (8cm total separation)
-                    target_lx = mid_x - 0.04
-                    target_rx = mid_x + 0.04
+                    # Approximately 3.5cm between wrist centres leaves room for
+                    # the two palm surfaces without the visible 8cm air gap used
+                    # previously. Preserve current left/right ordering so contact
+                    # correction can never cross the arms.
+                    side = -1.0 if _float(lw_3d.get("x")) <= _float(rw_3d.get("x")) else 1.0
+                    target_lx = mid_x + side * 0.0175
+                    target_rx = mid_x - side * 0.0175
 
-                    mix = 0.75 * k_contact
+                    mix = (0.95 if contact_active else 0.75) * k_contact
                     new_lx = _r4(_float(lw_3d.get("x")) * (1.0 - mix) + target_lx * mix)
                     new_rx = _r4(_float(rw_3d.get("x")) * (1.0 - mix) + target_rx * mix)
                     new_y = _r4(_float(lw_3d.get("y")) * (1.0 - mix) + mid_y * mix)
@@ -739,11 +747,12 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
 # ---------------------------------------------------------------------------
 
 class EngineDispatcher:
-    """Serialized lifecycle for the bundled Holistic and Face task engines."""
+    """Serialized lifecycle for CPU Holistic, split GPU and Face engines."""
 
     def __init__(self) -> None:
         self._engines = {
-            "holistic": _native.HolisticTasksEngine(),
+            "holistic-cpu": _native.HolisticTasksEngine(),
+            "holistic-gpu": _native.SplitTasksEngine(),
             "face": _native.FaceTasksEngine(),
         }
         self._mode = "holistic"
@@ -761,12 +770,37 @@ class EngineDispatcher:
         self._min_joint_confidence = float(os.environ.get("XRA_JOINT_CONF_MIN", "0.25"))
         self._desk_wrist_guard = os.environ.get("XRA_DESK_WRIST_GUARD", "1") not in {"0", "false", "no", "off"}
         self._desk_wrist_threshold = float(os.environ.get("XRA_DESK_WRIST_THRESH", "0.50"))
-        self._accelerated = os.environ.get("XRA_FORCE_CPU") != "1"
-        self._hardware_mode = os.environ.get("XRA_HARDWARE_MODE", "Auto" if self._accelerated else "CPU")
+        force_cpu = os.environ.get("XRA_FORCE_CPU") == "1"
+        self._hardware_mode = os.environ.get(
+            "XRA_HARDWARE_MODE", "CPU" if force_cpu else "Auto"
+        )
+        self._accelerated = self._hardware_requests_gpu()
 
     @staticmethod
     def _normalize_mode(value) -> str:
         return "face" if str(value or "").strip().lower() == "face" else "holistic"
+
+    def _hardware_requests_gpu(self) -> bool:
+        if os.environ.get("XRA_FORCE_CPU") == "1":
+            return False
+        hardware = str(self._hardware_mode or "Auto").strip().lower()
+        if hardware in {"cpu", "disabled"}:
+            return False
+        if hardware in {
+            "high-performance", "low-power", "gpu_dgpu", "dgpu",
+            "gpu_igpu", "igpu", "gpu",
+        }:
+            return True
+        # Safe Auto policy: Full Body uses the stable monolithic CPU graph;
+        # Face Only can use its known-good GPU graph.
+        return self._mode == "face"
+
+    def _candidate(self):
+        if self._mode == "face":
+            return self._engines["face"]
+        return self._engines[
+            "holistic-gpu" if self._accelerated else "holistic-cpu"
+        ]
 
     @property
     def ready(self) -> bool:
@@ -784,6 +818,9 @@ class EngineDispatcher:
         return f"Native/{self._active_native.name}"
 
     def status(self) -> dict:
+        should_probe_gpu = self._hardware_requests_gpu()
+        gpu_available = _native._check_gpu() if should_probe_gpu else False
+        gpu_name = _native._GPU_NAME if should_probe_gpu else "CPU (XNNPACK)"
         return {
             "ready": self.ready,
             "model": self._active_id,
@@ -796,9 +833,10 @@ class EngineDispatcher:
             "generation": self._generation,
             "last_error": self._last_error,
             "accelerated": self._accelerated,
-            "gpu_available": _native._check_gpu(),
-            "gpu_name": _native._GPU_NAME,
+            "gpu_available": gpu_available,
+            "gpu_name": gpu_name,
             "hardware_mode": self._hardware_mode,
+            "task_timings_ms": getattr(self._active_native, "task_timings_ms", {}),
             "min_tracking_confidence": self._min_tracking_confidence,
             "min_pose_confidence": self._min_pose_confidence,
             "min_face_confidence": self._min_face_confidence,
@@ -815,11 +853,17 @@ class EngineDispatcher:
         self._active_id = None
 
     def _start_selected(self, model_id: str) -> dict:
-        candidate = self._engines[self._mode]
+        candidate = self._candidate()
         result = candidate.load(accelerated=self._accelerated)
         if not result.get("ok") and self._accelerated:
-            print("[XRA_MP] GPU init failed at startup, falling back to CPU.", flush=True)
+            failed_engine = getattr(candidate, "name", "GPU")
+            candidate.unload()
+            print(
+                f"[XRA_MP] {failed_engine} init failed, falling back to CPU.",
+                flush=True,
+            )
             self._accelerated = False
+            candidate = self._candidate()
             result = candidate.load(accelerated=False)
         if not result.get("ok"):
             self._last_error = str(result.get("error") or "native load failed")
@@ -891,7 +935,7 @@ class EngineDispatcher:
             try:
                 self._unload_all()
                 self._mode = next_mode
-                self._accelerated = (self._hardware_mode.lower() != "cpu")
+                self._accelerated = self._hardware_requests_gpu()
                 if active_id is None:
                     self._generation += 1
                     return {"ok": True, **self.status()}
@@ -918,23 +962,22 @@ class EngineDispatcher:
 
     def configure_hardware(self, mode: str) -> dict:
         with self._lifecycle_lock:
+            if str(mode) == str(self._hardware_mode):
+                return {"ok": True, "unchanged": True, **self.status()}
             self._hardware_mode = mode
             is_cpu = str(mode or "").strip().lower() == "cpu"
             if is_cpu:
                 os.environ["XRA_FORCE_CPU"] = "1"
             else:
                 os.environ.pop("XRA_FORCE_CPU", None)
-            next_accel = not is_cpu
-            if next_accel == self._accelerated:
-                return {"ok": True, "unchanged": True, **self.status()}
-            self._accelerated = next_accel
-            if self._active_native is not None:
-                # Hot-swap
-                result = self._active_native.load(accelerated=self._accelerated)
-                if not result.get("ok") and self._accelerated:
-                    print("[XRA_MP] GPU init failed at runtime, falling back to CPU.", flush=True)
-                    self._accelerated = False
-                    result = self._active_native.load(accelerated=False)
+            _native.reset_gpu_probe()
+            self._accelerated = self._hardware_requests_gpu()
+            active_id = self._active_id
+            if active_id is not None:
+                # Swap engine classes as well as delegates: Full Body CPU is
+                # Holistic; Full Body GPU is the parallel split engine.
+                self._unload_all()
+                result = self._start_selected(active_id)
                 if not result.get("ok"):
                     self._last_error = str(result.get("error"))
                     return {"ok": False, "error": self._last_error, **self.status()}

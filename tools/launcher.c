@@ -142,6 +142,17 @@ int main(int argc, char *argv[]) {
     int next_arg = 2;
     apply_gpu_preference(dir, new_argv, &next_arg, use_wayland);
     for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--obs-debug") == 0) {
+            /* Debug mode pairs the owned-camera feed with a local landmark log. */
+            setenv("XRA_OBS_PREVIEW", "1", 1);
+            setenv("XRA_MEDIAPIPE_LOG", "1", 1);
+            continue;
+        }
+        if (strcmp(argv[i], "--obs-preview") == 0) {
+            /* The NW.js child and its Python server inherit this opt-in. */
+            setenv("XRA_OBS_PREVIEW", "1", 1);
+            continue;
+        }
         new_argv[next_arg++] = argv[i];
     }
     new_argv[next_arg] = NULL;

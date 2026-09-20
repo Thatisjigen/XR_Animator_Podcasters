@@ -1,4 +1,3 @@
-// XRA_UNIVERSAL_RUNTIME_V9
 (() => {
   'use strict';
 
