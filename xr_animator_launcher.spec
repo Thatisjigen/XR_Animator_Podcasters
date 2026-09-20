@@ -32,6 +32,8 @@ REQUIRED_FILES = {
     "xra_backends/server.py",
     "xra_backends/models/mediapipe-tasks-landmarker/holistic_landmarker.task",
     "xra_backends/models/mediapipe-tasks-landmarker/face_landmarker.task",
+    "xra_backends/models/mediapipe-tasks-landmarker/pose_landmarker_lite.task",
+    "xra_backends/models/mediapipe-tasks-landmarker/hand_landmarker.task",
 }
 
 # The pre-downloaded Tasks models are gitignored but must ship in the bundle.
@@ -114,7 +116,9 @@ hiddenimports = [
     "mediapipe.tasks.c.libmediapipe",
     "mediapipe.tasks.python.vision",
     "mediapipe.tasks.python.vision.face_landmarker",
+    "mediapipe.tasks.python.vision.hand_landmarker",
     "mediapipe.tasks.python.vision.holistic_landmarker",
+    "mediapipe.tasks.python.vision.pose_landmarker",
     "xra_backends",
     "xra_backends.registry",
     "xra_backends.downloader",

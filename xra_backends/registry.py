@@ -35,6 +35,18 @@ _MEDIAPIPE_FACE_URL = (
     "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
     "face_landmarker/float16/1/face_landmarker.task"
 )
+_MEDIAPIPE_POSE_LITE_URL = (
+    "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+    "pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
+)
+_MEDIAPIPE_POSE_FULL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+    "pose_landmarker_full/float16/1/pose_landmarker_full.task"
+)
+_MEDIAPIPE_HAND_URL = (
+    "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
+    "hand_landmarker/float16/1/hand_landmarker.task"
+)
 REGISTRY: dict[str, dict] = {
     MEDIAPIPE_TASKS_ID: {
         "id": MEDIAPIPE_TASKS_ID,
@@ -55,6 +67,15 @@ REGISTRY: dict[str, dict] = {
             {"filename": "face_landmarker.task",
              "url": _MEDIAPIPE_FACE_URL,
              "size_hint_mb": 4, "sha256": None},
+            {"filename": "pose_landmarker_lite.task",
+             "url": _MEDIAPIPE_POSE_LITE_URL,
+             "size_hint_mb": 6, "sha256": None},
+            {"filename": "pose_landmarker_full.task",
+             "url": _MEDIAPIPE_POSE_FULL_URL,
+             "size_hint_mb": 29, "sha256": None},
+            {"filename": "hand_landmarker.task",
+             "url": _MEDIAPIPE_HAND_URL,
+             "size_hint_mb": 8, "sha256": None},
         ],
     },
 }

@@ -1,10 +1,12 @@
 """Native Python MediaPipe Tasks backend.
 
-``HolisticTasksEngine`` wraps ``mediapipe.tasks.vision.HolisticLandmarker`` and
-emits the whole-body payload contract used by the browser adapter: 33 pose
-landmarks, 21+21 hand landmarks, face landmarks and native face blendshapes.
-The engine is lazy-loaded; missing packages/models leave it unavailable without
-terminating the XR server process.
+``HolisticTasksEngine`` is the stable CPU path. ``SplitTasksEngine`` runs the
+native Face, Pose and Hand Task graphs concurrently on an explicitly selected
+GPU, avoiding the Holistic GPU graph that is broken on some Linux EGL drivers.
+Both emit the same whole-body payload contract used by the browser adapter: 33
+pose landmarks, 21+21 hand landmarks, face landmarks and native blendshapes.
+The engines are lazy-loaded; missing packages/models leave them unavailable
+without terminating the XR server process.
 
 Face landmarks are converted to the pixel/full-frame convention expected by the
 existing JS consumer while native Tasks blendshapes are preserved under
@@ -15,6 +17,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import queue
 import sys
 import threading
 import time
@@ -32,7 +35,6 @@ _GPU_NAME = "Unknown GPU"
 def _check_gpu():
     global _GPU_AVAILABLE, _GPU_NAME
     if os.environ.get("XRA_FORCE_CPU") == "1":
-        _GPU_AVAILABLE = False
         _GPU_NAME = "CPU (XNNPACK)"
         return False
     if _GPU_AVAILABLE is not None:
@@ -73,6 +75,13 @@ def _check_gpu():
         print(f"[XRA_MP] GPU Delegate not supported or failed to init: {e}", flush=True)
         _GPU_AVAILABLE = False
     return _GPU_AVAILABLE
+
+
+def reset_gpu_probe() -> None:
+    """Forget a cached delegate result after the selected GPU changes."""
+    global _GPU_AVAILABLE, _GPU_NAME
+    _GPU_AVAILABLE = None
+    _GPU_NAME = "Unknown GPU"
 
 @contextlib.contextmanager
 def suppress_c_stderr():
@@ -691,3 +700,440 @@ def _assemble(kp, zs, face_pts, blendshapes, left, right) -> dict:
         "leftHand": [{"x": round(float(p[0]), 2), "y": round(float(p[1]), 2), "z": round(float(p[2]), 2), "score": round(float(p[3]), 3)} for p in left],
         "rightHand": [{"x": round(float(p[0]), 2), "y": round(float(p[1]), 2), "z": round(float(p[2]), 2), "score": round(float(p[3]), 3)} for p in right],
     }
+
+
+def _apply_pose_world(out: dict, result, kp: list) -> None:
+    """Attach PoseLandmarker's body-relative 3D output to a wire payload."""
+    world = _first_landmark_group(getattr(result, "pose_world_landmarks", None))
+    if len(world) < 33:
+        return
+    keypoints3d = []
+    for index, lm in enumerate(world[:33]):
+        try:
+            x = round(float(getattr(lm, "x", 0.0)), 4)
+            y = round(float(getattr(lm, "y", 0.0)), 4)
+            z = round(float(getattr(lm, "z", 0.0)), 4)
+            visibility = getattr(lm, "visibility", None)
+            presence = getattr(lm, "presence", None)
+            fallback_score = kp[index]["score"]
+            score = round(float(
+                visibility if visibility is not None
+                else (presence if presence is not None else fallback_score)
+            ), 3)
+        except Exception:
+            x = y = z = 0.0
+            score = 0.0
+        keypoints3d.append({
+            "x": x,
+            "y": y,
+            "z": z,
+            "score": score,
+            "name": _BLAZEPOSE_NAMES[index],
+        })
+    out["keypoints3D"] = keypoints3d
+    out["keypoints3d_space"] = "body_relative"
+
+
+def _split_hand_payload(result, w: int, h: int) -> tuple[list, list, list, list]:
+    """Map HandLandmarker groups onto the same left/right keys as Holistic.
+
+    MediaPipe Tasks 0.10.5+ reports the mirrored handedness convention used by
+    the existing browser adapter. A raw ``Left`` category therefore belongs in
+    ``leftHand``; the adapter intentionally exposes that group as subject Right.
+    """
+    groups = list(getattr(result, "hand_landmarks", None) or [])
+    world_groups = list(getattr(result, "hand_world_landmarks", None) or [])
+    handedness = list(getattr(result, "handedness", None) or [])
+    slots = {
+        "left": {"points": [], "world": [], "score": -1.0},
+        "right": {"points": [], "world": [], "score": -1.0},
+    }
+
+    for index, group in enumerate(groups[:2]):
+        categories = list(handedness[index] or []) if index < len(handedness) else []
+        category = categories[0] if categories else None
+        label = str(getattr(category, "category_name", "") or "").strip().lower()
+        score = float(getattr(category, "score", 0.0) or 0.0)
+        if label not in slots:
+            # Stable geometric fallback for runtimes that omit handedness.
+            points_raw = _unwrap_landmarks(group)
+            wrist_x = float(getattr(points_raw[0], "x", 0.5)) if points_raw else 0.5
+            label = "left" if wrist_x < 0.5 else "right"
+        points = _hand_from_landmarks(group, w, h)
+        world = _hand_world_from_landmarks(
+            world_groups[index] if index < len(world_groups) else None
+        )
+        if points and score >= slots[label]["score"]:
+            slots[label] = {"points": points, "world": world, "score": score}
+
+    return (
+        slots["left"]["points"],
+        slots["right"]["points"],
+        slots["left"]["world"],
+        slots["right"]["world"],
+    )
+
+
+def _split_results_to_wholebody(results: dict, w: int, h: int) -> dict:
+    pose_result = results["pose"]
+    face_result = results["face"]
+    hand_result = results["hand"]
+
+    pose_landmarks = _first_landmark_group(
+        getattr(pose_result, "pose_landmarks", None)
+    )
+    kp, zs = _body_from_pose(pose_landmarks, w, h)
+    face_landmarks = _first_landmark_group(
+        getattr(face_result, "face_landmarks", None)
+    )
+    face_points, blendshapes = _face_from_landmarks(
+        face_landmarks, w, h, normalized=True
+    )
+    blendshapes["native"] = _native_categories(
+        getattr(face_result, "face_blendshapes", None)
+    )
+    left, right, left_world, right_world = _split_hand_payload(hand_result, w, h)
+
+    out = _assemble(kp, zs, face_points, blendshapes, left, right)
+    _apply_pose_world(out, pose_result, kp)
+    out["leftHandWorld"] = left_world
+    out["rightHandWorld"] = right_world
+    out["face"]["faceInViewConfidence"] = 0.95 if face_points else 0.0
+    out["face"]["layout"] = "mediapipe_face_mesh"
+    return out
+
+
+class _ParallelTaskWorker:
+    """Own one GPU Task graph for its complete lifetime on one thread."""
+
+    def __init__(self, kind: str, model_path, result_queue, confidence: dict) -> None:
+        self.kind = kind
+        self.model_path = str(model_path)
+        self.result_queue = result_queue
+        self.confidence = confidence
+        self.requests = queue.Queue(maxsize=1)
+        self.ready_result = queue.Queue(maxsize=1)
+        self.thread = threading.Thread(
+            target=self._run,
+            name=f"xra-mediapipe-{kind}-gpu",
+            daemon=True,
+        )
+
+    def start(self, timeout: float = 20.0) -> dict:
+        self.thread.start()
+        try:
+            return self.ready_result.get(timeout=timeout)
+        except queue.Empty:
+            return {"ok": False, "error": f"{self.kind} GPU init timed out"}
+
+    def submit(self, token: int, rgb: np.ndarray, timestamp_ms: int) -> bool:
+        try:
+            self.requests.put((token, rgb, timestamp_ms), timeout=0.25)
+            return True
+        except queue.Full:
+            return False
+
+    def stop(self) -> None:
+        try:
+            self.requests.put(None, timeout=0.25)
+        except queue.Full:
+            try:
+                self.requests.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.requests.put_nowait(None)
+            except queue.Full:
+                pass
+        if self.thread.is_alive() and self.thread is not threading.current_thread():
+            self.thread.join(timeout=5.0)
+
+    def _options(self, mp_python, vision):
+        base = mp_python.BaseOptions(
+            model_asset_path=self.model_path,
+            delegate=mp_python.BaseOptions.Delegate.GPU,
+        )
+        tracking = self.confidence["tracking"]
+        if self.kind == "face":
+            face = self.confidence["face"]
+            return vision.FaceLandmarker, vision.FaceLandmarkerOptions(
+                base_options=base,
+                running_mode=vision.RunningMode.VIDEO,
+                num_faces=1,
+                min_face_detection_confidence=face,
+                min_face_presence_confidence=face,
+                min_tracking_confidence=tracking,
+                output_face_blendshapes=True,
+                output_facial_transformation_matrixes=False,
+            )
+        if self.kind == "pose":
+            pose = self.confidence["pose"]
+            return vision.PoseLandmarker, vision.PoseLandmarkerOptions(
+                base_options=base,
+                running_mode=vision.RunningMode.VIDEO,
+                num_poses=1,
+                min_pose_detection_confidence=pose,
+                min_pose_presence_confidence=pose,
+                min_tracking_confidence=tracking,
+                output_segmentation_masks=False,
+            )
+        # Keep detection/presence high enough to suppress phantom hands on GPU;
+        # tracking is kept slightly looser so a confirmed hand stays tracked.
+        hand_detect = max(0.40, tracking * 0.75)
+        hand_track = max(0.35, tracking * 0.65)
+        # Use IMAGE mode (not VIDEO) for the hand worker: VIDEO mode carries a
+        # NORM_RECT ROI between frames via landmark_projection_calculator, which
+        # emits a W0 warning when IMAGE_DIMENSIONS is absent and can produce
+        # stale-ROI phantom detections when the hand moves quickly.  IMAGE mode
+        # runs a full detection on every frame — no ROI drift, no warning.
+        return vision.HandLandmarker, vision.HandLandmarkerOptions(
+            base_options=base,
+            running_mode=vision.RunningMode.IMAGE,
+            num_hands=2,
+            min_hand_detection_confidence=hand_detect,
+            min_hand_presence_confidence=hand_detect,
+            min_tracking_confidence=hand_track,
+        )
+
+    def _run(self) -> None:
+        landmarker = None
+        try:
+            import mediapipe as mp
+            from mediapipe.tasks import python as mp_python
+            from mediapipe.tasks.python import vision
+
+            landmarker_class, options = self._options(mp_python, vision)
+            # Workers are started one at a time, so process-wide stderr
+            # redirection cannot race another graph initialization.
+            with suppress_c_stderr():
+                landmarker = landmarker_class.create_from_options(options)
+            self.ready_result.put({"ok": True})
+        except Exception as exc:
+            self.ready_result.put({
+                "ok": False,
+                "error": f"{self.kind} GPU init failed: {exc}",
+            })
+            return
+
+        try:
+            while True:
+                request = self.requests.get()
+                if request is None:
+                    break
+                token, rgb, timestamp_ms = request
+                started = time.perf_counter()
+                try:
+                    image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+                    # Hand worker uses IMAGE mode (full detection each frame, no ROI drift).
+                    # Face/pose workers use VIDEO mode (timestamp-based ROI tracking).
+                    if self.kind == "hand":
+                        result = landmarker.detect(image)
+                    else:
+                        result = landmarker.detect_for_video(image, timestamp_ms)
+                    self.result_queue.put((
+                        token,
+                        self.kind,
+                        result,
+                        None,
+                        (time.perf_counter() - started) * 1000.0,
+                    ))
+                except Exception as exc:
+                    self.result_queue.put((
+                        token,
+                        self.kind,
+                        None,
+                        exc,
+                        (time.perf_counter() - started) * 1000.0,
+                    ))
+        finally:
+            if landmarker is not None:
+                try:
+                    landmarker.close()
+                except Exception:
+                    pass
+
+
+class SplitTasksEngine:
+    """Parallel native Face + Pose + Hand Tasks GPU full-body engine."""
+
+    name = "split-tasks-gpu"
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._workers: dict[str, _ParallelTaskWorker] = {}
+        self._results = queue.Queue()
+        self._token = 0
+        self._last_timestamp_ms = -1
+        self._last_shape: Optional[tuple[int, int]] = None
+        self._min_tracking_confidence = 0.50
+        self._min_pose_confidence = 0.50
+        self._min_face_confidence = 0.50
+        self._last_task_ms: dict[str, float] = {}
+        self._last_error_log = 0.0
+        self._accelerated = False
+
+    @property
+    def ready(self) -> bool:
+        return (
+            len(self._workers) == 3
+            and all(worker.thread.is_alive() for worker in self._workers.values())
+        )
+
+    @property
+    def task_timings_ms(self) -> dict[str, float]:
+        return dict(self._last_task_ms)
+
+    def configure_confidence(self, min_tracking=None, min_pose=None, min_face=None) -> dict:
+        changed = False
+        for attr, value in (
+            ("_min_tracking_confidence", min_tracking),
+            ("_min_pose_confidence", min_pose),
+            ("_min_face_confidence", min_face),
+        ):
+            if value is None:
+                continue
+            normalized = max(0.1, min(0.95, float(value)))
+            if abs(normalized - getattr(self, attr)) > 1e-4:
+                setattr(self, attr, normalized)
+                changed = True
+        if changed and self.ready:
+            return self.load(accelerated=True)
+        return {"ok": True, "changed": changed}
+
+    def load(self, accelerated: Optional[bool] = None, **_) -> dict:
+        if accelerated is False:
+            return {"ok": False, "error": "split Tasks requires a GPU delegate"}
+        try:
+            import mediapipe  # noqa: F401 - validate runtime before threads start
+            from mediapipe.tasks.python import vision
+        except Exception as exc:
+            return {"ok": False, "error": f"mediapipe split tasks unavailable: {exc}"}
+        for required in (
+            "FaceLandmarker", "PoseLandmarker", "HandLandmarker",
+            "FaceLandmarkerOptions", "PoseLandmarkerOptions", "HandLandmarkerOptions",
+        ):
+            if not hasattr(vision, required):
+                return {"ok": False, "error": f"MediaPipe Tasks is missing {required}"}
+
+        model_dir = registry.model_dir(registry.MEDIAPIPE_TASKS_ID)
+        # Prefer the full pose model (better accuracy); fall back to lite if
+        # full hasn't been downloaded yet (e.g. first run before upgrade).
+        pose_full = model_dir / "pose_landmarker_full.task"
+        pose_lite = model_dir / "pose_landmarker_lite.task"
+        pose_model = pose_full if pose_full.is_file() else pose_lite
+        model_paths = {
+            "face": model_dir / "face_landmarker.task",
+            "pose": pose_model,
+            "hand": model_dir / "hand_landmarker.task",
+        }
+        print(f"[XRA_MP_SPLIT] Pose model: {pose_model.name}", flush=True)
+        missing = [path.name for path in model_paths.values() if not path.is_file()]
+        if missing:
+            return {
+                "ok": False,
+                "error": "split Tasks models not installed: " + ", ".join(missing),
+                "needs_download": True,
+            }
+        if not _check_gpu():
+            return {"ok": False, "error": "GPU delegate is unavailable"}
+
+        self.unload()
+        self._results = queue.Queue()
+        confidence = {
+            "tracking": self._min_tracking_confidence,
+            "pose": self._min_pose_confidence,
+            "face": self._min_face_confidence,
+        }
+        try:
+            # Sequential creation keeps stderr suppression safe while every
+            # graph still remains bound to its own persistent worker thread.
+            for kind in ("face", "pose", "hand"):
+                worker = _ParallelTaskWorker(
+                    kind, model_paths[kind], self._results, confidence
+                )
+                self._workers[kind] = worker
+                status = worker.start()
+                if not status.get("ok"):
+                    raise RuntimeError(status.get("error") or f"{kind} init failed")
+            self._accelerated = True
+            self._last_timestamp_ms = -1
+            self._last_shape = None
+            return {"ok": True, "engine": self.name}
+        except Exception as exc:
+            self.unload()
+            return {"ok": False, "error": f"split Tasks init failed: {exc}"}
+
+    def unload(self) -> None:
+        workers = list(self._workers.values())
+        self._workers = {}
+        for worker in workers:
+            worker.stop()
+        self._results = queue.Queue()
+        self._last_timestamp_ms = -1
+        self._last_shape = None
+        self._last_task_ms = {}
+        self._accelerated = False
+
+    def _log_inference_error(self, message: str) -> None:
+        now = time.monotonic()
+        if now - self._last_error_log >= 2.0:
+            print(f"[XRA_MP_SPLIT] {message}", flush=True)
+            self._last_error_log = now
+
+    def infer(self, frame_bgr: np.ndarray) -> Optional[dict]:
+        if not self.ready:
+            return None
+        try:
+            h, w, channels = frame_bgr.shape
+            if h <= 0 or w <= 0 or channels != 3:
+                return None
+            rgb = _bgr_to_rgb(frame_bgr)
+            with self._lock:
+                self._token += 1
+                token = self._token
+                timestamp_ms = max(
+                    time.monotonic_ns() // 1_000_000,
+                    self._last_timestamp_ms + 1,
+                )
+                self._last_timestamp_ms = timestamp_ms
+                self._last_shape = (h, w)
+
+                for kind, worker in self._workers.items():
+                    # Each graph may write to its input tensor; distinct arrays
+                    # avoid cross-context tensor synchronization hazards.
+                    if not worker.submit(token, rgb.copy(), timestamp_ms):
+                        self._log_inference_error(f"{kind} worker queue is busy")
+                        return None
+
+                gathered = {}
+                timings = {}
+                deadline = time.monotonic() + 2.0
+                while len(gathered) < 3:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        self._log_inference_error("parallel inference timed out")
+                        return None
+                    try:
+                        result_token, kind, result, error, elapsed_ms = self._results.get(
+                            timeout=remaining
+                        )
+                    except queue.Empty:
+                        self._log_inference_error("parallel inference timed out")
+                        return None
+                    if result_token != token:
+                        continue
+                    if error is not None:
+                        self._log_inference_error(
+                            f"{kind} inference failed: {type(error).__name__}: {error}"
+                        )
+                        return None
+                    gathered[kind] = result
+                    timings[kind] = round(float(elapsed_ms), 3)
+
+                self._last_task_ms = timings
+            return _split_results_to_wholebody(gathered, w, h)
+        except Exception as exc:
+            self._log_inference_error(
+                f"conversion failed: {type(exc).__name__}: {exc}"
+            )
+            return None

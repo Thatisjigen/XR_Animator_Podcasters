@@ -1,6 +1,3 @@
-// XRA_V9_1_PROVIDER_DISPLAY_FIX
-// XRA_UNIVERSAL_RUNTIME_V9
-// XRA_PERFORMANCE_RUNTIME_V7
 (() => {
   'use strict';
 
@@ -504,10 +501,10 @@
 
 ;(() => {
   'use strict';
-  if (globalThis.__XRA_BACKEND_CONTROL_V5__) return;
-  globalThis.__XRA_BACKEND_CONTROL_V5__ = true;
+  if (globalThis.__XRA_BACKEND_CONTROL__) return;
+  globalThis.__XRA_BACKEND_CONTROL__ = true;
 
-  const TAG = '[XRA CAMERA V5]';
+  const TAG = '[XRA CAMERA]';
   const CHANNEL = 'XRA_CONTROL';
   const channel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel(CHANNEL) : null;
   const mediaDevices = globalThis.navigator?.mediaDevices;

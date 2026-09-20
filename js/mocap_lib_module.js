@@ -1,7 +1,3 @@
-// XRA_UNIVERSAL_RUNTIME_V9
-// XRA_FRONTEND_STABILITY_V6
-// XRA_CAMERA_OWNERSHIP_V4
-// XRA_BACKEND_CAMERA_V3
 // 2025-05-24
 
 const is_worker = (typeof window !== "object");
@@ -431,8 +427,7 @@ function _onmessage(e) {
 
   var posenet_initialized, handpose_initialized, holistic_initialized, human_initialized;
   async function PoseAT_load_lib(options) {
-  // XRA_CAMERA_OWNERSHIP_V4: wait for the main-window backend choice.
-  // Without this, PoseAT can start MediaPipe WASM before BroadcastChannel replies.
+    // Without this, PoseAT can start MediaPipe WASM before BroadcastChannel replies.
   if (is_worker && typeof XRA_NATIVE !== 'undefined' && XRA_NATIVE?.waitUntilConfigured) {
     await XRA_NATIVE.waitUntilConfigured(1500);
   }
@@ -1127,9 +1122,12 @@ function XRA_NATIVE_pose(rgba, w, h) {
 // Pre-allocated object pools for zero-allocation per-frame processing (eliminates V8 GC pressure)
 const _XRA_POOL_HAND_L = Array.from({ length: 21 }, () => ({ x: 0, y: 0, z: 0, visibility: 1 }));
 const _XRA_POOL_HAND_R = Array.from({ length: 21 }, () => ({ x: 0, y: 0, z: 0, visibility: 1 }));
+const _XRA_POOL_HAND_WORLD_L = Array.from({ length: 21 }, () => [0, 0, 0]);
+const _XRA_POOL_HAND_WORLD_R = Array.from({ length: 21 }, () => [0, 0, 0]);
+const _XRA_EMPTY_HAND_WORLD = [];
 const _XRA_POOL_HANDEDNESS_R = { score: 1, categoryName: 'Right', label: 'Right' };
 const _XRA_POOL_HANDEDNESS_L = { score: 1, categoryName: 'Left', label: 'Left' };
-const _XRA_POOL_HANDS_OBJ = { multiHandedness: [], multiHandLandmarks: [] };
+const _XRA_POOL_HANDS_OBJ = { multiHandedness: [], multiHandLandmarks: [], worldLandmarks: [] };
 
 function _xra_fill_hand_landmarks(sourceArr, poolArr) {
   if (!Array.isArray(sourceArr) || sourceArr.length < 21) return false;
@@ -1149,26 +1147,53 @@ function _xra_fill_hand_landmarks(sourceArr, poolArr) {
   return true;
 }
 
+function _xra_fill_hand_world_landmarks(sourceArr, poolArr) {
+  if (!Array.isArray(sourceArr) || sourceArr.length < 21) return false;
+  for (let i = 0; i < 21; i++) {
+    const source = sourceArr[i];
+    const target = poolArr[i];
+    if (Array.isArray(source)) {
+      target[0] = Number.isFinite(source[0]) ? source[0] : 0;
+      target[1] = Number.isFinite(source[1]) ? source[1] : 0;
+      target[2] = Number.isFinite(source[2]) ? source[2] : 0;
+    }
+    else if (source) {
+      target[0] = Number.isFinite(source.x) ? source.x : 0;
+      target[1] = Number.isFinite(source.y) ? source.y : 0;
+      target[2] = Number.isFinite(source.z) ? source.z : 0;
+    }
+    else {
+      target[0] = target[1] = target[2] = 0;
+    }
+  }
+  return true;
+}
+
 // Build the worker's `hands` array from normalized COCO-hand landmarks.
 // hands_adjust(..., from_native_backend=true) performs the single normalized->pixel scale.
 function XRA_NATIVE_hands(w, h) {
   if (!XRA_NATIVE_active() || typeof XRA_NATIVE.leftHand === 'undefined') return null;
   const hasLeft = _xra_fill_hand_landmarks(XRA_NATIVE.leftHand, _XRA_POOL_HAND_L);
   const hasRight = _xra_fill_hand_landmarks(XRA_NATIVE.rightHand, _XRA_POOL_HAND_R);
+  const hasLeftWorld = hasLeft && _xra_fill_hand_world_landmarks(XRA_NATIVE.leftHandWorld, _XRA_POOL_HAND_WORLD_L);
+  const hasRightWorld = hasRight && _xra_fill_hand_world_landmarks(XRA_NATIVE.rightHandWorld, _XRA_POOL_HAND_WORLD_R);
   if (!hasLeft && !hasRight) return null;
 
   _XRA_POOL_HANDS_OBJ.multiHandedness.length = 0;
   _XRA_POOL_HANDS_OBJ.multiHandLandmarks.length = 0;
+  _XRA_POOL_HANDS_OBJ.worldLandmarks.length = 0;
 
   // Mirrored convention: the camera-left hand is the subject's Right (matches
   // MediaPipe holistic legacy, which the rest of the pipeline expects).
   if (hasLeft) {
     _XRA_POOL_HANDS_OBJ.multiHandLandmarks.push(_XRA_POOL_HAND_L);
     _XRA_POOL_HANDS_OBJ.multiHandedness.push(_XRA_POOL_HANDEDNESS_R);
+    _XRA_POOL_HANDS_OBJ.worldLandmarks.push(hasLeftWorld ? _XRA_POOL_HAND_WORLD_L : _XRA_EMPTY_HAND_WORLD);
   }
   if (hasRight) {
     _XRA_POOL_HANDS_OBJ.multiHandLandmarks.push(_XRA_POOL_HAND_R);
     _XRA_POOL_HANDS_OBJ.multiHandedness.push(_XRA_POOL_HANDEDNESS_L);
+    _XRA_POOL_HANDS_OBJ.worldLandmarks.push(hasRightWorld ? _XRA_POOL_HAND_WORLD_R : _XRA_EMPTY_HAND_WORLD);
   }
   return _XRA_POOL_HANDS_OBJ.multiHandLandmarks.length ? _XRA_POOL_HANDS_OBJ : null;
 }
@@ -2138,7 +2163,7 @@ else {
       const worldLandmarks = worldCandidate?.length >= 21 ? worldCandidate : null;
 
       // Build the hand object WITHOUT a `worldLandmarks` key when there is no
-      // world-landmark data (the NATIVE/native backend path never sends any).
+      // world-landmark data.
       // Writing `worldLandmarks: undefined` leaves the key present-but-undefined,
       // and the renderer's rig indexes hand.worldLandmarks[0] -> TypeError
       // "Cannot read properties of undefined (reading '0')" -> the rig aborts
@@ -2208,7 +2233,7 @@ for (let f_idx = 0; f_idx < 5; f_idx++) {
 
   let dx = finger[0][0] - palm0[0];
   let dy = finger[0][1] - palm0[1];
-  let dz = finger[0][1] - palm0[1];
+  let dz = finger[0][2] - palm0[2];
   const ref_length = Math.sqrt(dx*dx + dy*dy + dz*dz) * ((f_idx == 0) ? 2 : 0.75) * 0.5;
 
   for (let i = 0; i < 3; i++) {
