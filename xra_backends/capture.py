@@ -3256,7 +3256,15 @@ class CaptureSource:
                     else:
                         hand_key = "leftHand" if is_left else "rightHand"
                         was_moving_down = getattr(self, "_hand_moving_down", {}).get(hand_key, False) or getattr(self, "_wrist_moving_down", {}).get(index, False)
-                        max_wrist_grace = 0.05 if was_moving_down else 0.18
+                        was_hand_live = self._hand_was_live.get(hand_key, False)
+                        hand_age = now - self._hand_last_good_at.get(hand_key, 0.0)
+                        arm_recently_active = was_hand_live or hand_age <= 0.50
+                        if was_moving_down:
+                            max_wrist_grace = 0.05
+                        elif arm_recently_active:
+                            max_wrist_grace = 0.30
+                        else:
+                            max_wrist_grace = 0.18
                         if previous is not None and age <= max_wrist_grace:
                             # 2. Arm is occluded, within grace period (absorbs transient webcam jitter)
                             held2, held3 = previous
@@ -3333,8 +3341,11 @@ class CaptureSource:
                     w_score = self._point_score(w_pt)
                     has_hand = has_left_hand if is_left else has_right_hand
                     is_smart_sync = bool(getattr(self, "_smart_arm_sync", True))
+                    el_hand_key = "leftHand" if is_left else "rightHand"
+                    el_hand_age = now - self._hand_last_good_at.get(el_hand_key, 0.0)
+                    el_grace = 0.30 if (has_hand or el_hand_age <= 0.50) else 0.18
 
-                    if previous is not None and age <= 0.18:
+                    if previous is not None and age <= el_grace:
                         held2, held3 = previous
                         body[index] = copy_fn(held2)
                         body[index]["score"] = 0.08
