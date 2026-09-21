@@ -250,6 +250,8 @@ class InferenceWorker:
             except Exception:
                 pass
         finally:
+            if getattr(engine.ENGINE, "object_detector", None) and engine.ENGINE.object_detector.callback == self._on_object_detection:
+                engine.ENGINE.object_detector.callback = None
             self._set_pose_subscription(False)
             self.conn.close()
 
@@ -314,6 +316,11 @@ class InferenceWorker:
         self.loop_count += 1
         self._last_ok = time.time()
         self._queue_pose(wire)
+
+    def _on_object_detection(self, payload: dict) -> None:
+        if self.conn.closed:
+            return
+        self.conn.send_json(payload)
 
     def _handle_binary_frame(self, payload: bytes) -> None:
         if not engine.ENGINE.ready or len(payload) < 8:
@@ -474,6 +481,10 @@ class InferenceWorker:
                     capture.CAPTURE.configure(smart_arm_sync=obj.get("smart_arm_sync"))
                 if "desk_wrist_guard" in obj:
                     capture.CAPTURE.configure(desk_wrist_guard=obj.get("desk_wrist_guard"))
+                if "python_hand_recovery" in obj:
+                    capture.CAPTURE.configure(
+                        python_hand_recovery=obj.get("python_hand_recovery")
+                    )
                 self._send({"type": "confidence_status", **res, **self._status()}, obj)
             except Exception as exc:
                 self.errors += 1
@@ -486,6 +497,24 @@ class InferenceWorker:
             except Exception as exc:
                 self.errors += 1
                 self._send({"type": "hardware_status", "ok": False, "error": str(exc), **self._status()}, obj)
+        elif mtype in {"set_object_detection", "configure_object_detection", "object_detection"}:
+            try:
+                enabled = obj.get("enabled")
+                if enabled is not None and getattr(engine.ENGINE, "object_detector", None):
+                    engine.ENGINE.object_detector.set_enabled(bool(enabled))
+                    if bool(enabled):
+                        engine.ENGINE.object_detector.callback = self._on_object_detection
+                res = {}
+                if getattr(engine.ENGINE, "object_detector", None):
+                    res = engine.ENGINE.object_detector.configure(
+                        min_score=obj.get("min_score", obj.get("score_threshold")),
+                        interval_ms=obj.get("interval_ms"),
+                        allowed_classes=obj.get("allowed_classes"),
+                    )
+                self._send({"type": "object_detection_status", "ok": True, **res}, obj)
+            except Exception as exc:
+                self.errors += 1
+                self._send({"type": "object_detection_status", "ok": False, "error": str(exc)}, obj)
         elif mtype in {"capture", "camera"}:
             self._handle_capture(obj)
         else:
@@ -511,6 +540,7 @@ class InferenceWorker:
                     infer_mode=obj.get("infer_mode"),
                     arm_steady_hold=obj.get("arm_steady_hold"),
                     smart_arm_sync=obj.get("smart_arm_sync"),
+                    python_hand_recovery=obj.get("python_hand_recovery"),
                     adaptive_frame_skip=obj.get("adaptive_frame_skip"),
                     cpu_affinity=obj.get("cpu_affinity"),
                 )

@@ -8,10 +8,16 @@ Automated Test Suite for XR Animator Motion Scenarios:
 5. Processing Performance: Stabilizer and wire transformation latency benchmark (<5ms).
 """
 
+import json
 import os
 import sys
+import tempfile
 import time
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import numpy as np
 
 # Add project root to sys.path
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -19,7 +25,8 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 from xra_backends.capture import CaptureSource
-from xra_backends.engine import to_wire, ENGINE
+from xra_backends import native_mediapipe
+from xra_backends.engine import to_wire, ENGINE, EngineDispatcher
 
 
 def make_dummy_keypoints(shoulder_y=150.0, elbow_xy=(305.0, 230.0), wrist_xy=(310.0, 310.0), wrist_score=0.85):
@@ -258,13 +265,14 @@ class TestMotionScenarios(unittest.TestCase):
         engine = CaptureSource()
         engine._reset_landmark_stabilizer("test_model_07")
 
-        def make_hand(wrist_score, median_score, n=21):
+        def make_hand(wrist_x, direction, wrist_score, median_score, n=21):
             """Simulate partially-overlapping hand: median confidence drops."""
             pts = []
             for i in range(n):
                 s = wrist_score if i == 0 else median_score
-                pts.append({"x": 300.0 + i, "y": 260.0, "z": 0.0, "score": s, "visibility": s,
-                            "position": {"x": 300.0 + i, "y": 260.0, "z": 0.0}})
+                x = wrist_x + direction * i
+                pts.append({"x": x, "y": 260.0, "z": 0.0, "score": s, "visibility": s,
+                            "position": {"x": x, "y": 260.0, "z": 0.0}})
             return pts
 
         # Build keypoints with both wrists live
@@ -277,22 +285,24 @@ class TestMotionScenarios(unittest.TestCase):
         kps[15]["position"] = {"x": 250.0, "y": 260.0, "z": 0.0}
         kps[15]["score"] = 0.85; kps[15]["visibility"] = 0.85
 
-        healthy_hand = make_hand(wrist_score=0.85, median_score=0.75)
+        healthy_left = make_hand(285.0, 1.0, wrist_score=0.85, median_score=0.75)
+        healthy_right = make_hand(325.0, -1.0, wrist_score=0.85, median_score=0.75)
         payload_warm = {
             "keypoints": [dict(p) for p in kps],
             "keypoints3D": [dict(p) for p in kps],
-            "leftHand": healthy_hand[:],
-            "rightHand": healthy_hand[:],
+            "leftHand": healthy_left,
+            "rightHand": healthy_right,
         }
         engine._stabilize_payload(payload_warm, 640, 360)
 
         # Now simulate touching: finger confidence drops to ~0.22 (below old 0.35 threshold, above new 0.18)
-        touching_hand = make_hand(wrist_score=0.55, median_score=0.22)
+        touching_left = make_hand(285.0, 1.0, wrist_score=0.55, median_score=0.22)
+        touching_right = make_hand(325.0, -1.0, wrist_score=0.55, median_score=0.22)
         payload_touch = {
             "keypoints": [dict(p) for p in kps],
             "keypoints3D": [dict(p) for p in kps],
-            "leftHand": touching_hand[:],
-            "rightHand": touching_hand[:],
+            "leftHand": touching_left,
+            "rightHand": touching_right,
         }
         out = engine._stabilize_payload(payload_touch, 640, 360)
 
@@ -1183,11 +1193,10 @@ class TestMotionScenarios(unittest.TestCase):
         print("  ✓ Raised right arm active (rw_y=%.3f < re_y=%.3f, 21 hand pts)" % (rw["y"], re["y"]))
         print("  ✓ Resting left arm calm at rest (lw_y=%.3f > le_y=%.3f, 0 hand pts)" % (lw["y"], le["y"]))
 
-    def test_34_downward_hand_noise_no_false_activation(self):
-        """Scenario 34: MediaPipe generates noisy hand landmarks pointing downwards near desk edge or lap.
-        Even with desk guard off, this downward resting hand noise must NOT activate gesture mode or
-        synthesize an elbow up in the air. When the hand is raised, it activates with zero delay."""
-        print("\n--- Test 34: Downward Hand Noise (No False Gesture Activation) ---")
+    def test_34_downward_hand_stays_visible_without_false_activation(self):
+        """Scenario 34: A complete hand track near the desk remains visible without
+        activating a raised-arm gesture or synthesizing an elbow in the air."""
+        print("\n--- Test 34: Downward Hand Visible Without False Gesture Activation ---")
         capture = CaptureSource()
         capture.configure(smart_arm_sync=True, desk_wrist_guard=False)
 
@@ -1212,13 +1221,13 @@ class TestMotionScenarios(unittest.TestCase):
         re = wire["keypoints"][14]
         rw = wire["keypoints"][16]
 
-        # 1. Downward resting hand noise must NOT be sent to frontend
-        self.assertEqual(len(rh), 0, "Downward resting hand noise must NOT be passed to frontend ([])!")
+        # 1. A complete real hand remains available for finger tracking at the desk.
+        self.assertEqual(len(rh), 21, "A complete hand track must remain visible near the desk!")
         # 2. Right wrist must remain down below elbow
         self.assertGreaterEqual(rw["y"], re["y"], "Wrist must stay below elbow when resting downwards!")
         # 3. Elbow must not be synthesized high up in the air
         self.assertGreaterEqual(re["y"], 0.50, "Elbow must stay naturally down near torso, NOT high in the air!")
-        print("  ✓ Step 1: Downward resting hand noise rejected (rightHand=[]), elbow calm at rest")
+        print("  ✓ Step 1: Downward hand preserved (21 pts), elbow calm at rest")
 
         # Now raise hand above chest (y=120)
         rh_raised = [{"x": 380.0 / 640.0, "y": (120.0 + i) / 360.0, "z": 0.0,
@@ -1419,8 +1428,1448 @@ class TestMotionScenarios(unittest.TestCase):
         self.assertGreater(el2["x"], sh2["x"], "When reaching across chest, elbow must naturally fold towards sternum (ex > sx)!")
         print("  ✓ Step 2: Cross-body reach verified: elbow (x=%.3f) folds naturally towards sternum (sh_x=%.3f)" % (el2["x"], sh2["x"]))
 
+    def test_39_raised_hand_survives_persistent_stale_body_wrist(self):
+        """Scenario 39: The hand tracker sees a raised hand while BlazePose keeps a
+        high-confidence body wrist stuck below the desk for multiple frames."""
+        print("\n--- Test 39: Raised Hand Survives Persistent Stale Body Wrist ---")
+        capture = CaptureSource()
+        capture.configure(smart_arm_sync=True, desk_wrist_guard=True)
+        capture._reset_landmark_stabilizer("test_model_39")
+
+        for frame in range(12):
+            if frame:
+                time.sleep(0.04)
+            score = 0.90 if frame == 0 else 0.30
+            kps = make_dummy_keypoints(
+                shoulder_y=150.0,
+                elbow_xy=(360.0, 230.0),
+                wrist_xy=(370.0, 300.0),
+                wrist_score=0.85,
+            )
+            hand = [{
+                "x": 380.0,
+                "y": 100.0 + i * 2.0,
+                "z": 0.0,
+                "score": score,
+                "visibility": score,
+                "position": {"x": 380.0, "y": 100.0 + i * 2.0, "z": 0.0},
+            } for i in range(21)]
+            payload = {
+                "score": 0.90,
+                "keypoints": kps,
+                "keypoints3D": [dict(p) for p in kps],
+                "face": {"landmarks": [{"x": 300.0, "y": 90.0, "z": 0.0}]},
+                "leftHand": [],
+                "rightHand": hand,
+            }
+
+            stabilized = capture._stabilize_payload(payload, 640, 360)
+            wire = to_wire(stabilized, capture_hint=(640, 360))
+            self.assertEqual(
+                len(wire.get("rightHand") or []), 21,
+                f"Raised hand disappeared on stale-pose frame {frame}",
+            )
+            self.assertLess(
+                wire["keypoints"][16]["y"], wire["keypoints"][14]["y"],
+                f"Raised wrist remained pinned below the desk on frame {frame}",
+            )
+
+        print("  ✓ 12 stale BlazePose frames over >400ms: hand remained visible and raised")
+
+    def test_40_real_hand_on_desk_is_preserved_with_guard_on_or_off(self):
+        """Scenario 40: Desk guard controls arm posture, never hand visibility."""
+        print("\n--- Test 40: Real Hand on Desk Preserved With Guard On/Off ---")
+
+        for guard_enabled in (True, False):
+            ENGINE._arm_active_state = {15: False, 16: False}
+            ENGINE._arm_down_frames = {15: 0, 16: 0}
+            capture = CaptureSource()
+            capture.configure(smart_arm_sync=True, desk_wrist_guard=guard_enabled)
+            capture._reset_landmark_stabilizer(f"test_model_40_{guard_enabled}")
+
+            kps = make_dummy_keypoints(
+                shoulder_y=150.0,
+                elbow_xy=(360.0, 220.0),
+                wrist_xy=(380.0, 324.0),
+                wrist_score=0.90,
+            )
+            hand = [{
+                "x": 380.0,
+                "y": 324.0 + i * 0.5,
+                "z": 0.0,
+                "score": 0.90,
+                "visibility": 0.90,
+                "position": {"x": 380.0, "y": 324.0 + i * 0.5, "z": 0.0},
+            } for i in range(21)]
+            payload = {
+                "score": 0.90,
+                "keypoints": kps,
+                "keypoints3D": [dict(p) for p in kps],
+                "face": {"landmarks": [{"x": 300.0, "y": 90.0, "z": 0.0}]},
+                "leftHand": [],
+                "rightHand": hand,
+            }
+
+            stabilized = capture._stabilize_payload(payload, 640, 360)
+            wire = to_wire(stabilized, capture_hint=(640, 360))
+            self.assertEqual(
+                len(wire.get("rightHand") or []), 21,
+                f"Desk hand disappeared with guard={guard_enabled}",
+            )
+            self.assertGreaterEqual(
+                wire["keypoints"][16]["y"], wire["keypoints"][14]["y"],
+                f"Desk hand falsely activated a raised arm with guard={guard_enabled}",
+            )
+
+        print("  ✓ Hand preserved with desk guard both enabled and disabled")
+
+    def test_41_obs_preview_reuses_owned_camera_frame(self):
+        """Scenario 41: OBS preview duplicates an acquired frame without a camera."""
+        print("\n--- Test 41: OBS Preview Reuses Owned Camera Frame ---")
+        capture = CaptureSource()
+        status = capture.configure_obs_preview(True, fps=12, quality=72)
+        self.assertTrue(status["enabled"])
+        self.assertEqual(status["fps"], 12.0)
+        self.assertEqual(status["quality"], 72)
+        self.assertTrue(capture.begin_obs_preview())
+
+        frame = np.zeros((36, 64, 3), dtype=np.uint8)
+        frame[:, :, 1] = 123
+        capture._publish_obs_preview_frame(frame)
+        sequence, shared = capture.wait_obs_preview_frame(-1, timeout=0.05)
+
+        self.assertGreaterEqual(sequence, 1)
+        self.assertIs(shared, frame, "Preview must share the captured frame, not reopen/copy the camera")
+        self.assertEqual(capture.obs_preview_status()["clients"], 1)
+
+        capture.end_obs_preview()
+        capture.configure_obs_preview(False)
+        self.assertEqual(capture.obs_preview_status()["clients"], 0)
+        self.assertFalse(capture.obs_preview_status()["enabled"])
+        print("  ✓ Shared frame published without opening a second camera handle")
+
+    def test_42_body_wrist_bridge_is_strictly_bounded(self):
+        """Scenario 42: A pose-only wrist cannot drag a held detailed hand."""
+        print("\n--- Test 42: Bounded Body-Wrist Hand Bridge ---")
+        capture = CaptureSource()
+        capture.configure(smart_arm_sync=False, desk_wrist_guard=False)
+        capture._reset_landmark_stabilizer("test_model_42")
+
+        kps = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(360.0, 225.0),
+            wrist_xy=(390.0, 125.0),
+            wrist_score=0.90,
+        )
+        hand = [{
+            "x": 390.0 + i * 0.4,
+            "y": 125.0 - i * 0.8,
+            "z": 0.0,
+            "score": 0.90,
+            "visibility": 0.90,
+            "position": {"x": 390.0 + i * 0.4, "y": 125.0 - i * 0.8, "z": 0.0},
+        } for i in range(21)]
+        initial = {
+            "score": 0.90,
+            "keypoints": kps,
+            "keypoints3D": [dict(p) for p in kps],
+            "face": {"landmarks": [{"x": 300.0, "y": 90.0, "z": 0.0}]},
+            "leftHand": [],
+            "rightHand": hand,
+        }
+        first = capture._stabilize_payload(initial, 640, 360)
+        self.assertEqual(len(first["rightHand"]), 21)
+
+        # A short dropout preserves the last detailed-hand shape in place.
+        capture._hand_last_good_at["rightHand"] = time.monotonic() - 0.25
+        previous_tip_offset = (
+            first["rightHand"][20]["x"] - first["rightHand"][0]["x"],
+            first["rightHand"][20]["y"] - first["rightHand"][0]["y"],
+        )
+        live_kps = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(361.0, 225.0),
+            wrist_xy=(397.0, 128.0),
+            wrist_score=0.90,
+        )
+        missing = {
+            "score": 0.90,
+            "keypoints": live_kps,
+            "keypoints3D": [dict(p) for p in live_kps],
+            "face": {"landmarks": [{"x": 300.0, "y": 90.0, "z": 0.0}]},
+            "leftHand": [],
+            "rightHand": [],
+        }
+        held = capture._stabilize_payload(missing, 640, 360)
+        self.assertEqual(len(held["rightHand"]), 21)
+        self.assertAlmostEqual(held["rightHand"][0]["x"], 390.0, delta=0.01)
+        self.assertAlmostEqual(held["keypoints"][16]["x"], 397.0, delta=0.01)
+        self.assertAlmostEqual(held["keypoints"][16]["y"], 128.0, delta=0.01)
+        self.assertAlmostEqual(
+            held["rightHand"][20]["x"] - held["rightHand"][0]["x"],
+            previous_tip_offset[0],
+            delta=0.01,
+        )
+        self.assertAlmostEqual(
+            held["rightHand"][20]["y"] - held["rightHand"][0]["y"],
+            previous_tip_offset[1],
+            delta=0.01,
+        )
+
+        # Even a plausible raised body wrist must not preserve a detailed hand
+        # indefinitely after the hand model has stopped seeing it.
+        capture._hand_last_good_at["rightHand"] = time.monotonic() - 1.05
+        stale_missing = dict(missing, rightHand=[])
+        released_stale = capture._stabilize_payload(stale_missing, 640, 360)
+        self.assertEqual(released_stale["rightHand"], [])
+
+        # Once the body wrist moves below the elbow into the desk/rest zone,
+        # the synthesized hand must release rather than become a ghost.
+        low_kps = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(372.0, 225.0),
+            wrist_xy=(410.0, 335.0),
+            wrist_score=0.90,
+        )
+        lowered = capture._stabilize_payload({
+            "score": 0.90,
+            "keypoints": low_kps,
+            "keypoints3D": [dict(p) for p in low_kps],
+            "face": {"landmarks": [{"x": 300.0, "y": 90.0, "z": 0.0}]},
+            "leftHand": [],
+            "rightHand": [],
+        }, 640, 360)
+        self.assertEqual(lowered["rightHand"], [])
+        print("  ✓ Held hand stays fixed; a nearby live pose wrist remains independent")
+
+    def test_43_native_world_hands_reach_frontend_rig(self):
+        """Scenario 43: Existing MediaPipe hand-world data is not discarded in JS."""
+        print("\n--- Test 43: Native Hand-World Bridge ---")
+        source_path = os.path.join(BASE_DIR, "js", "mocap_lib_module.js")
+        with open(source_path, "r", encoding="utf-8") as source_file:
+            source = source_file.read()
+
+        self.assertIn("worldLandmarks: []", source)
+        self.assertIn("XRA_NATIVE.leftHandWorld", source)
+        self.assertIn("XRA_NATIVE.rightHandWorld", source)
+        self.assertIn("finger[0][2] - palm0[2]", source)
+        self.assertNotIn("let dz = finger[0][1] - palm0[1]", source)
+
+        kps = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(360.0, 220.0),
+            wrist_xy=(390.0, 125.0),
+            wrist_score=0.90,
+        )
+        hand = [{"x": 390.0 + i, "y": 125.0 - i, "z": -i * 0.2, "score": 0.90}
+                for i in range(21)]
+        world = [[i * 0.001, i * -0.002, i * 0.003] for i in range(21)]
+        wire = to_wire({
+            "score": 0.90,
+            "keypoints": kps,
+            "keypoints3D": [dict(point) for point in kps],
+            "face": {"landmarks": [{"x": 300.0, "y": 90.0, "z": 0.0}]},
+            "leftHand": [],
+            "rightHand": hand,
+            "rightHandWorld": world,
+        }, capture_hint=(640, 360))
+        self.assertEqual(wire["rightHandWorld"], world)
+        print("  ✓ Existing 21-point world hand reaches the frontend without another inference")
+
+    def test_44_confirmed_fist_survives_short_malformed_candidate(self):
+        """Scenario 44: A confirmed fist bridges self-occluded malformed landmarks."""
+        print("\n--- Test 44: Fist Occlusion Hysteresis ---")
+        capture = CaptureSource()
+        capture._reset_landmark_stabilizer("test_model_44")
+
+        hand = [{"x": 390.0, "y": 125.0, "z": 0.0, "score": 0.90}
+                for _ in range(21)]
+        # Four bent chains: straight MCP->PIP, then two right-angle turns.
+        for finger, base_x in enumerate((374.0, 384.0, 394.0, 404.0)):
+            start = 5 + finger * 4
+            coords = (
+                (base_x, 112.0), (base_x, 100.0),
+                (base_x + 10.0, 100.0), (base_x + 10.0, 112.0),
+            )
+            for index, (x, y) in zip(range(start, start + 4), coords):
+                hand[index] = {"x": x, "y": y, "z": 0.0, "score": 0.90}
+        for index, (x, y) in zip(range(1, 5), ((382, 120), (378, 112), (382, 106), (389, 110))):
+            hand[index] = {"x": x, "y": y, "z": 0.0, "score": 0.90}
+
+        self.assertGreater(capture._hand_bend_score(hand), 0.22)
+        kps = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(360.0, 220.0),
+            wrist_xy=(390.0, 125.0),
+            wrist_score=0.90,
+        )
+        first = capture._stabilize_payload({
+            "keypoints": kps,
+            "keypoints3D": [dict(point) for point in kps],
+            "leftHand": [],
+            "rightHand": hand,
+        }, 640, 360)
+        self.assertEqual(len(first["rightHand"]), 21)
+        self.assertTrue(capture._hand_fist_state["rightHand"])
+
+        weak_body = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(360.0, 220.0),
+            wrist_xy=(390.0, 125.0),
+            wrist_score=0.0,
+        )
+        weak_body[14]["score"] = 0.0
+        capture._body_last_good[14] = capture._body_last_good[16] = None
+        malformed = [None] * 21
+        held = capture._stabilize_payload({
+            "keypoints": weak_body,
+            "keypoints3D": [dict(point) for point in weak_body],
+            "leftHand": [],
+            "rightHand": malformed,
+        }, 640, 360)
+        self.assertEqual(len(held["rightHand"]), 21)
+
+        # GPU HandLandmarker produced ~0.9 s closed-fist gaps in the captured
+        # trace. A confirmed fist gets a narrowly extended protective hold.
+        capture._hand_last_good_at["rightHand"] = time.monotonic() - 0.80
+        capture._body_last_good[14] = capture._body_last_good[16] = None
+        still_held = capture._stabilize_payload({
+            "keypoints": weak_body,
+            "keypoints3D": [dict(point) for point in weak_body],
+            "leftHand": [],
+            "rightHand": malformed,
+        }, 640, 360)
+        self.assertEqual(len(still_held["rightHand"]), 21)
+
+        capture._hand_last_good_at["rightHand"] = time.monotonic() - 1.05
+        capture._body_last_good[14] = capture._body_last_good[16] = None
+        released = capture._stabilize_payload({
+            "keypoints": weak_body,
+            "keypoints3D": [dict(point) for point in weak_body],
+            "leftHand": [],
+            "rightHand": malformed,
+        }, 640, 360)
+        self.assertEqual(released["rightHand"], [])
+        print("  ✓ Confirmed fist held for 950 ms, then released without becoming a ghost")
+
+    def test_45_joined_hands_survive_face_occlusion_without_collapsing(self):
+        """Scenario 45: A real two-hand contact survives loss/duplicate detections."""
+        print("\n--- Test 45: Coupled Joined-Hand Occlusion ---")
+        capture = CaptureSource()
+        capture._reset_landmark_stabilizer("test_model_45")
+
+        def body(left_wrist=(275.0, 120.0), right_wrist=(325.0, 120.0)):
+            points = make_dummy_keypoints(
+                shoulder_y=150.0,
+                elbow_xy=(360.0, 190.0),
+                wrist_xy=right_wrist,
+                wrist_score=0.90,
+            )
+            points[13].update({"x": 240.0, "y": 190.0, "score": 0.90})
+            points[13]["position"] = {"x": 240.0, "y": 190.0, "z": 0.0}
+            points[15].update({"x": left_wrist[0], "y": left_wrist[1], "score": 0.90})
+            points[15]["position"] = {"x": left_wrist[0], "y": left_wrist[1], "z": 0.0}
+            return points
+
+        def inward_hand(wrist_x, direction):
+            points = [{"x": wrist_x, "y": 120.0, "z": 0.0, "score": 0.90}]
+            for index in range(1, 21):
+                points.append({
+                    "x": wrist_x + direction * index * 1.2,
+                    "y": 120.0 - (index % 4 + 1) * 4.0,
+                    "z": -index * 0.1,
+                    "score": 0.90,
+                })
+            return points
+
+        left = inward_hand(275.0, 1.0)
+        right = inward_hand(325.0, -1.0)
+        first_body = body()
+        first = capture._stabilize_payload({
+            "keypoints": first_body,
+            "keypoints3D": [dict(point) for point in first_body],
+            "leftHand": left,
+            "rightHand": right,
+        }, 640, 360)
+        self.assertTrue(first.get("_hands_contact_active"))
+        self.assertEqual(len(first["leftHand"]), 21)
+        self.assertEqual(len(first["rightHand"]), 21)
+
+        # One hand disappears in front of the face; the other moves five pixels.
+        moved_right = inward_hand(330.0, -1.0)
+        missing_body = body(left_wrist=(0.0, 0.0), right_wrist=(330.0, 120.0))
+        missing_body[15]["score"] = 0.0
+        capture._body_last_good[15] = None
+        bridged = capture._stabilize_payload({
+            "keypoints": missing_body,
+            "keypoints3D": [dict(point) for point in missing_body],
+            "leftHand": [],
+            "rightHand": moved_right,
+        }, 640, 360)
+        self.assertEqual(len(bridged["leftHand"]), 21)
+        self.assertAlmostEqual(bridged["leftHand"][0]["x"], 280.0, delta=0.1)
+
+        # MediaPipe can report the same visible hand for both sides. Preserve
+        # the established 50px pair separation instead of collapsing them.
+        duplicate = inward_hand(335.0, -1.0)
+        duplicate_body = body(left_wrist=(335.0, 120.0), right_wrist=(335.0, 120.0))
+        deduplicated = capture._stabilize_payload({
+            "keypoints": duplicate_body,
+            "keypoints3D": [dict(point) for point in duplicate_body],
+            "leftHand": duplicate,
+            "rightHand": duplicate,
+        }, 640, 360)
+        separation = abs(
+            deduplicated["leftHand"][0]["x"] - deduplicated["rightHand"][0]["x"]
+        )
+        self.assertAlmostEqual(separation, 50.0, delta=0.5)
+        self.assertTrue(deduplicated.get("_hands_contact_active"))
+
+        # Two clearly separated frames intentionally release contact promptly.
+        far_left = inward_hand(220.0, 1.0)
+        far_right = inward_hand(420.0, -1.0)
+        for _ in range(2):
+            far_body = body(left_wrist=(220.0, 120.0), right_wrist=(420.0, 120.0))
+            separated = capture._stabilize_payload({
+                "keypoints": far_body,
+                "keypoints3D": [dict(point) for point in far_body],
+                "leftHand": far_left,
+                "rightHand": far_right,
+            }, 640, 360)
+        self.assertFalse(separated.get("_hands_contact_active", False))
+        self.assertGreater(
+            abs(separated["leftHand"][0]["x"] - separated["rightHand"][0]["x"]),
+            150.0,
+        )
+        print("  ✓ Contact survives loss/duplication and releases after two separated frames")
+
+    def test_46_joined_hands_close_body_world_wrist_gap(self):
+        """Scenario 46: Contact state removes the body-world wrist separation bias."""
+        print("\n--- Test 46: Joined-Hand 3D Contact Constraint ---")
+        kps = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(360.0, 190.0),
+            wrist_xy=(325.0, 120.0),
+            wrist_score=0.90,
+        )
+        kps[13].update({"x": 240.0, "y": 190.0, "score": 0.90})
+        kps[13]["position"] = {"x": 240.0, "y": 190.0, "z": 0.0}
+        kps[15].update({"x": 275.0, "y": 120.0, "score": 0.90})
+        kps[15]["position"] = {"x": 275.0, "y": 120.0, "z": 0.0}
+
+        body3 = []
+        for index in range(33):
+            x = -0.08 if index == 15 else (0.08 if index == 16 else 0.0)
+            body3.append({"x": x, "y": 0.0, "z": 0.0, "score": 0.90})
+        left = [{"x": 275.0 + i * 1.2, "y": 120.0, "z": 0.0, "score": 0.90}
+                for i in range(21)]
+        right = [{"x": 325.0 - i * 1.2, "y": 120.0, "z": 0.0, "score": 0.90}
+                 for i in range(21)]
+        wire = to_wire({
+            "keypoints": kps,
+            "keypoints3D": body3,
+            "keypoints3d_space": "body_relative",
+            "face": {"landmarks": [{"x": 300.0, "y": 90.0, "z": 0.0}]},
+            "leftHand": left,
+            "rightHand": right,
+            "_hands_contact_active": True,
+        }, capture_hint=(640, 360))
+        wrist_gap = abs(wire["keypoints3D"][15]["x"] - wire["keypoints3D"][16]["x"])
+        self.assertLess(wrist_gap, 0.05)
+        print("  ✓ Body-world wrist gap reduced from 16cm to %.1fcm" % (wrist_gap * 100.0))
+
+    def test_47_hand_state_math_stays_below_half_millisecond(self):
+        """Scenario 47: New fist/contact state remains negligible versus inference."""
+        print("\n--- Test 47: Hand-State Micro Benchmark ---")
+        capture = CaptureSource()
+        left = [{"x": 275.0 + i * 1.2, "y": 120.0 - (i % 4) * 4.0,
+                 "z": -i * 0.1, "score": 0.90} for i in range(21)]
+        right = [{"x": 325.0 - i * 1.2, "y": 120.0 - (i % 4) * 4.0,
+                  "z": -i * 0.1, "score": 0.90} for i in range(21)]
+        for _ in range(50):
+            capture._hand_contact_metrics(left, right, 640, 360)
+            capture._hand_bend_score(left)
+            capture._hand_bend_score(right)
+
+        iterations = 1000
+        started = time.perf_counter()
+        for _ in range(iterations):
+            capture._hand_contact_metrics(left, right, 640, 360)
+            capture._hand_bend_score(left)
+            capture._hand_bend_score(right)
+        average_ms = (time.perf_counter() - started) * 1000.0 / iterations
+        self.assertLess(average_ms, 0.50)
+        print("  ✓ Contact + both fist scores: %.3f ms/frame" % average_ms)
+
+    def test_48_obs_debug_writes_raw_and_stable_hand_trace(self):
+        """Scenario 48: OBS debug logging is asynchronous and landmark-only."""
+        print("\n--- Test 48: OBS MediaPipe Debug Trace ---")
+        capture = CaptureSource()
+        hand = [{"x": 300.0 + index, "y": 120.0 - index, "z": -index * 0.1,
+                 "score": 0.90} for index in range(21)]
+        world = [[index * 0.001, index * -0.002, index * 0.003]
+                 for index in range(21)]
+        payload = {
+            "keypoints": make_dummy_keypoints(),
+            "leftHand": hand,
+            "rightHand": [],
+            "leftHandWorld": world,
+            "rightHandWorld": [],
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            status = capture.configure_tracking_log(True, directory=directory)
+            self.assertTrue(status["active"])
+            path = status["path"]
+            snapshot = capture._tracking_log_snapshot(payload)
+            capture._queue_tracking_log({
+                "type": "frame",
+                "frame_id": 1,
+                "timestamp_ms": int(time.time() * 1000),
+                "elapsed_ms": 0,
+                "raw": snapshot,
+                "stable": snapshot,
+            })
+            capture.configure_tracking_log(False)
+
+            with open(path, "r", encoding="utf-8") as handle:
+                records = [json.loads(line) for line in handle if line.strip()]
+            self.assertEqual(records[0]["type"], "session")
+            self.assertEqual(records[1]["type"], "frame")
+            self.assertEqual(len(records[1]["raw"]["left"]), 21)
+            self.assertEqual(len(records[1]["raw"]["left_world"]), 21)
+            self.assertNotIn("image", records[1])
+
+        with open(os.path.join(BASE_DIR, "tools", "launcher.c"), "r", encoding="utf-8") as handle:
+            launcher_source = handle.read()
+        self.assertIn('strcmp(argv[i], "--obs-debug")', launcher_source)
+        self.assertIn('setenv("XRA_MEDIAPIPE_LOG", "1", 1)', launcher_source)
+        print("  ✓ --obs-debug writes raw/stable landmarks off the inference thread")
+
+    def test_49_full_body_auto_never_requests_gpu(self):
+        """Scenario 49: Hidden/stale settings cannot make Full Body Auto probe GPU."""
+        with patch.dict(os.environ, {"XRA_HARDWARE_MODE": "Auto"}, clear=False):
+            os.environ.pop("XRA_FORCE_CPU", None)
+            dispatcher = EngineDispatcher()
+            try:
+                self.assertEqual(dispatcher._mode, "holistic")
+                self.assertFalse(dispatcher._hardware_requests_gpu())
+                self.assertIs(
+                    dispatcher._candidate(), dispatcher._engines["holistic-cpu"]
+                )
+
+                dispatcher._hardware_mode = "low-power"
+                dispatcher._accelerated = dispatcher._hardware_requests_gpu()
+                self.assertTrue(dispatcher._accelerated)
+                self.assertIs(
+                    dispatcher._candidate(), dispatcher._engines["holistic-gpu"]
+                )
+
+                dispatcher._hardware_mode = "Auto"
+                dispatcher._mode = "face"
+                dispatcher._accelerated = dispatcher._hardware_requests_gpu()
+                self.assertTrue(dispatcher._accelerated)
+                self.assertIs(dispatcher._candidate(), dispatcher._engines["face"])
+            finally:
+                dispatcher.unload()
+
+    def test_50_split_hands_keep_holistic_side_contract(self):
+        """Scenario 50: Split HandLandmarker labels map to existing payload sides."""
+        def hand(x):
+            return [SimpleNamespace(
+                x=x + index * 0.001,
+                y=0.25 + index * 0.001,
+                z=-index * 0.001,
+                visibility=0.9,
+                presence=0.9,
+            ) for index in range(21)]
+
+        left = hand(0.20)
+        right = hand(0.70)
+        result = SimpleNamespace(
+            hand_landmarks=[right, left],
+            hand_world_landmarks=[right, left],
+            handedness=[
+                [SimpleNamespace(category_name="Right", score=0.8)],
+                [SimpleNamespace(category_name="Left", score=0.9)],
+            ],
+        )
+        left_out, right_out, left_world, right_world = (
+            native_mediapipe._split_hand_payload(result, 640, 360)
+        )
+        self.assertEqual(len(left_out), 21)
+        self.assertEqual(len(right_out), 21)
+        self.assertEqual(len(left_world), 21)
+        self.assertEqual(len(right_world), 21)
+        self.assertAlmostEqual(left_out[0][0], 0.20 * 640, places=2)
+        self.assertAlmostEqual(right_out[0][0], 0.70 * 640, places=2)
+
+    def test_51_shifted_duplicate_does_not_create_second_hand(self):
+        """Scenario 51: A translated clone is one hand, not joined hands."""
+        capture = CaptureSource()
+        capture._reset_landmark_stabilizer("test_model_51")
+        body = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(365.0, 175.0),
+            wrist_xy=(390.0, 125.0),
+            wrist_score=0.90,
+        )
+        body[13].update({"x": 330.0, "y": 175.0, "score": 0.90})
+        body[13]["position"] = {"x": 330.0, "y": 175.0, "z": 0.0}
+        body[15].update({"x": 250.0, "y": 125.0, "score": 0.90})
+        body[15]["position"] = {"x": 250.0, "y": 125.0, "z": 0.0}
+
+        hand = [{
+            "x": 390.0 + (index % 4) * 5.0,
+            "y": 125.0 - (index // 4) * 7.0,
+            "z": -index * 0.1,
+            "score": 0.90,
+        } for index in range(21)]
+        shifted_clone = [dict(point, x=point["x"] + 4.0) for point in hand]
+        output = capture._stabilize_payload({
+            "keypoints": body,
+            "keypoints3D": [dict(point) for point in body],
+            "leftHand": shifted_clone,
+            "rightHand": hand,
+        }, 640, 360)
+
+        self.assertEqual(output["leftHand"], [])
+        self.assertEqual(len(output["rightHand"]), 21)
+        self.assertFalse(output.get("_hands_contact_active", False))
+
+    def test_52_hand_world_impossible_rotation_is_rate_limited(self):
+        """Scenario 52: A one-frame 3D palm flip cannot snap the wrist."""
+        capture = CaptureSource()
+        capture._reset_landmark_stabilizer("test_model_52")
+
+        world = np.zeros((21, 3), dtype=np.float64)
+        for index in range(21):
+            world[index] = ((index % 4 - 1.5) * 0.012,
+                            (index // 4) * 0.014, -index * 0.0005)
+        world[0] = (0.0, 0.0, 0.0)
+        world[5] = (0.040, 0.050, 0.0)
+        world[9] = (0.0, 0.080, 0.0)
+        world[17] = (-0.040, 0.050, 0.0)
+
+        theta = np.radians(120.0)
+        rotation = np.array([
+            [np.cos(theta), -np.sin(theta), 0.0],
+            [np.sin(theta), np.cos(theta), 0.0],
+            [0.0, 0.0, 1.0],
+        ])
+        flipped = world @ rotation.T
+        now = time.monotonic()
+        capture._hand_world_last_good["rightHand"] = world.tolist()
+        capture._hand_last_good_at["rightHand"] = now - 0.04
+        stabilized = capture._stabilize_hand_world(
+            "rightHand", flipped.tolist(), now
+        )
+
+        before = capture._hand_world_frame(world)
+        after = capture._hand_world_frame(np.asarray(stabilized))
+        cosine = (np.trace(before.T @ after) - 1.0) * 0.5
+        angle = np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0)))
+        self.assertLessEqual(angle, 30.0)
+        self.assertAlmostEqual(
+            np.linalg.norm(np.asarray(stabilized)[9] - np.asarray(stabilized)[0]),
+            np.linalg.norm(flipped[9] - flipped[0]),
+            places=6,
+        )
+
+        tracking_source = os.path.join(
+            BASE_DIR, "images", "XR Animator", "xra_custom", "20_tracking.js"
+        )
+        with open(tracking_source, "r", encoding="utf-8") as source_file:
+            source = source_file.read()
+        self.assertNotIn("preventBackwardReach", source)
+
+    def test_53_single_hand_label_flip_is_reassociated_not_duplicated(self):
+        """Scenario 53: One crossing hand cannot occupy both handedness slots."""
+        capture = CaptureSource()
+        capture._reset_landmark_stabilizer("test_model_53")
+
+        body = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(350.0, 185.0),
+            wrist_xy=(335.0, 145.0),
+            wrist_score=0.90,
+        )
+        body[13].update({"x": 545.0, "y": 300.0, "score": 0.15})
+        body[13]["position"] = {"x": 545.0, "y": 300.0, "z": 0.0}
+        body[15].update({"x": 560.0, "y": 340.0, "score": 0.15})
+        body[15]["position"] = {"x": 560.0, "y": 340.0, "z": 0.0}
+
+        def hand(root_x):
+            return [{
+                "x": root_x + (index % 4) * 4.0,
+                "y": 145.0 - (index // 4) * 6.0,
+                "z": -index * 0.1,
+                "score": 0.90,
+            } for index in range(21)]
+
+        # Establish the real right-hand track, then reproduce the GPU trace:
+        # the same physical hand moves slightly and is labelled left once.
+        first = capture._stabilize_payload({
+            "keypoints": body,
+            "keypoints3D": [dict(point) for point in body],
+            "leftHand": [],
+            "rightHand": hand(335.0),
+            "leftHandWorld": [],
+            "rightHandWorld": [[0.0, 0.0, 0.0] for _ in range(21)],
+        }, 640, 360)
+        self.assertEqual(len(first["rightHand"]), 21)
+
+        flipped_world = [[0.01, -0.01, 0.0] for _ in range(21)]
+        corrected = capture._stabilize_payload({
+            "keypoints": body,
+            "keypoints3D": [dict(point) for point in body],
+            "leftHand": hand(380.0),
+            "rightHand": [],
+            "leftHandWorld": flipped_world,
+            "rightHandWorld": [],
+        }, 640, 360)
+        self.assertEqual(corrected["leftHand"], [])
+        self.assertEqual(len(corrected["rightHand"]), 21)
+        self.assertEqual(corrected["rightHandWorld"], flipped_world)
+
+    def test_54_uncorroborated_hand_birth_requires_persistence(self):
+        """Scenario 54: One-frame face/chest detections never reach the avatar."""
+        capture = CaptureSource()
+        capture._reset_landmark_stabilizer("test_model_54")
+        body = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(350.0, 310.0),
+            wrist_xy=(360.0, 340.0),
+            wrist_score=0.05,
+        )
+        body[14]["score"] = 0.05
+        body[14]["visibility"] = 0.05
+        body[13]["score"] = 0.05
+        body[13]["visibility"] = 0.05
+        body[15]["score"] = 0.05
+        body[15]["visibility"] = 0.05
+        hand = [{"x": 310.0 + index % 3, "y": 155.0 + index % 4,
+                 "z": 0.0, "score": 1.0} for index in range(21)]
+
+        transient = capture._stabilize_payload({
+            "keypoints": body,
+            "keypoints3D": [dict(point) for point in body],
+            "leftHand": [],
+            "rightHand": hand,
+        }, 640, 360)
+        self.assertEqual(transient["rightHand"], [])
+        self.assertFalse(capture._hand_was_live["rightHand"])
+
+        # A real candidate that remains coherent for >=180 ms is admitted even
+        # if BlazePose's arm branch is occluded.
+        capture._hand_candidate_since["rightHand"] = time.monotonic() - 0.20
+        capture._hand_candidate_frames["rightHand"] = 3
+        capture._hand_candidate_root["rightHand"] = (310.0, 155.0)
+        persistent = capture._stabilize_payload({
+            "keypoints": body,
+            "keypoints3D": [dict(point) for point in body],
+            "leftHand": [],
+            "rightHand": hand,
+        }, 640, 360)
+        self.assertEqual(len(persistent["rightHand"]), 21)
+
+    def test_55_lateral_low_wrist_uses_normal_dropout_hold(self):
+        """Scenario 55: Image height alone cannot make a raised hand disappear."""
+        capture = CaptureSource()
+        capture._reset_landmark_stabilizer("test_model_55")
+        body = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(150.0, 250.0),
+            wrist_xy=(80.0, 310.0),
+            wrist_score=0.90,
+        )
+        hand = [{"x": 80.0 + index, "y": 310.0 - index * 0.4,
+                 "z": 0.0, "score": 0.90} for index in range(21)]
+        first = capture._stabilize_payload({
+            "keypoints": body,
+            "keypoints3D": [dict(point) for point in body],
+            "leftHand": [],
+            "rightHand": hand,
+        }, 640, 360)
+        self.assertEqual(len(first["rightHand"]), 21)
+
+        weak_body = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(150.0, 250.0),
+            wrist_xy=(80.0, 310.0),
+            wrist_score=0.0,
+        )
+        weak_body[14]["score"] = 0.0
+        capture._body_last_good[14] = capture._body_last_good[16] = None
+        capture._hand_moving_down["rightHand"] = False
+        capture._hand_last_good_at["rightHand"] = time.monotonic() - 0.30
+        held = capture._stabilize_payload({
+            "keypoints": weak_body,
+            "keypoints3D": [dict(point) for point in weak_body],
+            "leftHand": [],
+            "rightHand": [],
+        }, 640, 360)
+        self.assertEqual(len(held["rightHand"]), 21)
+
+        capture._hand_last_good_at["rightHand"] = time.monotonic() - 0.70
+        released = capture._stabilize_payload({
+            "keypoints": weak_body,
+            "keypoints3D": [dict(point) for point in weak_body],
+            "leftHand": [],
+            "rightHand": [],
+        }, 640, 360)
+        self.assertEqual(released["rightHand"], [])
+
+    def test_56_crossing_label_flip_prefers_recent_track(self):
+        """Scenario 56: Ambiguous body wrists cannot split one crossing hand."""
+        capture = CaptureSource()
+        capture._reset_landmark_stabilizer("test_model_56")
+        body = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(220.0, 200.0),
+            wrist_xy=(190.0, 195.0),
+            wrist_score=0.42,
+        )
+        body[13].update({"x": 250.0, "y": 205.0, "score": 0.90})
+        body[13]["position"] = {"x": 250.0, "y": 205.0, "z": 0.0}
+        body[15].update({"x": 240.0, "y": 205.0, "score": 0.90})
+        body[15]["position"] = {"x": 240.0, "y": 205.0, "z": 0.0}
+
+        def hand(root_x):
+            return [{"x": root_x + index % 4, "y": 205.0 - index % 5,
+                     "z": 0.0, "score": 0.90} for index in range(21)]
+
+        live = capture._stabilize_payload({
+            "keypoints": body,
+            "keypoints3D": [dict(point) for point in body],
+            "leftHand": hand(240.0),
+            "rightHand": [],
+        }, 640, 360)
+        self.assertEqual(len(live["leftHand"]), 21)
+
+        flipped = capture._stabilize_payload({
+            "keypoints": body,
+            "keypoints3D": [dict(point) for point in body],
+            "leftHand": [],
+            "rightHand": hand(245.0),
+        }, 640, 360)
+        self.assertEqual(len(flipped["leftHand"]), 21)
+        self.assertEqual(flipped["rightHand"], [])
+
+    def test_57_large_reacquisition_jump_is_rate_limited(self):
+        """Scenario 57: A hand returning after a gap cannot snap the arm in one frame."""
+        capture = CaptureSource()
+        capture._reset_landmark_stabilizer("test_model_57")
+
+        def hand(root_x, root_y):
+            return [{
+                "x": root_x + index,
+                "y": root_y - index * 0.5,
+                "z": 0.0,
+                "score": 0.90,
+                "position": {
+                    "x": root_x + index,
+                    "y": root_y - index * 0.5,
+                    "z": 0.0,
+                },
+            } for index in range(21)]
+
+        previous = hand(300.0, 300.0)
+        raw = hand(500.0, 100.0)
+        capture._hand_last_good["rightHand"] = previous
+        now = time.monotonic()
+        capture._hand_last_good_at["rightHand"] = now - 0.50
+
+        limited = capture._limit_hand_reacquisition_jump(
+            "rightHand", raw, 640, 360, 300.0, now
+        )
+        first_root = capture._point_xy(limited[0])
+        first_step = ((first_root[0] - 300.0) ** 2 + (first_root[1] - 300.0) ** 2) ** 0.5
+        self.assertLessEqual(first_step, 66.01)
+        self.assertAlmostEqual(
+            limited[20]["x"] - limited[0]["x"],
+            raw[20]["x"] - raw[0]["x"],
+            delta=1e-6,
+        )
+
+        # Recovery remains active across live frames until it catches the raw
+        # wrist; ordinary continuous frames are then returned unchanged.
+        for frame in range(1, 8):
+            capture._hand_last_good["rightHand"] = limited
+            capture._hand_last_good_at["rightHand"] = now + frame * 0.04
+            limited = capture._limit_hand_reacquisition_jump(
+                "rightHand", raw, 640, 360, 300.0, now + frame * 0.04
+            )
+        self.assertAlmostEqual(limited[0]["x"], 500.0, delta=1e-6)
+        self.assertAlmostEqual(limited[0]["y"], 100.0, delta=1e-6)
+        self.assertFalse(capture._hand_recovery_active["rightHand"])
+
+    def test_58_downward_motion_above_elbow_keeps_normal_hold(self):
+        """Scenario 58: Palm rotation above the elbow is not an arm-lowering signal."""
+        capture = CaptureSource()
+        capture._reset_landmark_stabilizer("test_model_58")
+        body = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(360.0, 250.0),
+            wrist_xy=(390.0, 180.0),
+            wrist_score=0.90,
+        )
+
+        def hand(root_y):
+            return [{
+                "x": 390.0 + index * 0.2,
+                "y": root_y - index * 0.4,
+                "z": 0.0,
+                "score": 0.90,
+            } for index in range(21)]
+
+        first = capture._stabilize_payload({
+            "keypoints": body,
+            "keypoints3D": [dict(point) for point in body],
+            "leftHand": [],
+            "rightHand": hand(180.0),
+        }, 640, 360)
+        self.assertEqual(len(first["rightHand"]), 21)
+
+        second_body = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(360.0, 250.0),
+            wrist_xy=(390.0, 210.0),
+            wrist_score=0.90,
+        )
+        second = capture._stabilize_payload({
+            "keypoints": second_body,
+            "keypoints3D": [dict(point) for point in second_body],
+            "leftHand": [],
+            "rightHand": hand(210.0),
+        }, 640, 360)
+        self.assertEqual(len(second["rightHand"]), 21)
+        self.assertFalse(capture._hand_moving_down["rightHand"])
+
+        capture._hand_last_good_at["rightHand"] = time.monotonic() - 0.30
+        dropout = capture._stabilize_payload({
+            "keypoints": second_body,
+            "keypoints3D": [dict(point) for point in second_body],
+            "leftHand": [],
+            "rightHand": [],
+        }, 640, 360)
+        self.assertEqual(len(dropout["rightHand"]), 21)
+
+    def test_59_sustained_lowering_near_elbow_releases_quickly(self):
+        """Scenario 59: Real multi-frame lowering does not leave a sticky hand."""
+        capture = CaptureSource()
+        capture._reset_landmark_stabilizer("test_model_59")
+
+        def hand(root_y):
+            return [{
+                "x": 390.0 + (index % 4) * 2.0,
+                "y": root_y - (index // 4) * 4.0,
+                "z": 0.0,
+                "score": 0.90,
+            } for index in range(21)]
+
+        for root_y in (180.0, 220.0, 250.0):
+            body = make_dummy_keypoints(
+                shoulder_y=150.0,
+                elbow_xy=(370.0, 280.0),
+                wrist_xy=(390.0, root_y),
+                wrist_score=0.90,
+            )
+            output = capture._stabilize_payload({
+                "keypoints": body,
+                "keypoints3D": [dict(point) for point in body],
+                "leftHand": [],
+                "rightHand": hand(root_y),
+            }, 640, 360)
+            self.assertEqual(len(output["rightHand"]), 21)
+
+        self.assertTrue(capture._hand_moving_down["rightHand"])
+        weak_body = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(370.0, 280.0),
+            wrist_xy=(390.0, 330.0),
+            wrist_score=0.0,
+        )
+        weak_body[14]["score"] = 0.0
+        capture._body_last_good[14] = capture._body_last_good[16] = None
+        capture._hand_last_good_at["rightHand"] = time.monotonic() - 0.10
+        released = capture._stabilize_payload({
+            "keypoints": weak_body,
+            "keypoints3D": [dict(point) for point in weak_body],
+            "leftHand": [],
+            "rightHand": [],
+        }, 640, 360)
+        self.assertEqual(released["rightHand"], [])
+
+    def test_60_duplicate_hand_keeps_recent_owner_and_other_arm_down(self):
+        """Scenario 60: One crossed hand cannot raise both avatar arms."""
+        capture = CaptureSource()
+        capture._reset_landmark_stabilizer("test_model_60")
+
+        def hand(root_x, root_y=205.0):
+            return [{
+                "x": root_x + (index % 4) * 5.0,
+                "y": root_y - (index // 4) * 7.0,
+                "z": -index * 0.1,
+                "score": 0.90,
+            } for index in range(21)]
+
+        body = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(360.0, 250.0),
+            wrist_xy=(370.0, 315.0),
+            wrist_score=0.90,
+        )
+        body[13].update({"x": 245.0, "y": 250.0, "score": 0.90})
+        body[13]["position"] = {"x": 245.0, "y": 250.0, "z": 0.0}
+        body[15].update({"x": 220.0, "y": 205.0, "score": 0.90})
+        body[15]["position"] = {"x": 220.0, "y": 205.0, "z": 0.0}
+        warm = capture._stabilize_payload({
+            "keypoints": body,
+            "keypoints3D": [dict(point) for point in body],
+            "leftHand": hand(220.0),
+            "rightHand": [],
+        }, 640, 360)
+        self.assertEqual(len(warm["leftHand"]), 21)
+
+        crossed = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(150.0, 255.0),
+            wrist_xy=(196.0, 205.0),
+            wrist_score=0.90,
+        )
+        crossed[13].update({"x": 245.0, "y": 250.0, "score": 0.90})
+        crossed[13]["position"] = {"x": 245.0, "y": 250.0, "z": 0.0}
+        crossed[15].update({"x": 204.0, "y": 205.0, "score": 0.90})
+        crossed[15]["position"] = {"x": 204.0, "y": 205.0, "z": 0.0}
+        output = capture._stabilize_payload({
+            "keypoints": crossed,
+            "keypoints3D": [dict(point) for point in crossed],
+            "leftHand": hand(204.0),
+            "rightHand": hand(196.0),
+        }, 640, 360)
+
+        self.assertEqual(len(output["leftHand"]), 21)
+        self.assertEqual(output["rightHand"], [])
+        self.assertLessEqual(output["keypoints"][16]["score"], 0.08)
+        self.assertGreater(output["keypoints"][16]["y"], 280.0)
+
+    def test_61_missing_hand_never_overrides_pose_wrist(self):
+        """Scenario 61: stale detailed hands cannot create a phantom pose wrist."""
+        capture = CaptureSource()
+        capture._reset_landmark_stabilizer("test_model_61")
+
+        hand = [{
+            "x": 390.0 + (index % 4) * 3.0,
+            "y": 175.0 - (index // 4) * 5.0,
+            "z": 0.0,
+            "score": 0.90,
+        } for index in range(21)]
+        live_body = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(365.0, 245.0),
+            wrist_xy=(390.0, 175.0),
+            wrist_score=0.90,
+        )
+        live = capture._stabilize_payload({
+            "keypoints": live_body,
+            "keypoints3D": [dict(point) for point in live_body],
+            "leftHand": [],
+            "rightHand": hand,
+        }, 640, 360)
+        self.assertEqual(len(live["rightHand"]), 21)
+
+        # HandLandmarker drops out while BlazePose moves the wrist. The missing
+        # hand must never override that live source.
+        collapsed_body = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(350.0, 255.0),
+            wrist_xy=(360.0, 340.0),
+            wrist_score=0.92,
+        )
+        held = capture._stabilize_payload({
+            "keypoints": collapsed_body,
+            "keypoints3D": [dict(point) for point in collapsed_body],
+            "leftHand": [],
+            "rightHand": [],
+        }, 640, 360)
+        held_wrist = held["keypoints"][16]
+        held_elbow = held["keypoints"][14]
+        self.assertAlmostEqual(held_wrist["x"], 360.0, delta=1e-6)
+        self.assertAlmostEqual(held_wrist["y"], 340.0, delta=1e-6)
+        self.assertAlmostEqual(held_wrist["score"], 0.92, delta=1e-6)
+        self.assertAlmostEqual(held_elbow["x"], 350.0, delta=1e-6)
+        self.assertAlmostEqual(held_elbow["y"], 255.0, delta=1e-6)
+        self.assertEqual(len(held["rightHand"]), 21)
+        capture._hand_last_good_at["rightHand"] = time.monotonic() - 0.46
+        expired_body = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(350.0, 255.0),
+            wrist_xy=(360.0, 340.0),
+            wrist_score=0.92,
+        )
+        expired = capture._stabilize_payload({
+            "keypoints": expired_body,
+            "keypoints3D": [dict(point) for point in expired_body],
+            "leftHand": [],
+            "rightHand": [],
+        }, 640, 360)
+        self.assertAlmostEqual(expired["keypoints"][16]["y"], 340.0, delta=1e-6)
+
+    def test_62_smart_sync_off_never_synthesizes_stable_elbow(self):
+        """Scenario 62: A borderline-confidence real elbow beats invented geometry."""
+        capture = CaptureSource()
+        capture.configure(smart_arm_sync=False)
+        capture._reset_landmark_stabilizer("test_model_62")
+
+        hand = [{
+            "x": 390.0 + (index % 4) * 3.0,
+            "y": 175.0 - (index // 4) * 5.0,
+            "z": 0.0,
+            "score": 0.90,
+        } for index in range(21)]
+        body = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(365.0, 245.0),
+            wrist_xy=(390.0, 175.0),
+            wrist_score=0.90,
+        )
+        body[14]["score"] = body[14]["visibility"] = 0.27
+
+        output = capture._stabilize_payload({
+            "keypoints": body,
+            "keypoints3D": [dict(point) for point in body],
+            "leftHand": [],
+            "rightHand": hand,
+        }, 640, 360)
+
+        elbow = output["keypoints"][14]
+        self.assertAlmostEqual(elbow["x"], 365.0, delta=1e-6)
+        self.assertAlmostEqual(elbow["y"], 245.0, delta=1e-6)
+        self.assertAlmostEqual(elbow["score"], 0.27, delta=1e-6)
+
+    def test_63_lowering_fist_cannot_pin_wrist_after_dropout(self):
+        """Scenario 63: One rotated fist sample cannot erase a real descent."""
+        capture = CaptureSource()
+        capture.configure(smart_arm_sync=False)
+        capture._reset_landmark_stabilizer("test_model_63")
+
+        def open_hand(root_y):
+            return [{
+                "x": 390.0 + (index % 4) * 3.0,
+                "y": root_y - (index // 4) * 5.0,
+                "z": 0.0,
+                "score": 0.90,
+            } for index in range(21)]
+
+        def fist(root_y):
+            hand = [{"x": 390.0, "y": root_y, "z": 0.0, "score": 0.90}
+                    for _ in range(21)]
+            for finger, base_x in enumerate((374.0, 384.0, 394.0, 404.0)):
+                start = 5 + finger * 4
+                coords = (
+                    (base_x, root_y - 13.0), (base_x, root_y - 25.0),
+                    (base_x + 10.0, root_y - 25.0),
+                    (base_x + 10.0, root_y - 13.0),
+                )
+                for index, (x, y) in zip(range(start, start + 4), coords):
+                    hand[index] = {"x": x, "y": y, "z": 0.0, "score": 0.90}
+            for index, (x, y) in zip(
+                range(1, 5),
+                ((382, root_y - 5), (378, root_y - 13),
+                 (382, root_y - 19), (389, root_y - 15)),
+            ):
+                hand[index] = {"x": x, "y": y, "z": 0.0, "score": 0.90}
+            return hand
+
+        for root_y in (180.0, 210.0, 240.0, 270.0):
+            body = make_dummy_keypoints(
+                shoulder_y=150.0,
+                elbow_xy=(370.0, 280.0),
+                wrist_xy=(390.0, root_y),
+                wrist_score=0.90,
+            )
+            capture._stabilize_payload({
+                "keypoints": body,
+                "keypoints3D": [dict(point) for point in body],
+                "leftHand": [],
+                "rightHand": open_hand(root_y),
+            }, 640, 360)
+
+        # The closing fist produces one spurious upward root sample, matching
+        # the trace at video second 26.  It must not clear the prior descent.
+        closing_body = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(370.0, 280.0),
+            wrist_xy=(390.0, 220.0),
+            wrist_score=0.90,
+        )
+        closing = capture._stabilize_payload({
+            "keypoints": closing_body,
+            "keypoints3D": [dict(point) for point in closing_body],
+            "leftHand": [],
+            "rightHand": fist(220.0),
+        }, 640, 360)
+        self.assertEqual(len(closing["rightHand"]), 21)
+        self.assertTrue(capture._hand_fist_state["rightHand"])
+        self.assertGreaterEqual(capture._hand_lowering_frames["rightHand"], 2)
+
+        lowered_body = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(370.0, 280.0),
+            wrist_xy=(390.0, 350.0),
+            wrist_score=0.90,
+        )
+        capture._hand_last_good_at["rightHand"] = time.monotonic() - 0.05
+        brief = capture._stabilize_payload({
+            "keypoints": lowered_body,
+            "keypoints3D": [dict(point) for point in lowered_body],
+            "leftHand": [],
+            "rightHand": [],
+        }, 640, 360)
+        self.assertAlmostEqual(brief["keypoints"][16]["y"], 350.0, delta=1e-6)
+        self.assertEqual(len(brief["rightHand"]), 21)
+
+        capture._hand_last_good_at["rightHand"] = time.monotonic() - 0.10
+        released = capture._stabilize_payload({
+            "keypoints": lowered_body,
+            "keypoints3D": [dict(point) for point in lowered_body],
+            "leftHand": [],
+            "rightHand": [],
+        }, 640, 360)
+        self.assertEqual(released["rightHand"], [])
+
+    @staticmethod
+    def _recovery_test_hand(root_x, root_y):
+        return [{
+            "x": float(root_x + (index % 4) * 2.0),
+            "y": float(root_y - (index // 4) * 3.0),
+            "z": 0.0,
+            "score": 0.90,
+        } for index in range(21)]
+
+    def test_64_python_hand_recovery_is_off_and_free_when_disabled(self):
+        """Scenario 64: default-off recovery never invokes a second detector."""
+        capture = CaptureSource()
+        self.assertFalse(capture._python_hand_recovery)
+        frame = np.zeros((360, 640, 3), dtype=np.uint8)
+        payload = {"leftHand": [], "rightHand": []}
+        capture._hand_was_live["rightHand"] = True
+        capture._hand_last_good["rightHand"] = self._recovery_test_hand(400, 180)
+        capture._hand_last_good_at["rightHand"] = time.monotonic()
+
+        with patch.object(ENGINE, "recover_hands") as recover:
+            started = time.perf_counter()
+            for _ in range(10000):
+                capture._recover_missing_hands(frame, payload)
+            elapsed_ms = (time.perf_counter() - started) * 1000.0 / 10000.0
+        recover.assert_not_called()
+        self.assertLess(elapsed_ms, 0.05, "disabled recovery branch must stay negligible")
+        print(f"  ✓ Disabled Python hand recovery overhead: {elapsed_ms:.4f} ms/frame")
+
+    def test_65_python_hand_recovery_requires_a_confirmed_loss(self):
+        """Scenario 65: recovery cannot invent a never-confirmed hand."""
+        capture = CaptureSource()
+        capture._python_hand_recovery = True
+        frame = np.zeros((360, 640, 3), dtype=np.uint8)
+        payload = {"leftHand": [], "rightHand": []}
+
+        with patch.object(
+            type(ENGINE), "hand_recovery_ready", new=property(lambda _self: True)
+        ), patch.object(ENGINE, "recover_hands") as recover:
+            capture._recover_missing_hands(frame, payload)
+        recover.assert_not_called()
+        self.assertEqual(payload["leftHand"], [])
+        self.assertEqual(payload["rightHand"], [])
+
+    def test_66_python_hand_recovery_reassociates_and_throttles(self):
+        """Scenario 66: nearest prior wrist wins despite handedness, at max 5 Hz."""
+        capture = CaptureSource()
+        capture._python_hand_recovery = True
+        frame = np.zeros((360, 640, 3), dtype=np.uint8)
+        live_left = self._recovery_test_hand(120, 180)
+        previous_right = self._recovery_test_hand(420, 170)
+        duplicate_left = self._recovery_test_hand(122, 181)
+        recovered_right = self._recovery_test_hand(428, 174)
+        payload = {"leftHand": live_left, "rightHand": []}
+        now = time.monotonic()
+        capture._hand_was_live["rightHand"] = True
+        capture._hand_last_good["rightHand"] = previous_right
+        capture._hand_last_good_at["rightHand"] = now - 0.10
+        result = {
+            "candidates": [
+                {"hand": duplicate_left, "world": [], "label": "right", "score": 0.9},
+                {"hand": recovered_right, "world": [[0.0, 0.0, 0.0]] * 21,
+                 "label": "left", "score": 0.9},
+            ],
+            "inference_ms": 12.5,
+        }
+
+        with patch.object(
+            type(ENGINE), "hand_recovery_ready", new=property(lambda _self: True)
+        ), patch.object(ENGINE, "recover_hands", return_value=result) as recover:
+            output = capture._recover_missing_hands(frame, payload, now=now)
+            capture._recover_missing_hands(frame, output, now=now + 0.05)
+
+        self.assertIs(output["leftHand"], live_left, "live Holistic hand must not be overwritten")
+        self.assertIs(output["rightHand"], recovered_right)
+        self.assertEqual(capture._python_hand_recovery_frame["accepted"], [])
+        self.assertEqual(capture._python_hand_recovery_successes, 1)
+        self.assertEqual(capture._python_hand_recovery_attempts, 1)
+        recover.assert_called_once()
+
+    def test_67_python_hand_recovery_skips_deliberate_lowering(self):
+        """Scenario 67: optional recovery cannot re-pin a hand moving down."""
+        capture = CaptureSource()
+        capture._python_hand_recovery = True
+        frame = np.zeros((360, 640, 3), dtype=np.uint8)
+        payload = {"leftHand": [], "rightHand": []}
+        capture._hand_was_live["rightHand"] = True
+        capture._hand_last_good["rightHand"] = self._recovery_test_hand(410, 260)
+        capture._hand_last_good_at["rightHand"] = time.monotonic() - 0.05
+        capture._hand_moving_down["rightHand"] = True
+
+        with patch.object(
+            type(ENGINE), "hand_recovery_ready", new=property(lambda _self: True)
+        ), patch.object(ENGINE, "recover_hands") as recover:
+            capture._recover_missing_hands(frame, payload)
+        recover.assert_not_called()
+
+    def test_68_python_recovery_is_provisional_and_world_aligned(self):
+        """Scenario 68: recovery cannot renew Holistic time or change world origin."""
+        capture = CaptureSource()
+        capture._python_hand_recovery = True
+        capture._reset_landmark_stabilizer(str(ENGINE.model_id or ""))
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        previous_hand = self._recovery_test_hand(430, 180)
+        recovered_hand = self._recovery_test_hand(438, 184)
+        previous_world = [[
+            0.25 + index * 0.001,
+            -0.37 - index * 0.002,
+            -0.26 + index * 0.001,
+        ] for index in range(21)]
+        local_world = [[
+            -0.004 + index * 0.001,
+            0.09 - index * 0.002,
+            -0.025 + index * 0.001,
+        ] for index in range(21)]
+        confirmed_at = time.monotonic() - 0.05
+        capture._hand_was_live["rightHand"] = True
+        capture._hand_last_good["rightHand"] = previous_hand
+        capture._hand_last_good_at["rightHand"] = confirmed_at
+        capture._hand_world_last_good["rightHand"] = previous_world
+        body = make_dummy_keypoints(
+            shoulder_y=150.0,
+            elbow_xy=(390.0, 220.0),
+            wrist_xy=(438.0, 184.0),
+            wrist_score=0.90,
+        )
+        payload = {
+            "keypoints": body,
+            "keypoints3D": [dict(point) for point in body],
+            "leftHand": [],
+            "rightHand": [],
+        }
+        result = {
+            "candidates": [{
+                "hand": recovered_hand,
+                "world": local_world,
+                "label": "left",
+                "score": 0.9,
+            }],
+            "inference_ms": 12.0,
+        }
+
+        with patch.object(
+            type(ENGINE), "hand_recovery_ready", new=property(lambda _self: True)
+        ), patch.object(ENGINE, "recover_hands", return_value=result):
+            recovered = capture._recover_missing_hands(
+                frame, payload, now=confirmed_at + 0.06
+            )
+
+        self.assertEqual(recovered["_python_hand_recovered_keys"], ["rightHand"])
+        for actual, expected in zip(
+            recovered["rightHandWorld"][0], previous_world[0]
+        ):
+            self.assertAlmostEqual(actual, expected, delta=1e-4)
+        capture._stabilize_payload(recovered, 640, 480)
+        self.assertEqual(
+            capture._hand_last_good_at["rightHand"], confirmed_at,
+            "standalone recovery must not become a new Holistic confirmation",
+        )
+
+    def test_69_python_recovery_expires_from_last_holistic_hand(self):
+        """Scenario 69: recovery window is hard-capped at 450 ms."""
+        capture = CaptureSource()
+        capture._python_hand_recovery = True
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        now = time.monotonic()
+        capture._hand_was_live["leftHand"] = True
+        capture._hand_last_good["leftHand"] = self._recovery_test_hand(420, 180)
+        capture._hand_last_good_at["leftHand"] = now - 0.451
+        payload = {
+            "keypoints": make_dummy_keypoints(),
+            "leftHand": [],
+            "rightHand": [],
+        }
+
+        with patch.object(
+            type(ENGINE), "hand_recovery_ready", new=property(lambda _self: True)
+        ), patch.object(ENGINE, "recover_hands") as recover:
+            capture._recover_missing_hands(frame, payload, now=now)
+        recover.assert_not_called()
+
+    def test_70_two_pose_frames_veto_recovery_during_descent(self):
+        """Scenario 70: two trace-like body frames release a descending hand."""
+        capture = CaptureSource()
+        capture._python_hand_recovery = True
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        now = time.monotonic()
+        previous = self._recovery_test_hand(540, 470)
+        capture._hand_was_live["leftHand"] = True
+        capture._hand_last_good["leftHand"] = previous
+        capture._hand_last_good_at["leftHand"] = now - 0.05
+
+        def descending_payload(wrist_y, elbow_y):
+            body = make_dummy_keypoints()
+            for index, x, y, score in (
+                (13, 520.0, elbow_y, 0.45),
+                (15, 575.0, wrist_y, 0.70),
+            ):
+                body[index]["x"] = x
+                body[index]["y"] = y
+                body[index]["score"] = score
+                body[index]["visibility"] = score
+                body[index]["position"] = {"x": x, "y": y, "z": 0.0}
+            return {"keypoints": body, "leftHand": [], "rightHand": []}
+
+        result = {
+            "candidates": [{
+                "hand": self._recovery_test_hand(545, 468),
+                "world": [],
+                "label": "left",
+                "score": 0.9,
+            }],
+            "inference_ms": 12.0,
+        }
+        with patch.object(
+            type(ENGINE), "hand_recovery_ready", new=property(lambda _self: True)
+        ), patch.object(ENGINE, "recover_hands", return_value=result) as recover:
+            first = capture._recover_missing_hands(
+                frame, descending_payload(720.0, 660.0), now=now
+            )
+            second = capture._recover_missing_hands(
+                frame, descending_payload(800.0, 670.0), now=now + 0.05
+            )
+
+        self.assertEqual(first.get("_python_hand_recovered_keys"), ["leftHand"])
+        self.assertNotIn("_python_hand_recovered_keys", second)
+        self.assertEqual(
+            capture._python_hand_recovery_frame["body_veto"], ["leftHand"]
+        )
+        self.assertTrue(capture._hand_moving_down["leftHand"])
+        self.assertGreaterEqual(capture._hand_lowering_frames["leftHand"], 2)
+        recover.assert_called_once()
 
 if __name__ == '__main__':
     unittest.main()
-
-

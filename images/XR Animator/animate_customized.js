@@ -32,6 +32,7 @@ MMD_SA_options.startup_screen = false;
     '15_debug.js',
     '20_tracking.js',
     '30_background.js',
+    '31_stage.js',
     '39_audio_engine.js',
     '40_lip_sync.js',
     '42_recorder.js',

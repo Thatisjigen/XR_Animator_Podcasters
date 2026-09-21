@@ -23,7 +23,10 @@ PERSISTENT_PATHS = (
     "xra_profile.backup.json",
     "avatars",
     "backgrounds",
+    "props",
+    "stages",
     "recordings",
+    "tracking_logs",
     ".xra_recording_sessions",
 )
 

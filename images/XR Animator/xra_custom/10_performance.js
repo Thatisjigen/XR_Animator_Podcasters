@@ -507,6 +507,7 @@
         smart_arm_sync: t.smart_arm_sync !== false,
         desk_wrist_guard: t.desk_wrist_guard !== false,
         desk_wrist_thresh: Number(t.desk_wrist_thresh ?? 0.50),
+        python_hand_recovery: !!t.python_hand_recovery,
       });
     }
   }

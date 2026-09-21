@@ -26,6 +26,7 @@ def _write_debug_log(msg: str) -> None:
 import numpy as np
 
 from . import native_mediapipe as _native
+from . import object_detector
 from . import registry
 
 
@@ -589,10 +590,10 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
             # must not erase a genuine hand or disable finger tracking near the desk.
             active_hands[hand_key] = has_active_hand
 
-        if not arm_active and desk_guard_enabled and not has_active_hand:
+        if not arm_active and not has_active_hand:
             cur_w_pos = keypoints[wrist_idx].get("position") or keypoints[wrist_idx]
             w_score = keypoints[wrist_idx].get("score", 0.0)
-            if (not smart_arm_sync and w_score < desk_thresh) or el_pos is None:
+            if w_score < 0.15 or (not smart_arm_sync and w_score < desk_thresh) or el_pos is None:
                 keypoints[wrist_idx] = _suppress_joint(keypoints[wrist_idx])
                 if wrist_idx < len(keypoints3d):
                     keypoints3d[wrist_idx] = _suppress_joint(keypoints3d[wrist_idx])
@@ -755,6 +756,10 @@ class EngineDispatcher:
             "holistic-gpu": _native.SplitTasksEngine(),
             "face": _native.FaceTasksEngine(),
         }
+        self._hand_recovery = _native.HandRecoveryTasksEngine()
+        self._hand_recovery_enabled = os.environ.get(
+            "XRA_PYTHON_HAND_RECOVERY", "0"
+        ).lower() in {"1", "true", "yes", "on"}
         self._mode = "holistic"
         self._active_native = None
         self._active_id: Optional[str] = None
@@ -775,6 +780,7 @@ class EngineDispatcher:
             "XRA_HARDWARE_MODE", "CPU" if force_cpu else "Auto"
         )
         self._accelerated = self._hardware_requests_gpu()
+        self.object_detector = object_detector.ObjectDetectorWorker()
 
     @staticmethod
     def _normalize_mode(value) -> str:
@@ -817,10 +823,25 @@ class EngineDispatcher:
             return None
         return f"Native/{self._active_native.name}"
 
+    @property
+    def hand_recovery_ready(self) -> bool:
+        return bool(
+            self._hand_recovery_enabled
+            and self._mode == "holistic"
+            and isinstance(self._active_native, _native.HolisticTasksEngine)
+            and not self._accelerated
+            and self._hand_recovery.ready
+        )
+
     def status(self) -> dict:
         should_probe_gpu = self._hardware_requests_gpu()
         gpu_available = _native._check_gpu() if should_probe_gpu else False
         gpu_name = _native._GPU_NAME if should_probe_gpu else "CPU (XNNPACK)"
+        recovery_available = bool(
+            self._mode == "holistic"
+            and isinstance(self._active_native, _native.HolisticTasksEngine)
+            and not self._accelerated
+        )
         return {
             "ready": self.ready,
             "model": self._active_id,
@@ -843,14 +864,42 @@ class EngineDispatcher:
             "min_joint_confidence": self._min_joint_confidence,
             "desk_wrist_guard": self._desk_wrist_guard,
             "desk_wrist_threshold": self._desk_wrist_threshold,
+            "python_hand_recovery": self._hand_recovery_enabled,
+            "hand_recovery_available": recovery_available,
+            "hand_recovery_ready": bool(
+                recovery_available and self._hand_recovery.ready
+            ),
+            "hand_recovery_last_ms": round(
+                float(self._hand_recovery.last_inference_ms), 3
+            ),
+            "hand_recovery_error": self._hand_recovery.last_error,
         }
 
     def _unload_all(self) -> None:
         for candidate in self._engines.values():
             if candidate.ready:
                 candidate.unload()
+        self._hand_recovery.unload()
         self._active_native = None
         self._active_id = None
+
+    def _sync_hand_recovery(self) -> dict:
+        eligible = bool(
+            self._hand_recovery_enabled
+            and self._mode == "holistic"
+            and isinstance(self._active_native, _native.HolisticTasksEngine)
+            and not self._accelerated
+        )
+        if not eligible:
+            self._hand_recovery.unload()
+            return {"ok": True, "ready": False, "available": False}
+        if self._hand_recovery.ready:
+            return {"ok": True, "ready": True, "available": True}
+        self._hand_recovery.configure_confidence(
+            min_tracking=self._min_tracking_confidence
+        )
+        result = self._hand_recovery.load()
+        return {**result, "available": True}
 
     def _start_selected(self, model_id: str) -> dict:
         candidate = self._candidate()
@@ -871,6 +920,8 @@ class EngineDispatcher:
         self._active_native = candidate
         self._active_id = model_id
         self._last_error = ""
+        # Recovery is optional: failure must never take down normal tracking.
+        self._sync_hand_recovery()
         return {"ok": True, **self.status(), "ready": True}
 
     def unload(self) -> None:
@@ -986,6 +1037,13 @@ class EngineDispatcher:
     def configure_rates(self, **_) -> dict:
         return {"ok": True, "mode": self._mode}
 
+    def configure_hand_recovery(self, enabled) -> dict:
+        """Enable the CPU-only dropout helper without changing the main engine."""
+        with self._lifecycle_lock:
+            self._hand_recovery_enabled = bool(enabled)
+            result = self._sync_hand_recovery()
+            return {"ok": bool(result.get("ok", True)), **self.status()}
+
     def configure_confidence(self, min_tracking=None, min_pose=None, min_face=None, min_joint=None, desk_wrist_guard=None, desk_wrist_thresh=None) -> dict:
         with self._lifecycle_lock:
             if min_tracking is not None:
@@ -1007,13 +1065,54 @@ class EngineDispatcher:
                         min_pose=self._min_pose_confidence,
                         min_face=self._min_face_confidence,
                     )
+            if self._hand_recovery.ready:
+                self._hand_recovery.configure_confidence(
+                    min_tracking=self._min_tracking_confidence
+                )
             return {"ok": True, **self.status()}
+
+    def recover_hands(self, frame_bgr: np.ndarray) -> Optional[dict]:
+        """Run one optional full-frame CPU hand search.
+
+        Capture owns throttling and dropout eligibility because it has the
+        confirmed-hand history.  GPU full-body already has a dedicated hand
+        worker every frame, so this method is intentionally unavailable there.
+        """
+        with self._lifecycle_lock:
+            eligible = bool(
+                self._hand_recovery_enabled
+                and self._mode == "holistic"
+                and isinstance(self._active_native, _native.HolisticTasksEngine)
+                and not self._accelerated
+                and self._hand_recovery.ready
+            )
+            if not eligible:
+                return None
+            return self._hand_recovery.infer(frame_bgr)
 
     def infer(self, frame_bgr: np.ndarray) -> Optional[dict]:
         with self._lifecycle_lock:
             if self._loading or self._active_native is None:
                 return None
-            return self._active_native.infer(frame_bgr)
+            res = self._active_native.infer(frame_bgr)
+            if res is not None and getattr(self, "object_detector", None) and self.object_detector.enabled:
+                hands_info = {}
+                h, w = frame_bgr.shape[:2]
+                kps = res.get("keypoints") or []
+                if len(kps) > 16:
+                    lw = kps[15]
+                    rw = kps[16]
+                    if isinstance(lw, dict):
+                        x = lw.get("x", 0)
+                        y = lw.get("y", 0)
+                        hands_info["left_wrist"] = (x / w if x > 1.5 else x, y / h if y > 1.5 else y)
+                    if isinstance(rw, dict):
+                        x = rw.get("x", 0)
+                        y = rw.get("y", 0)
+                        hands_info["right_wrist"] = (x / w if x > 1.5 else x, y / h if y > 1.5 else y)
+                frame_rgb = frame_bgr[..., ::-1]
+                self.object_detector.submit(frame_rgb, hands_info)
+            return res
 
 
 ENGINE = EngineDispatcher()

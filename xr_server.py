@@ -90,6 +90,8 @@ LOCK = threading.Lock()
 RECORDING_LOCK = threading.Lock()
 RECORDING_SESSIONS = {}
 BACKGROUND_CACHE = {"ts": 0.0, "files": []}
+STAGE_CACHE = {"ts": 0.0, "files": []}
+PROP_CACHE = {"ts": 0.0, "files": []}
 RECORDINGS_DIR = ROOT / "recordings"
 RECORDING_MANIFEST_DIR = ROOT / ".xra_recording_sessions"
 XRA_RECORDER_API_VERSION = 766
@@ -445,6 +447,62 @@ def background_files(force=False):
     files = [found[key] for key in sorted(found)]
     BACKGROUND_CACHE["ts"] = now
     BACKGROUND_CACHE["files"] = list(files)
+    return files
+
+
+def stage_files(force=False):
+    now = time.monotonic()
+    if not force and STAGE_CACHE["files"] and now - STAGE_CACHE["ts"] < 10.0:
+        return list(STAGE_CACHE["files"])
+    allowed = {".glb", ".gltf", ".pmx", ".zip", ".fbx"}
+    (ROOT / "stages").mkdir(parents=True, exist_ok=True)
+    dirs = [ROOT / "stages"]
+    found = {}
+    root_resolved = ROOT.resolve()
+    for directory in dirs:
+        try:
+            directory = directory.resolve()
+            if directory != root_resolved and root_resolved not in directory.parents:
+                continue
+            if not directory.is_dir():
+                continue
+            for file in directory.rglob("*"):
+                if file.is_file() and file.suffix.lower() in allowed:
+                    rel = file.resolve().relative_to(root_resolved).as_posix()
+                    found[rel.lower()] = rel
+        except Exception:
+            pass
+    files = [found[key] for key in sorted(found)]
+    STAGE_CACHE["ts"] = now
+    STAGE_CACHE["files"] = list(files)
+    return files
+
+
+def prop_files(force=False):
+    now = time.monotonic()
+    if not force and PROP_CACHE["files"] and now - PROP_CACHE["ts"] < 10.0:
+        return list(PROP_CACHE["files"])
+    allowed = {".glb", ".gltf", ".pmx", ".x", ".fbx"}
+    (ROOT / "props").mkdir(parents=True, exist_ok=True)
+    dirs = [ROOT / "props"]
+    found = {}
+    root_resolved = ROOT.resolve()
+    for directory in dirs:
+        try:
+            directory = directory.resolve()
+            if directory != root_resolved and root_resolved not in directory.parents:
+                continue
+            if not directory.is_dir():
+                continue
+            for file in directory.rglob("*"):
+                if file.is_file() and file.suffix.lower() in allowed:
+                    rel = file.resolve().relative_to(root_resolved).as_posix()
+                    found[rel.lower()] = rel
+        except Exception:
+            pass
+    files = [found[key] for key in sorted(found)]
+    PROP_CACHE["ts"] = now
+    PROP_CACHE["files"] = list(files)
     return files
 
 
@@ -1222,7 +1280,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
         else:
             suffix = Path(path).suffix.lower()
-            if suffix in {".task", ".wasm", ".vrm", ".glb", ".gltf", ".bin"}:
+            if suffix in {".task", ".wasm", ".vrm", ".glb", ".gltf", ".fbx", ".bin"}:
                 # Heavy immutable-ish assets: avoid re-reading them on every local reload.
                 self.send_header("Cache-Control", "public, max-age=86400")
             else:
@@ -1329,6 +1387,18 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/__xra_backgrounds":
             query = urlparse(self.path).query
             files = background_files(force="refresh=1" in query)
+            self.send_json({"files": files, "count": len(files)})
+            return
+
+        if path == "/__xra_stages":
+            query = urlparse(self.path).query
+            files = stage_files(force="refresh=1" in query)
+            self.send_json({"files": files, "count": len(files)})
+            return
+
+        if path == "/__xra_props":
+            query = urlparse(self.path).query
+            files = prop_files(force="refresh=1" in query)
             self.send_json({"files": files, "count": len(files)})
             return
 

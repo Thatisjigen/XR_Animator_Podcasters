@@ -110,7 +110,8 @@
       freeze_recovery_ms: 350,
       arm_steady_hold: false,
       smart_arm_sync: true,
-      desk_wrist_guard: true
+      desk_wrist_guard: true,
+      python_hand_recovery: false
     },
     background: {
       mode: 'color',

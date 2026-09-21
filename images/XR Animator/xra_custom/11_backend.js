@@ -146,8 +146,11 @@
   // -- server status polling (Performance tab / provisioning progress) --------
 
   async function refreshStatus() {
-    // Avoid redundant HTTP polls while WebSocket is actively streaming
+    // The initial capture_status response predates the first measured-FPS
+    // window.  Keep requesting the lightweight live status over the existing
+    // control socket; otherwise the Performance panel remains stuck on "—".
     if (ws && ws.readyState === WebSocket.OPEN && state.connected && state.ready) {
+      sendControl({ type: 'capture', action: 'status' });
       return state.serverStatus;
     }
     try {
@@ -171,7 +174,7 @@
   function startStatusPolling() {
     if (statusTimer) return;
     refreshStatus();
-    statusTimer = setInterval(refreshStatus, 4000);
+    statusTimer = setInterval(refreshStatus, 2000);
   }
 
   function stopStatusPolling() {
@@ -249,6 +252,7 @@
           desk_wrist_guard: t.desk_wrist_guard !== false,
           desk_wrist_thresh: Number(t.desk_wrist_thresh ?? 0.50),
         });
+        syncObjectDetection();
         controlChannel?.postMessage({ type: 'mocap_rates_request' });
         emitStatus();
       } catch (err) {
@@ -307,6 +311,17 @@
         }
         emitStatus();
       }
+      else if (msg.type === 'object_detection') {
+        if (globalThis.XRA?.config?.object_tracking?.enabled) {
+          XRA.stage?.onObjectDetected?.(msg.detections);
+        } else {
+          XRA.stage?.setObjectTrackingEnabled?.(false);
+        }
+        eventsEmit('object_detection', msg);
+      }
+      else if (msg.type === 'object_detection_status') {
+        eventsEmit('object_detection_status', msg);
+      }
       else if (msg.type === 'error') {
         state.errors++;
         state.lastError = msg.error || 'unknown';
@@ -349,6 +364,18 @@
     if (!ws || ws.readyState !== WebSocket.OPEN) return false;
     try { ws.send(JSON.stringify(obj)); return true; }
     catch (e) { state.lastError = String(e); return false; }
+  }
+
+  function syncObjectDetection(overrides = {}) {
+    const objectConfig = globalThis.XRA?.config?.object_tracking ||
+      globalThis.XRA?.profile?.custom?.object_tracking || {};
+    return sendControl({
+      type: 'set_object_detection',
+      enabled: !!objectConfig.enabled,
+      min_score: Number(objectConfig.min_score ?? 0.45),
+      interval_ms: Number(objectConfig.interval_ms ?? 350),
+      ...overrides,
+    });
   }
 
   function disconnect() {
@@ -476,6 +503,10 @@
     setHardwareMode,
     setModelComplexity,
     listBackends,
+    setObjectDetection: (enabled, options = {}) => syncObjectDetection({
+      enabled: !!enabled,
+      ...options,
+    }),
     // Main-window camera API uses the existing control socket. Keeping
     // this transport here avoids a third WebSocket and duplicate loads.
     __sendControl: sendControl,
@@ -1074,6 +1105,7 @@
     if (desired && desired !== state.selected) {
       select(desired);
     }
+    syncObjectDetection();
   });
 
   setPythonOwnership(externalBackendActive(), 'initial-backend-state');
