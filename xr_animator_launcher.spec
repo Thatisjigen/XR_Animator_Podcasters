@@ -11,6 +11,13 @@ EXTRA_FILES = {
     "css/p2p_chat.css",
     "js/p2p_chat.js",
     "images/XR Animator/xra_custom/15_debug.js",
+    "images/XR Animator/xra_custom/31_stage.js",
+    "props/cell_phone.glb",
+    "props/cup.glb",
+    "props/microphone.glb",
+    "stages/default_stage.glb",
+    "stages/recording+studio.fbx",
+    "xra_backends/object_detector.py",
     "xr_launcher.py",
 }
 
@@ -22,11 +29,17 @@ EXTRA_FILES = {
 REQUIRED_FILES = {
     "js/xra_backend_bridge.js",
     "images/XR Animator/xra_custom/11_backend.js",
+    "images/XR Animator/xra_custom/31_stage.js",
+    "props/cell_phone.glb",
+    "props/cup.glb",
+    "props/microphone.glb",
+    "stages/default_stage.glb",
     "xra_backends/__init__.py",
     "xra_backends/capture.py",
     "xra_backends/downloader.py",
     "xra_backends/engine.py",
     "xra_backends/native_mediapipe.py",
+    "xra_backends/object_detector.py",
     "xra_backends/provision.py",
     "xra_backends/registry.py",
     "xra_backends/server.py",
@@ -34,6 +47,7 @@ REQUIRED_FILES = {
     "xra_backends/models/mediapipe-tasks-landmarker/face_landmarker.task",
     "xra_backends/models/mediapipe-tasks-landmarker/pose_landmarker_lite.task",
     "xra_backends/models/mediapipe-tasks-landmarker/hand_landmarker.task",
+    "xra_backends/models/mediapipe-tasks-landmarker/efficientdet_lite0.tflite",
 }
 
 # The pre-downloaded Tasks models are gitignored but must ship in the bundle.

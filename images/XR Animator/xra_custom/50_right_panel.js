@@ -1041,37 +1041,27 @@
       sub: 'Keeps forearms anchored and visible while elbows and shoulders remain still at the desk. Releases naturally when moving elbows.'
     });
 
-    // 4. Hand stabilization (slider 0..100)
-    const handStabWrap = el('div', 'xra-stack-control');
-    const handStab = document.createElement('input');
-    handStab.type = 'range'; handStab.min = '0'; handStab.max = '100'; handStab.step = '1';
-    const handStabText = el('div', 'xra-sub');
-    handStabWrap.append(handStab, handStabText);
+    // 4. Optional CPU hand-only recovery after a confirmed Holistic dropout
+    const handRecovery = document.createElement('input');
+    handRecovery.type = 'checkbox';
     bindRefresh(() => {
-      const val = Number(nativeHands()?.stabilize_hand_percent ?? config.tracking?.stabilize_hand_percent ?? 0);
-      handStab.value = String(val);
-      handStabText.textContent = `${val}%`;
+      handRecovery.checked = !!config.tracking?.python_hand_recovery;
     });
-    handStab.oninput = () => {
-      const val = Number(handStab.value);
-      handStabText.textContent = `${val}%`;
-      const h = nativeHands(); if (h) h.stabilize_hand_percent = val;
-      config.tracking ||= {}; config.tracking.stabilize_hand_percent = val;
-    };
-    handStab.onchange = async () => {
-      const val = Number(handStab.value);
-      const h = nativeHands(); if (h) h.stabilize_hand_percent = val;
-      config.tracking ||= {}; config.tracking.stabilize_hand_percent = val;
+    handRecovery.onchange = async () => {
+      config.tracking ||= {};
+      config.tracking.python_hand_recovery = handRecovery.checked;
+      XRA.performance?.sendConfidenceThresholds?.();
       await XRA.profileService.save();
       refreshAll();
     };
-    row(box.body, 'Hand stabilization', handStabWrap, {
+    row(box.body, 'Hand recovery', handRecovery, {
       reset: async () => {
-        const h = nativeHands(); if (h) h.stabilize_hand_percent = 0;
-        if (config.tracking) config.tracking.stabilize_hand_percent = 0;
+        config.tracking ||= {};
+        config.tracking.python_hand_recovery = !!defaults.tracking?.python_hand_recovery;
+        XRA.performance?.sendConfidenceThresholds?.();
       },
-      isDefault: () => Number(nativeHands()?.stabilize_hand_percent ?? config.tracking?.stabilize_hand_percent ?? 0) === 0,
-      sub: 'Anti-jitter stabilization filter for finger joints and palm.'
+      isDefault: () => !!config.tracking?.python_hand_recovery === !!defaults.tracking?.python_hand_recovery,
+      sub: 'When a wrist is lost, periodically runs a full-frame hand search instead of waiting for body tracking.'
     });
 
     // 5. Arm stabilization (select: Off, Upper-body mocap, On)
@@ -1103,7 +1093,7 @@
       sub: 'Stabilizes arm movement and extension based on body kinematics.'
     });
 
-    // 6. Time to stabilize (select: 0, 1 frame, 100 ms, 200 ms)
+    // 5. Time to stabilize (select: 0, 1 frame, 100 ms, 200 ms)
     const armStabTime = select([[0, '0'], [1, '1 frame'], [100, '100 ms'], [200, '200 ms']]);
     bindRefresh(() => {
       armStabTime.value = String(nativeHands()?.stabilize_arm_time ?? config.tracking?.stabilize_arm_time ?? 0);
@@ -1124,68 +1114,207 @@
       sub: 'Response time or latency window to apply arm stabilization.'
     });
 
-    // 7. Hand detection sensitivity (select: Normal, High)
-    const handSens = select([['normal', 'Normal'], ['high', 'High']]);
+  }
+
+  function installObjectTracking(parent) {
+    const box = details(parent, '🎯 Webcam Prop Tracking (AI)');
+
+    const toggle = document.createElement('input');
+    toggle.type = 'checkbox';
     bindRefresh(() => {
-      handSens.value = String(config.tracking?.hand_detection_sensitivity || 'high');
+      toggle.checked = !!config.object_tracking?.enabled;
     });
-    handSens.onchange = async () => {
-      config.tracking ||= {};
-      config.tracking.hand_detection_sensitivity = String(handSens.value || 'high');
-      XRA.tracking?.broadcastHands?.();
+    toggle.onchange = async () => {
+      config.object_tracking ||= {};
+      config.object_tracking.enabled = toggle.checked;
+      XRA.stage?.setObjectTrackingEnabled?.(toggle.checked);
+      XRA.xraBackend?.setObjectDetection(toggle.checked, {
+        min_score: Number(config.object_tracking.min_score ?? 0.45),
+        interval_ms: Number(config.object_tracking.interval_ms ?? 350),
+      });
       await XRA.profileService.save();
       refreshAll();
     };
-    row(box.body, 'Hand detection sensitivity', handSens, {
+    row(box.body, 'Enable prop tracking', toggle, {
       reset: async () => {
-        config.tracking.hand_detection_sensitivity = defaults.tracking?.hand_detection_sensitivity || 'high';
-        XRA.tracking?.broadcastHands?.();
+        config.object_tracking ||= {};
+        config.object_tracking.enabled = false;
+        XRA.stage?.setObjectTrackingEnabled?.(false);
+        XRA.xraBackend?.setObjectDetection(false);
       },
-      isDefault: () => (config.tracking?.hand_detection_sensitivity || 'high') === (defaults.tracking?.hand_detection_sensitivity || 'high'),
-      sub: 'High uses the lower-confidence detector path to reacquire difficult hands more easily.'
+      isDefault: () => !config.object_tracking?.enabled,
+      sub: 'Detects real-world objects in your hands (phone, cup, microphone) and automatically binds 3D props to avatar hands. Zero cost when disabled.'
     });
 
-    // 8. Hand recovery (select: Off, Normal, Aggressive)
-    const handRec = select([['off', 'Off'], ['normal', 'Normal'], ['aggressive', 'Aggressive']]);
+    const confWrap = el('div', 'xra-stack-control');
+    const confInput = document.createElement('input');
+    confInput.type = 'range'; confInput.min = '0.20'; confInput.max = '0.85'; confInput.step = '0.05';
+    const confText = el('div', 'xra-sub');
+    confWrap.append(confInput, confText);
     bindRefresh(() => {
-      handRec.value = String(config.tracking?.hand_recovery_mode || 'normal');
+      const v = Number(config.object_tracking?.min_score ?? 0.45);
+      confInput.value = String(v);
+      confText.textContent = `Confidence: ${(v * 100).toFixed(0)}%`;
     });
-    handRec.onchange = async () => {
-      config.tracking ||= {};
-      config.tracking.hand_recovery_mode = String(handRec.value || 'normal');
-      XRA.tracking?.broadcastHands?.();
-      await XRA.profileService.save();
-      refreshAll();
+    confInput.oninput = () => {
+      config.object_tracking ||= {};
+      config.object_tracking.min_score = Number(confInput.value);
+      confText.textContent = `Confidence: ${(config.object_tracking.min_score * 100).toFixed(0)}%`;
     };
-    row(box.body, 'Hand recovery', handRec, {
+    confInput.onchange = async () => {
+      XRA.xraBackend?.setObjectDetection(config.object_tracking?.enabled, {
+        min_score: config.object_tracking.min_score,
+      });
+      await XRA.profileService.save();
+    };
+    row(box.body, 'Detection confidence', confWrap, {
       reset: async () => {
-        config.tracking.hand_recovery_mode = defaults.tracking?.hand_recovery_mode || 'normal';
-        XRA.tracking?.broadcastHands?.();
+        config.object_tracking ||= {};
+        config.object_tracking.min_score = 0.45;
       },
-      isDefault: () => (config.tracking?.hand_recovery_mode || 'normal') === (defaults.tracking?.hand_recovery_mode || 'normal'),
-      sub: 'When a wrist is lost, periodically runs a full-frame hand search instead of waiting for body tracking.'
+      isDefault: () => Number(config.object_tracking?.min_score ?? 0.45) === 0.45,
+      sub: 'Higher threshold avoids false positives; lower threshold makes items easier to acquire.'
     });
 
-    // 9. Constrain tracking region
-    const constrainRegion = document.createElement('input');
-    constrainRegion.type = 'checkbox';
+    const intervalSelect = select([
+      ['200', 'Fast (200 ms · ~5 FPS)'],
+      ['350', 'Balanced (350 ms · ~3 FPS)'],
+      ['500', 'Eco (500 ms · 2 FPS)'],
+      ['1000', 'Minimal (1000 ms · 1 FPS)'],
+    ]);
     bindRefresh(() => {
-      constrainRegion.checked = !!(nativeHands()?.constrain_tracking_region ?? config.tracking?.constrain_tracking_region);
+      intervalSelect.value = String(config.object_tracking?.interval_ms ?? 350);
     });
-    constrainRegion.onchange = async () => {
-      const val = constrainRegion.checked;
-      const h = nativeHands(); if (h) h.constrain_tracking_region = val;
-      config.tracking ||= {}; config.tracking.constrain_tracking_region = val;
+    intervalSelect.onchange = async () => {
+      config.object_tracking ||= {};
+      config.object_tracking.interval_ms = Number(intervalSelect.value);
+      XRA.xraBackend?.setObjectDetection(config.object_tracking?.enabled, {
+        interval_ms: config.object_tracking.interval_ms,
+      });
       await XRA.profileService.save();
       refreshAll();
     };
-    row(box.body, 'Constrain tracking region', constrainRegion, {
+    row(box.body, 'Scan interval', intervalSelect, {
       reset: async () => {
-        const h = nativeHands(); if (h) h.constrain_tracking_region = false;
-        if (config.tracking) config.tracking.constrain_tracking_region = false;
+        config.object_tracking ||= {};
+        config.object_tracking.interval_ms = 350;
       },
-      isDefault: () => !(nativeHands()?.constrain_tracking_region ?? config.tracking?.constrain_tracking_region),
-      sub: 'Restricts hand search area around the body to prevent background false positives.'
+      isDefault: () => Number(config.object_tracking?.interval_ms ?? 350) === 350,
+      sub: 'Controls background AI scans. A slower interval reduces CPU contention with mocap.'
+    });
+
+    const statusRow = el('div', 'xra-sub');
+    statusRow.style.padding = '8px 12px';
+    statusRow.style.marginTop = '6px';
+    statusRow.style.background = 'rgba(255,255,255,0.05)';
+    statusRow.style.borderRadius = '4px';
+    statusRow.innerHTML = 'Props: <b>cell_phone</b>, <b>cup</b>, <b>microphone</b><br><span style="opacity:0.8">Anti-drop hold active: props stay in hand until lowered to desk.</span>';
+    box.body.appendChild(statusRow);
+
+    const resetBtn = button('↺ Reset props to desk');
+    resetBtn.style.marginTop = '8px';
+    resetBtn.onclick = () => {
+      XRA.stage?.resetAllProps?.();
+      XRA.toast('Props returned to desk');
+    };
+    box.body.appendChild(resetBtn);
+
+    const gripBox = details(box.body, '🖐️ Grip calibration & fine-tuning');
+    gripBox.details.style.marginTop = '8px';
+
+    const propSelect = select([
+      ['cell_phone', 'Smartphone (cell_phone)'],
+      ['cup', 'Cup / Bottle (cup)'],
+      ['microphone', 'Microphone (microphone)'],
+    ]);
+    row(gripBox.body, 'Prop to adjust', propSelect);
+
+    const posXWrap = el('div', 'xra-stack-control');
+    const posXInput = document.createElement('input');
+    posXInput.type = 'range'; posXInput.min = '-15.0'; posXInput.max = '15.0'; posXInput.step = '0.5';
+    const posXText = el('div', 'xra-sub');
+    posXWrap.append(posXInput, posXText);
+
+    const posYWrap = el('div', 'xra-stack-control');
+    const posYInput = document.createElement('input');
+    posYInput.type = 'range'; posYInput.min = '-15.0'; posYInput.max = '15.0'; posYInput.step = '0.5';
+    const posYText = el('div', 'xra-sub');
+    posYWrap.append(posYInput, posYText);
+
+    const posZWrap = el('div', 'xra-stack-control');
+    const posZInput = document.createElement('input');
+    posZInput.type = 'range'; posZInput.min = '-15.0'; posZInput.max = '15.0'; posZInput.step = '0.5';
+    const posZText = el('div', 'xra-sub');
+    posZWrap.append(posZInput, posZText);
+
+    function syncGripInputs() {
+      const pKey = propSelect.value;
+      const g = config.object_tracking?.grip?.[pKey] || {};
+      posXInput.value = String(g.pos_x ?? 0);
+      posXText.textContent = `Offset X (along palm): ${Number(posXInput.value).toFixed(1)} cm`;
+      posYInput.value = String(g.pos_y ?? 0);
+      posYText.textContent = `Offset Y (up / down): ${Number(posYInput.value).toFixed(1)} cm`;
+      posZInput.value = String(g.pos_z ?? 0);
+      posZText.textContent = `Offset Z (forward / back): ${Number(posZInput.value).toFixed(1)} cm`;
+    }
+
+    bindRefresh(syncGripInputs);
+    propSelect.onchange = syncGripInputs;
+
+    function applyGripTweak() {
+      const pKey = propSelect.value;
+      config.object_tracking ||= {};
+      config.object_tracking.grip ||= {};
+      config.object_tracking.grip[pKey] = {
+        pos_x: Number(posXInput.value),
+        pos_y: Number(posYInput.value),
+        pos_z: Number(posZInput.value),
+      };
+      syncGripInputs();
+      XRA.stage?.updateGripTransforms?.();
+    }
+
+    posXInput.oninput = applyGripTweak;
+    posYInput.oninput = applyGripTweak;
+    posZInput.oninput = applyGripTweak;
+
+    const saveGrip = async () => { await XRA.profileService.save(); };
+    posXInput.onchange = saveGrip;
+    posYInput.onchange = saveGrip;
+    posZInput.onchange = saveGrip;
+
+    row(gripBox.body, 'Offset X', posXWrap, {
+      reset: async () => {
+        const pKey = propSelect.value;
+        if (config.object_tracking?.grip?.[pKey]) config.object_tracking.grip[pKey].pos_x = 0;
+        syncGripInputs();
+        XRA.stage?.updateGripTransforms?.();
+        await saveGrip();
+      },
+      isDefault: () => (config.object_tracking?.grip?.[propSelect.value]?.pos_x ?? 0) === 0,
+      sub: 'Fine-tunes grip along the palm axis in centimeters.'
+    });
+    row(gripBox.body, 'Offset Y', posYWrap, {
+      reset: async () => {
+        const pKey = propSelect.value;
+        if (config.object_tracking?.grip?.[pKey]) config.object_tracking.grip[pKey].pos_y = 0;
+        syncGripInputs();
+        XRA.stage?.updateGripTransforms?.();
+        await saveGrip();
+      },
+      isDefault: () => (config.object_tracking?.grip?.[propSelect.value]?.pos_y ?? 0) === 0,
+      sub: 'Fine-tunes vertical grip alignment in centimeters.'
+    });
+    row(gripBox.body, 'Offset Z', posZWrap, {
+      reset: async () => {
+        const pKey = propSelect.value;
+        if (config.object_tracking?.grip?.[pKey]) config.object_tracking.grip[pKey].pos_z = 0;
+        syncGripInputs();
+        XRA.stage?.updateGripTransforms?.();
+        await saveGrip();
+      },
+      isDefault: () => (config.object_tracking?.grip?.[propSelect.value]?.pos_z ?? 0) === 0,
+      sub: 'Fine-tunes depth inside the palm in centimeters.'
     });
   }
 
@@ -1483,10 +1612,28 @@
       const snap = XRA.xraBackend?.snapshot?.();
       const cap = snap?.capture || {};
       const reqFps = Math.round(Number(config.performance?.pose_fps || cap.target_fps || 30));
-      const negFps = Math.round(Number(cap.effective_fps || cap.target_fps || 30));
+      const cameraMeasuredFps = Number(cap.camera_measured_fps || 0);
+      const cameraNegotiatedFps = Number(cap.camera_negotiated_fps || 0);
+      const cameraFps = Number(cameraMeasuredFps || cameraNegotiatedFps || 0);
+      const budgetFps = Number(cap.effective_fps || cap.target_fps || 0);
+      const cameraMismatch = cameraMeasuredFps > 0 && cameraNegotiatedFps > 0 &&
+        cameraMeasuredFps < cameraNegotiatedFps * 0.70;
+      const cameraText = cameraFps > 0
+        ? `${cameraFps.toFixed(1)}${cameraMismatch ? ` (negoziati ${cameraNegotiatedFps.toFixed(1)})` : ''}`
+        : '—';
+      const budgetText = budgetFps > 0 ? budgetFps.toFixed(1) : '—';
       const measFps = Number(cap.measured_fps) > 0 ? Number(cap.measured_fps).toFixed(1) : '—';
       const resStr = cap.capture_geometry && cap.capture_geometry[0] ? ` · Hardware: ${cap.capture_geometry[0]}×${cap.capture_geometry[1]}` : '';
-      cameraTelemetry.textContent = `Target: ${reqFps} FPS · Camera: ${negFps} FPS · Tracking: ${measFps} FPS${resStr}`;
+      const v4l2 = cap.v4l2_optimization || {};
+      const v4l2Text = v4l2.reason === 'tool_missing'
+        ? ' · v4l2-ctl assente'
+        : (v4l2.reason === 'control_unsupported' ? ' · controllo auto-FPS non supportato' : '');
+      cameraTelemetry.textContent = `Target: ${reqFps} FPS · Camera: ${cameraText} FPS · Budget: ${budgetText} FPS · Tracking: ${measFps} FPS${resStr}${v4l2Text}`;
+      cameraTelemetry.title = [
+        cameraNegotiatedFps ? `Camera negotiated: ${cameraNegotiatedFps.toFixed(1)} FPS` : '',
+        cap.camera_format ? `Format: ${cap.camera_format}` : '',
+        v4l2.reason ? `V4L2: ${v4l2.reason}` : '',
+      ].filter(Boolean).join(' · ');
     });
     secWebcam.body.appendChild(cameraTelemetry);
 
@@ -1773,24 +1920,6 @@
       reset: async () => { config.pose_model = defaults.pose_model; XRA.performance.apply(); },
       isDefault: () => config.pose_model === defaults.pose_model,
       sub: 'Qualità ed accuratezza del modello di tracking (Lite per CPU leggere, Best per massima precisione).'
-    });
-
-    const handHz = select([[10, '10 Hz'], [15, '15 Hz'], [20, '20 Hz'], [30, '30 Hz'], [60, '60 Hz'], [90, '90 Hz']]);
-    let handRateRow = null;
-    bindRefresh(() => {
-      handHz.value = String(config.performance.hand_fps || 20);
-      if (handRateRow) handRateRow.hidden = XRA.xraBackend?.active === true;
-    });
-    handHz.onchange = async () => {
-      config.performance.hand_fps = Number(handHz.value);
-      markCustomPreset();
-      XRA.performance.sendInferenceRates();
-      await XRA.profileService.save();
-      refreshAll();
-    };
-    handRateRow = row(secTracking.body, 'Hands inference', handHz, {
-      reset: async () => { config.performance.hand_fps = defaults.performance.hand_fps; XRA.performance.sendInferenceRates(); },
-      isDefault: () => Number(config.performance.hand_fps) === defaults.performance.hand_fps
     });
 
     // -------------------------------------------------------------------------
@@ -2333,6 +2462,156 @@
     box.body.appendChild(refresh);
   }
 
+  let stageSelect = null;
+  let stagesLoaded = false;
+
+  async function refreshStages(force = false) {
+    if (!stageSelect || !XRA.stage?.listStages) return;
+    try {
+      const files = await XRA.stage.listStages(force);
+      const current = config.stage?.path || '';
+      stageSelect.innerHTML = '';
+      const empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = '-- choose 3D stage --';
+      stageSelect.appendChild(empty);
+      if (current && !files.includes(current)) {
+        const option = document.createElement('option');
+        option.value = current;
+        option.textContent = '[current] ' + current;
+        stageSelect.appendChild(option);
+      }
+      for (const path of files) {
+        const option = document.createElement('option');
+        option.value = path;
+        option.textContent = path.replace(/^stages\//, '');
+        stageSelect.appendChild(option);
+      }
+      stageSelect.value = [...stageSelect.options].some(o => o.value === current) ? current : '';
+      stagesLoaded = true;
+    }
+    catch (e) {
+      console.warn(TAG, 'stage list failed', e);
+    }
+  }
+
+  function installStage(parent) {
+    const box = details(parent, '🏛️ 3D Stage & Environment');
+    box.details.addEventListener('toggle', () => {
+      if (box.details.open && !stagesLoaded) refreshStages();
+    });
+
+    const enabled = document.createElement('input');
+    enabled.type = 'checkbox';
+    bindRefresh(() => {
+      enabled.checked = !!config.stage?.enabled;
+    });
+    enabled.onchange = async () => {
+      config.stage ||= {};
+      config.stage.enabled = enabled.checked;
+      if (enabled.checked && !config.stage.path && stageSelect && stageSelect.options.length > 1) {
+        config.stage.path = stageSelect.options[1].value;
+        stageSelect.value = config.stage.path;
+      }
+      XRA.stage?.apply();
+      await XRA.profileService.save();
+      refreshAll();
+    };
+    row(box.body, 'Enable 3D stage', enabled, {
+      reset: async () => {
+        config.stage ||= {};
+        config.stage.enabled = false;
+        XRA.stage?.apply();
+      },
+      isDefault: () => !config.stage?.enabled,
+      sub: 'Renders a 3D stage, studio or room (.glb / .gltf / .fbx) around the avatar. Zero cost when disabled.'
+    });
+
+    stageSelect = select([['', '-- choose 3D stage --']]);
+    stageSelect.onchange = async () => {
+      config.stage ||= {};
+      config.stage.path = stageSelect.value;
+      if (stageSelect.value) {
+        config.stage.enabled = true;
+        enabled.checked = true;
+      }
+      XRA.stage?.apply();
+      await XRA.profileService.save();
+      refreshAll();
+    };
+    row(box.body, 'Stage file', stageSelect, {
+      reset: async () => {
+        config.stage ||= {};
+        config.stage.path = '';
+        XRA.stage?.apply();
+        stagesLoaded = false;
+        await refreshStages();
+      },
+      isDefault: () => !config.stage?.path
+    });
+
+    const heightWrap = el('div', 'xra-stack-control');
+    const heightInput = document.createElement('input');
+    heightInput.type = 'range'; heightInput.min = '-15.0'; heightInput.max = '15.0'; heightInput.step = '0.2';
+    const heightText = el('div', 'xra-sub');
+    heightWrap.append(heightInput, heightText);
+    bindRefresh(() => {
+      const v = Number(config.stage?.offset_y ?? 0.0);
+      heightInput.value = String(v);
+      heightText.textContent = `Floor level: ${v.toFixed(1)}`;
+    });
+    heightInput.oninput = () => {
+      config.stage ||= {};
+      config.stage.offset_y = Number(heightInput.value);
+      heightText.textContent = `Floor level: ${config.stage.offset_y.toFixed(1)}`;
+      XRA.stage?.updateTransform();
+    };
+    heightInput.onchange = async () => {
+      await XRA.profileService.save();
+    };
+    row(box.body, 'Floor height', heightWrap, {
+      reset: async () => {
+        config.stage ||= {};
+        config.stage.offset_y = 0.0;
+        XRA.stage?.updateTransform();
+      },
+      isDefault: () => Number(config.stage?.offset_y ?? 0.0) === 0.0,
+      sub: 'Adjusts vertical floor alignment with avatar feet and desk height.'
+    });
+
+    const scaleWrap = el('div', 'xra-stack-control');
+    const scaleInput = document.createElement('input');
+    scaleInput.type = 'range'; scaleInput.min = '0.2'; scaleInput.max = '3.0'; scaleInput.step = '0.1';
+    const scaleText = el('div', 'xra-sub');
+    scaleWrap.append(scaleInput, scaleText);
+    bindRefresh(() => {
+      const v = Number(config.stage?.scale ?? 1.0);
+      scaleInput.value = String(v);
+      scaleText.textContent = `Scale: ${v.toFixed(1)}x`;
+    });
+    scaleInput.oninput = () => {
+      config.stage ||= {};
+      config.stage.scale = Number(scaleInput.value);
+      scaleText.textContent = `Scale: ${config.stage.scale.toFixed(1)}x`;
+      XRA.stage?.updateTransform();
+    };
+    scaleInput.onchange = async () => {
+      await XRA.profileService.save();
+    };
+    row(box.body, 'Stage scale', scaleWrap, {
+      reset: async () => {
+        config.stage ||= {};
+        config.stage.scale = 1.0;
+        XRA.stage?.updateTransform();
+      },
+      isDefault: () => Number(config.stage?.scale ?? 1.0) === 1.0
+    });
+
+    const refresh = button('↻ Refresh 3D stage files');
+    refresh.onclick = () => { stagesLoaded = false; refreshStages(true); };
+    box.body.appendChild(refresh);
+  }
+
   function downloadJSON(name, object) {
     const blob = new Blob([JSON.stringify(object, null, 2) + '\n'], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -2601,9 +2880,11 @@
     installAudio(content);
     installBody(content);
     installArmsAndHands(content);
+    installObjectTracking(content);
     installCollider(content);
     installPerformance(content);
     installBackground(content);
+    installStage(content);
     installProfile(content);
     body.appendChild(content);
 
@@ -2613,6 +2894,7 @@
     navigator.mediaDevices?.addEventListener?.('devicechange', refreshMicrophones);
     events.on('profile-loaded', () => {
       backgroundsLoaded = false;
+      stagesLoaded = false;
       refreshMicrophones();
       refreshAll();
     });

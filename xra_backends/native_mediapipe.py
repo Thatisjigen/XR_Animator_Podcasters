@@ -774,6 +774,138 @@ def _split_hand_payload(result, w: int, h: int) -> tuple[list, list, list, list]
     )
 
 
+def _hand_recovery_candidates(result, w: int, h: int) -> list[dict]:
+    """Return independent hands for temporal matching by the capture layer.
+
+    Recovery deliberately does not trust handedness as identity.  During a
+    crossing or palm rotation MediaPipe can flip Left/Right for a frame; the
+    caller instead matches each candidate to the last confirmed wrist.
+    """
+    groups = list(getattr(result, "hand_landmarks", None) or [])
+    world_groups = list(getattr(result, "hand_world_landmarks", None) or [])
+    handedness = list(getattr(result, "handedness", None) or [])
+    candidates = []
+    for index, group in enumerate(groups[:2]):
+        points = _hand_from_landmarks(group, w, h)
+        if len(points) < 21:
+            continue
+        categories = list(handedness[index] or []) if index < len(handedness) else []
+        category = categories[0] if categories else None
+        candidates.append({
+            "hand": points,
+            "world": _hand_world_from_landmarks(
+                world_groups[index] if index < len(world_groups) else None
+            ),
+            "label": str(getattr(category, "category_name", "") or "").strip().lower(),
+            "score": float(getattr(category, "score", 0.0) or 0.0),
+        })
+    return candidates
+
+
+class HandRecoveryTasksEngine:
+    """Optional CPU full-frame hand search used only after a Holistic dropout."""
+
+    name = "hand-recovery-cpu"
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._landmarker = None
+        self._mp = None
+        self._min_tracking_confidence = 0.50
+        self.last_inference_ms = 0.0
+        self.last_error = ""
+
+    @property
+    def ready(self) -> bool:
+        return self._landmarker is not None
+
+    def configure_confidence(self, min_tracking=None, **_) -> dict:
+        if min_tracking is None:
+            return {"ok": True, "changed": False}
+        value = max(0.1, min(0.95, float(min_tracking)))
+        changed = abs(value - self._min_tracking_confidence) > 1e-4
+        self._min_tracking_confidence = value
+        if changed and self.ready:
+            return self.load()
+        return {"ok": True, "changed": changed}
+
+    def load(self, **_) -> dict:
+        try:
+            import mediapipe as mp
+            from mediapipe.tasks import python as mp_python
+            from mediapipe.tasks.python import vision
+        except Exception as exc:
+            self.last_error = f"mediapipe hand tasks unavailable: {exc}"
+            return {"ok": False, "error": self.last_error}
+
+        model_path = (
+            registry.model_dir(registry.MEDIAPIPE_TASKS_ID) / "hand_landmarker.task"
+        )
+        if not model_path.is_file():
+            self.last_error = "hand_landmarker.task not installed"
+            return {"ok": False, "error": self.last_error, "needs_download": True}
+
+        self.unload()
+        try:
+            tracking = self._min_tracking_confidence
+            options = vision.HandLandmarkerOptions(
+                # Recovery is intentionally CPU-only.  It remains independent
+                # from the continuously running split-GPU hand worker.
+                base_options=mp_python.BaseOptions(model_asset_path=str(model_path)),
+                running_mode=vision.RunningMode.IMAGE,
+                num_hands=2,
+                min_hand_detection_confidence=max(0.40, tracking * 0.75),
+                min_hand_presence_confidence=max(0.40, tracking * 0.75),
+                min_tracking_confidence=max(0.35, tracking * 0.65),
+            )
+            self._mp = mp
+            with suppress_c_stderr():
+                self._landmarker = vision.HandLandmarker.create_from_options(options)
+            self.last_error = ""
+            return {"ok": True, "engine": self.name}
+        except Exception as exc:
+            self._landmarker = None
+            self._mp = None
+            self.last_error = f"hand recovery init failed: {exc}"
+            return {"ok": False, "error": self.last_error}
+
+    def unload(self) -> None:
+        if self._landmarker is not None:
+            try:
+                self._landmarker.close()
+            except Exception:
+                pass
+        self._landmarker = None
+        self._mp = None
+        self.last_inference_ms = 0.0
+
+    def infer(self, frame_bgr: np.ndarray) -> Optional[dict]:
+        if self._landmarker is None or self._mp is None:
+            return None
+        try:
+            h, w, channels = frame_bgr.shape
+            if h <= 0 or w <= 0 or channels != 3:
+                return None
+            rgb = _bgr_to_rgb(frame_bgr)
+            image = self._mp.Image(
+                image_format=self._mp.ImageFormat.SRGB,
+                data=rgb,
+            )
+            started = time.perf_counter()
+            with self._lock:
+                with suppress_c_stderr():
+                    result = self._landmarker.detect(image)
+            self.last_inference_ms = (time.perf_counter() - started) * 1000.0
+            self.last_error = ""
+            return {
+                "candidates": _hand_recovery_candidates(result, w, h),
+                "inference_ms": self.last_inference_ms,
+            }
+        except Exception as exc:
+            self.last_error = f"hand recovery inference failed: {exc}"
+            return None
+
+
 def _split_results_to_wholebody(results: dict, w: int, h: int) -> dict:
     pose_result = results["pose"]
     face_result = results["face"]
