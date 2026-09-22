@@ -24,16 +24,12 @@ TAG = "[XRA_OBJ_DETECT]"
 
 # Classes commonly used as 3D props in desktop/streaming setups
 DEFAULT_PROP_CLASSES = {
-    "cell phone",
-    "cup",
-    "bottle",
-    "wine glass",
-    "book",
-    "laptop",
+    "cell phone", "remote",
+    "cup", "bottle", "wine glass", "vase",
+    "book", "laptop",
     "mouse",
-    "scissors",
-    "apple",
-    "banana",
+    "scissors", "knife", "fork", "spoon", "toothbrush",
+    "apple", "orange", "banana", "donut",
 }
 
 
