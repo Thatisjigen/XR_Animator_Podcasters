@@ -2777,7 +2777,13 @@
 
     if (camera?.handpose) {
       try {
-        const sArm = Number(config.tracking?.stabilize_arm ?? 0);
+        
+        const _sArmConfig = config.tracking?.stabilize_arm !== undefined ? Number(config.tracking.stabilize_arm) : 2;
+        const _guardMode = String(config.tracking?.guard_mode || '').toLowerCase();
+        const _upperBodyOnly = !!window.MMD_SA?.MMD?.motionManager?.para_SA?.motion_tracking_upper_body_only;
+        // If user set ON (2): auto-switch to upper-body (1) when in guard/desk mode OR upper-body-only pose
+        const sArm = (_sArmConfig === 2 && (_guardMode === 'guard' || _guardMode === 'desk' || _upperBodyOnly)) ? 1 : _sArmConfig;
+
         const sTime = Number(config.tracking?.stabilize_arm_time ?? 0);
         camera.handpose.stabilize_arm = sArm;
         camera.handpose.stabilize_arm_time = sTime;
