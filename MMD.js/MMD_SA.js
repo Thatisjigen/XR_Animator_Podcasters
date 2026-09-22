@@ -7141,7 +7141,7 @@ if (model.skin.time > 72/30) {
     );
 
     MMD_SA_options.Dungeon.item_base.power_up = {
-      icon_path: System.Gadget.path + '/images/cdungeon/item_icon.zip#/misc_icon/superpower_64x64.png'
+      icon_path: System.Gadget.path + '/images/_dungeon/item_icon.zip#/misc_icon/superpower_64x64.png'
      ,info_short: "????"
      ,index_default: MMD_SA_options.Dungeon.inventory.max_base-3
      ,stock_max: 1
@@ -7186,7 +7186,7 @@ MMD_SA._force_motion_shuffle = true
   { name:"explosion_purple_01", url:System.Gadget.path+'/images/sprite_sheet.zip#/explosions/explosion_03_strip13_v01-min.png', col:6, row:2, frame_count:12 },
   { name:"blood_01", url:System.Gadget.path+'/images/sprite_sheet.zip#/blood/blood_hit_splash-min.png', col:4, row:4, frame_count:16, scale:20 },
   { name:"hit_yellow_01", url:System.Gadget.path+'/images/sprite_sheet.zip#/hit/hit_yellow_v00-min.png', col:4, row:4, frame_count:16, scale:20 },
-  { name:"pointer_blue_01", url:System.Gadget.path+'/images/cdungeon/item_icon.zip#/misc_icon/arrow_down_blue_128x128.png', col:1, row:1, frame_count:1, scale:2 },
+  { name:"pointer_blue_01", url:System.Gadget.path+'/images/_dungeon/item_icon.zip#/misc_icon/arrow_down_blue_128x128.png', col:1, row:1, frame_count:1, scale:2 },
 
   { name:"explosion_red_01", url:System.Gadget.path+'/images/sprite_sheet.zip#/explosions/explosion_01_strip13_v01-min.png', col:6, row:2, frame_count:12 },
   { name:"explosion_sinestesia-01_03",  url:System.Gadget.path+'/images/sprite_sheet.zip#/explosions/explosion_sinestesia-01_03_v01-min.png', col:4, row:8, frame_count:32, scale:20, blending:"additive" },

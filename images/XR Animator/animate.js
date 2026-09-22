@@ -8556,7 +8556,7 @@ async function change_HDRI(index, use_background) {
   if ((use_background == null) || !MMD_SA.THREEX.utils.HDRI.mode)
     use_background = (!MMD_SA.THREEX.utils.HDRI.mode) ? false : ((MMD_SA.THREEX.utils.HDRI.mode == 1) ? (!MMD_SA_options.mesh_obj_by_id["DomeMESH"]?._obj.visible && (!!MMD_SA.THREEX.scene.background || !MMD_SA.THREEX._object3d_list_?.length)) : true);
 
-  await MMD_SA.THREEX.utils.HDRI.load(System.Gadget.path + '/images/cdungeon/hdri/' + ((use_background)?'full/':'') + HDRI_list[index-1], use_background);
+  await MMD_SA.THREEX.utils.HDRI.load(System.Gadget.path + '/images/_dungeon/hdri/' + ((use_background)?'full/':'') + HDRI_list[index-1], use_background);
 
   if (use_background) {
     remove_skybox();

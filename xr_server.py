@@ -386,6 +386,41 @@ def avatar_file(filename):
     return None
 
 
+def save_prop_upload(filename, stream, length):
+    name = Path(unquote(str(filename or ""))).name
+    ext = Path(name).suffix.lower()
+    if ext not in {".glb", ".gltf"}:
+        raise ValueError("Invalid prop extension")
+    stem = re.sub(r"[<>:\"/\\|?*\x00-\x1f]+", "_", Path(name).stem).strip().strip(".")
+    stem = (stem or "prop")[:160]
+    name = stem + ext
+    if length <= 0 or length > AVATAR_MAX_BYTES:
+        raise ValueError("Invalid prop size")
+    folder = ROOT / "props"
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = (folder / name).resolve()
+    if dest.parent != folder:
+        raise ValueError("Invalid prop path")
+    import uuid
+    tmp = dest.with_name(dest.name + f".{uuid.uuid4().hex}.tmp")
+    remaining = length
+    try:
+        with tmp.open("wb") as handle:
+            while remaining:
+                data = stream.read(min(1024 * 1024, remaining))
+                if not data:
+                    raise IOError("Unexpected end of prop upload")
+                handle.write(data)
+                remaining -= len(data)
+        tmp.replace(dest)
+        PROP_CACHE["ts"] = 0.0 # invalidate cache
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return dest.name
+
 def save_avatar_upload(filename, stream, length):
     name = safe_avatar_name(filename)
     if not name:
@@ -1631,6 +1666,21 @@ class Handler(SimpleHTTPRequestHandler):
                     raise ValueError("Missing debug log content")
                 saved = save_debug_log_native(obj.get("suggested_name"), content)
                 self.send_json({"ok": True, "path": str(saved) if saved else "", "cancelled": saved is None})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+
+        if path == "/__xra_prop":
+            try:
+                params = {}
+                for pair in parsed.query.split("&"):
+                    if "=" in pair:
+                        k, v = pair.split("=", 1)
+                        params[k] = unquote(v)
+                filename = params.get("filename") or self.headers.get("X-Filename") or ""
+                length = int(self.headers.get("Content-Length", "0"))
+                stored = save_prop_upload(filename, self.rfile, length)
+                self.send_json({"ok": True, "filename": stored})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, status=400)
             return

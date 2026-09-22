@@ -1098,18 +1098,51 @@ class EngineDispatcher:
             if res is not None and getattr(self, "object_detector", None) and self.object_detector.enabled:
                 hands_info = {}
                 h, w = frame_bgr.shape[:2]
+
+                def _norm(v, dim):
+                    return v / dim if v > 1.5 else v
+
+                def _hand_center(lms):
+                    # Average first 5 landmarks for better centering vs just wrist
+                    pts = lms[:5] if lms else []
+                    if not pts:
+                        return None
+                    xs = [p.get("x", 0) for p in pts]
+                    ys = [p.get("y", 0) for p in pts]
+                    return (_norm(sum(xs) / len(xs), w), _norm(sum(ys) / len(ys), h))
+
+                # Prefer dedicated hand tracker landmarks (more accurate than pose wrist)
+                left_hand = res.get("leftHand") or []
+                right_hand = res.get("rightHand") or []
+                if left_hand:
+                    pos = _hand_center(left_hand)
+                    if pos:
+                        # In audience mode leftHand (anatomical left) -> avatar rightHand bone
+                        # We label it "right" so JS uses 右手首 which follows physical left
+                        hands_info["right_wrist"] = pos
+                if right_hand:
+                    pos = _hand_center(right_hand)
+                    if pos:
+                        # In audience mode rightHand (anatomical right) -> avatar leftHand bone
+                        # We label it "left" so JS uses 左手首 which follows physical right
+                        hands_info["left_wrist"] = pos
+
+                # Fallback to pose-body wrist keypoints when hand tracker missed a hand
                 kps = res.get("keypoints") or []
                 if len(kps) > 16:
-                    lw = kps[15]
-                    rw = kps[16]
-                    if isinstance(lw, dict):
-                        x = lw.get("x", 0)
-                        y = lw.get("y", 0)
-                        hands_info["left_wrist"] = (x / w if x > 1.5 else x, y / h if y > 1.5 else y)
-                    if isinstance(rw, dict):
-                        x = rw.get("x", 0)
-                        y = rw.get("y", 0)
-                        hands_info["right_wrist"] = (x / w if x > 1.5 else x, y / h if y > 1.5 else y)
+                    if "right_wrist" not in hands_info:  # kps[15]=anatomical left -> bone right
+                        lw = kps[15]
+                        if isinstance(lw, dict):
+                            p = lw.get("position") or lw
+                            hands_info["right_wrist"] = (_norm(p.get("x", 0), w), _norm(p.get("y", 0), h))
+                    if "left_wrist" not in hands_info:  # kps[16]=anatomical right -> bone left
+                        rw = kps[16]
+                        if isinstance(rw, dict):
+                            p = rw.get("position") or rw
+                            hands_info["left_wrist"] = (_norm(p.get("x", 0), w), _norm(p.get("y", 0), h))
+
+                if hands_info:
+                    print(f"[OBJ_HANDS] hands_info={hands_info}", flush=True)
                 frame_rgb = frame_bgr[..., ::-1]
                 self.object_detector.submit(frame_rgb, hands_info)
             return res

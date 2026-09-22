@@ -1067,7 +1067,12 @@
     // 5. Arm stabilization (select: Off, Upper-body mocap, On)
     const armStab = select([[0, 'Off'], [1, 'Upper-body mocap'], [2, 'On']]);
     bindRefresh(() => {
-      armStab.value = String(nativeHands()?.stabilize_arm ?? config.tracking?.stabilize_arm ?? 0);
+      const guardMode = String(config.tracking?.guard_mode || '').toLowerCase();
+      const configuredVal = Number(nativeHands()?.stabilize_arm ?? config.tracking?.stabilize_arm ?? 2);
+      // Display the effective runtime value without writing to config:
+      // If user has it ON (2) and we're in upper-body mode, show "Upper-body mocap" (1)
+      const displayVal = (configuredVal === 2 && (guardMode === 'guard' || guardMode === 'desk')) ? 1 : configuredVal;
+      armStab.value = String(displayVal);
     });
     armStab.onchange = async () => {
       const val = Number(armStab.value);
@@ -1089,7 +1094,7 @@
           mm.para_SA.motion_tracking.hand_tracking.stabilize_arm_disabled = true;
         }
       },
-      isDefault: () => Number(nativeHands()?.stabilize_arm ?? config.tracking?.stabilize_arm ?? 0) === 0,
+      isDefault: () => Number(nativeHands()?.stabilize_arm ?? config.tracking?.stabilize_arm ?? 2) === 2,
       sub: 'Stabilizes arm movement and extension based on body kinematics.'
     });
 
@@ -1117,7 +1122,7 @@
   }
 
   function installObjectTracking(parent) {
-    const box = details(parent, '🎯 Webcam Prop Tracking (AI)');
+    const box = details(parent, '🎯 Webcam Prop Tracking (AI) / AR Props');
 
     const toggle = document.createElement('input');
     toggle.type = 'checkbox';
@@ -1129,8 +1134,8 @@
       config.object_tracking.enabled = toggle.checked;
       XRA.stage?.setObjectTrackingEnabled?.(toggle.checked);
       XRA.xraBackend?.setObjectDetection(toggle.checked, {
-        min_score: Number(config.object_tracking.min_score ?? 0.45),
-        interval_ms: Number(config.object_tracking.interval_ms ?? 350),
+        interval_ms: config.object_tracking.interval_ms ?? 350,
+        min_score: config.object_tracking.min_score ?? 0.45,
       });
       await XRA.profileService.save();
       refreshAll();
@@ -1140,7 +1145,6 @@
         config.object_tracking ||= {};
         config.object_tracking.enabled = false;
         XRA.stage?.setObjectTrackingEnabled?.(false);
-        XRA.xraBackend?.setObjectDetection(false);
       },
       isDefault: () => !config.object_tracking?.enabled,
       sub: 'Detects real-world objects in your hands (phone, cup, microphone) and automatically binds 3D props to avatar hands. Zero cost when disabled.'
@@ -1148,7 +1152,7 @@
 
     const confWrap = el('div', 'xra-stack-control');
     const confInput = document.createElement('input');
-    confInput.type = 'range'; confInput.min = '0.20'; confInput.max = '0.85'; confInput.step = '0.05';
+    confInput.type = 'range'; confInput.min = '0.20'; confInput.max = '0.90'; confInput.step = '0.01';
     const confText = el('div', 'xra-sub');
     confWrap.append(confInput, confText);
     bindRefresh(() => {
@@ -1208,7 +1212,7 @@
     statusRow.style.marginTop = '6px';
     statusRow.style.background = 'rgba(255,255,255,0.05)';
     statusRow.style.borderRadius = '4px';
-    statusRow.innerHTML = 'Props: <b>17 objects</b> (COCO classes)<br><span style="opacity:0.8">Anti-drop hold active: props stay in hand until lowered to desk.</span>';
+    statusRow.innerHTML = 'Anti-drop hold active: AI props stay in hand until lowered to desk.';
     box.body.appendChild(statusRow);
 
     const resetBtn = button('↺ Reset props to desk');
@@ -1219,57 +1223,174 @@
     };
     box.body.appendChild(resetBtn);
 
-    const gripBox = details(box.body, '🖐️ Grip calibration & fine-tuning');
+    const gripBox = details(box.body, '🖐️ AR Props & Calibration');
     gripBox.details.style.marginTop = '8px';
 
-    const propSelect = select([
-      ['cell_phone', 'Smartphone'],
-      ['cup', 'Cup'],
-      ['microphone', 'Microphone'],
-      ['bottle', 'Bottle'],
-      ['book', 'Book'],
-      ['knife', 'Knife'],
-      ['fork', 'Fork'],
-      ['spoon', 'Spoon'],
-      ['scissors', 'Scissors'],
-      ['apple', 'Apple'],
-      ['orange', 'Orange'],
-      ['banana', 'Banana'],
-      ['donut', 'Donut'],
-      ['mouse', 'Mouse'],
-      ['laptop', 'Laptop'],
-      ['toothbrush', 'Toothbrush'],
-      ['vase', 'Vase'],
-    ]);
+    const uploadPropBtn = button('+ Importa oggetto 3D (.glb / .gltf)', 'xra-action');
+    uploadPropBtn.style.marginBottom = '12px';
+    uploadPropBtn.onclick = () => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.glb,.gltf';
+      input.onchange = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        try {
+          const body = new Uint8Array(await file.arrayBuffer());
+          const res = await fetch(`/__xra_prop?filename=${encodeURIComponent(file.name)}`, {
+            method: 'POST',
+            body: body,
+            headers: { 'Content-Length': String(body.byteLength) }
+          });
+          const json = await res.json();
+          if (json.ok) {
+            XRA.toast('Oggetto 3D caricato con successo', 'success');
+            await refreshPropSelect();
+            const key = json.filename.replace(/\.(glb|gltf)$/i, '');
+            propSelect.value = key;
+            await XRA.stage?.loadProp?.(key, `props/${json.filename}`);
+            syncGripInputs();
+          } else throw new Error(json.error);
+        } catch(err) {
+          XRA.toast('Errore caricamento: ' + err.message, 'error', 5000);
+        }
+      };
+      input.click();
+    };
+    gripBox.body.appendChild(uploadPropBtn);
+
+    const propSelect = select([]);
     row(gripBox.body, 'Prop to adjust', propSelect);
+
+    async function refreshPropSelect() {
+      const files = await XRA.stage?.listProps?.(true) || [];
+      const current = propSelect.value;
+      propSelect.innerHTML = '';
+      const CLASS_TO_PROP = {
+        'cell_phone': 'Smartphone', 'cup': 'Cup', 'microphone': 'Microphone',
+        'bottle': 'Bottle', 'book': 'Book', 'knife': 'Knife', 'fork': 'Fork',
+        'spoon': 'Spoon', 'scissors': 'Scissors', 'apple': 'Apple',
+        'orange': 'Orange', 'banana': 'Banana', 'donut': 'Donut',
+        'mouse': 'Mouse', 'laptop': 'Laptop', 'toothbrush': 'Toothbrush', 'vase': 'Vase'
+      };
+      for (const file of files) {
+        const key = file.replace(/^props\//, '').replace(/\.(glb|gltf)$/i, '');
+        const label = CLASS_TO_PROP[key] || key;
+        const opt = document.createElement('option');
+        opt.value = key;
+        opt.textContent = label;
+        propSelect.appendChild(opt);
+      }
+      if ([...propSelect.options].some(o => o.value === current)) propSelect.value = current;
+      else if (propSelect.options.length) propSelect.selectedIndex = 0;
+      syncGripInputs();
+    }
+
+    // Call once when panel renders
+    setTimeout(refreshPropSelect, 500);
+
+    const manualAttachSelect = select([
+      ['auto', 'Auto (AI detection)'],
+      ['right', 'Right Hand'],
+      ['left', 'Left Hand'],
+      ['desk', 'Static (On desk)'],
+      ['hidden', 'Hidden']
+    ]);
+    row(gripBox.body, 'Manual attachment', manualAttachSelect, {
+      sub: 'Forza la posizione dell\'oggetto ignorando l\'IA.'
+    });
+
+    const aiTriggerSelect = select([
+      ['none', 'Default / None'],
+      ['cell_phone', 'AI: Smartphone'],
+      ['cup', 'AI: Cup'],
+      ['microphone', 'AI: Microphone'],
+      ['bottle', 'AI: Bottle'],
+      ['book', 'AI: Book'],
+      ['knife', 'AI: Knife'],
+      ['fork', 'AI: Fork'],
+      ['spoon', 'AI: Spoon'],
+      ['scissors', 'AI: Scissors'],
+      ['apple', 'AI: Apple'],
+      ['orange', 'AI: Orange'],
+      ['banana', 'AI: Banana'],
+      ['donut', 'AI: Donut'],
+      ['mouse', 'AI: Mouse'],
+      ['laptop', 'AI: Laptop'],
+      ['toothbrush', 'AI: Toothbrush'],
+      ['vase', 'AI: Vase']
+    ]);
+    row(gripBox.body, 'Map to AI object', aiTriggerSelect, {
+      sub: 'Quando la webcam rileva questo oggetto, verrà mostrato il prop selezionato (utile per oggetti custom).'
+    });
 
     const posXWrap = el('div', 'xra-stack-control');
     const posXInput = document.createElement('input');
-    posXInput.type = 'range'; posXInput.min = '-15.0'; posXInput.max = '15.0'; posXInput.step = '0.5';
+    posXInput.type = 'range'; posXInput.min = '-50.0'; posXInput.max = '50.0'; posXInput.step = '0.5';
     const posXText = el('div', 'xra-sub');
     posXWrap.append(posXInput, posXText);
 
     const posYWrap = el('div', 'xra-stack-control');
     const posYInput = document.createElement('input');
-    posYInput.type = 'range'; posYInput.min = '-15.0'; posYInput.max = '15.0'; posYInput.step = '0.5';
+    posYInput.type = 'range'; posYInput.min = '-50.0'; posYInput.max = '50.0'; posYInput.step = '0.5';
     const posYText = el('div', 'xra-sub');
     posYWrap.append(posYInput, posYText);
 
     const posZWrap = el('div', 'xra-stack-control');
     const posZInput = document.createElement('input');
-    posZInput.type = 'range'; posZInput.min = '-15.0'; posZInput.max = '15.0'; posZInput.step = '0.5';
+    posZInput.type = 'range'; posZInput.min = '-50.0'; posZInput.max = '50.0'; posZInput.step = '0.5';
     const posZText = el('div', 'xra-sub');
     posZWrap.append(posZInput, posZText);
 
+    const rotXWrap = el('div', 'xra-stack-control');
+    const rotXInput = document.createElement('input');
+    rotXInput.type = 'range'; rotXInput.min = '-180'; rotXInput.max = '180'; rotXInput.step = '1';
+    const rotXText = el('div', 'xra-sub');
+    rotXWrap.append(rotXInput, rotXText);
+
+    const rotYWrap = el('div', 'xra-stack-control');
+    const rotYInput = document.createElement('input');
+    rotYInput.type = 'range'; rotYInput.min = '-180'; rotYInput.max = '180'; rotYInput.step = '1';
+    const rotYText = el('div', 'xra-sub');
+    rotYWrap.append(rotYInput, rotYText);
+
+    const rotZWrap = el('div', 'xra-stack-control');
+    const rotZInput = document.createElement('input');
+    rotZInput.type = 'range'; rotZInput.min = '-180'; rotZInput.max = '180'; rotZInput.step = '1';
+    const rotZText = el('div', 'xra-sub');
+    rotZWrap.append(rotZInput, rotZText);
+
+    const scaleWrap = el('div', 'xra-stack-control');
+    const scaleInput = document.createElement('input');
+    scaleInput.type = 'range'; scaleInput.min = '0.2'; scaleInput.max = '3.0'; scaleInput.step = '0.05';
+    const scaleText = el('div', 'xra-sub');
+    scaleWrap.append(scaleInput, scaleText);
+
     function syncGripInputs() {
       const pKey = propSelect.value;
+      if (!pKey) return;
       const g = config.object_tracking?.grip?.[pKey] || {};
+      const ma = config.object_tracking?.manual_attach?.[pKey] || 'auto';
+      manualAttachSelect.value = ma;
+      const trig = config.object_tracking?.ai_trigger?.[pKey] || 'none';
+      aiTriggerSelect.value = trig;
+      
       posXInput.value = String(g.pos_x ?? 0);
       posXText.textContent = `Offset X (along palm): ${Number(posXInput.value).toFixed(1)} cm`;
       posYInput.value = String(g.pos_y ?? 0);
       posYText.textContent = `Offset Y (up / down): ${Number(posYInput.value).toFixed(1)} cm`;
       posZInput.value = String(g.pos_z ?? 0);
       posZText.textContent = `Offset Z (forward / back): ${Number(posZInput.value).toFixed(1)} cm`;
+      
+      rotXInput.value = String(g.rot_x ?? 0);
+      rotXText.textContent = `Pitch (X): ${Number(rotXInput.value).toFixed(0)}°`;
+      rotYInput.value = String(g.rot_y ?? 0);
+      rotYText.textContent = `Yaw (Y): ${Number(rotYInput.value).toFixed(0)}°`;
+      rotZInput.value = String(g.rot_z ?? 0);
+      rotZText.textContent = `Roll (Z): ${Number(rotZInput.value).toFixed(0)}°`;
+      
+      scaleInput.value = String(g.scale ?? 1.0);
+      scaleText.textContent = `Scale: ${Number(scaleInput.value).toFixed(2)}x`;
     }
 
     bindRefresh(syncGripInputs);
@@ -1277,25 +1398,47 @@
 
     function applyGripTweak() {
       const pKey = propSelect.value;
+      if (!pKey) return;
       config.object_tracking ||= {};
       config.object_tracking.grip ||= {};
+      config.object_tracking.manual_attach ||= {};
+      
+      config.object_tracking.manual_attach[pKey] = manualAttachSelect.value;
+      config.object_tracking.ai_trigger ||= {};
+      config.object_tracking.ai_trigger[pKey] = aiTriggerSelect.value;
       config.object_tracking.grip[pKey] = {
         pos_x: Number(posXInput.value),
         pos_y: Number(posYInput.value),
         pos_z: Number(posZInput.value),
+        rot_x: Number(rotXInput.value),
+        rot_y: Number(rotYInput.value),
+        rot_z: Number(rotZInput.value),
+        scale: Number(scaleInput.value),
       };
       syncGripInputs();
       XRA.stage?.updateGripTransforms?.();
     }
 
+    manualAttachSelect.onchange = applyGripTweak;
     posXInput.oninput = applyGripTweak;
     posYInput.oninput = applyGripTweak;
     posZInput.oninput = applyGripTweak;
+    rotXInput.oninput = applyGripTweak;
+    rotYInput.oninput = applyGripTweak;
+    rotZInput.oninput = applyGripTweak;
+    scaleInput.oninput = applyGripTweak;
 
     const saveGrip = async () => { await XRA.profileService.save(); };
+    manualAttachSelect.addEventListener('change', saveGrip);
+    aiTriggerSelect.addEventListener('change', applyGripTweak);
+    aiTriggerSelect.addEventListener('change', saveGrip);
     posXInput.onchange = saveGrip;
     posYInput.onchange = saveGrip;
     posZInput.onchange = saveGrip;
+    rotXInput.onchange = saveGrip;
+    rotYInput.onchange = saveGrip;
+    rotZInput.onchange = saveGrip;
+    scaleInput.onchange = saveGrip;
 
     row(gripBox.body, 'Offset X', posXWrap, {
       reset: async () => {
@@ -1306,7 +1449,7 @@
         await saveGrip();
       },
       isDefault: () => (config.object_tracking?.grip?.[propSelect.value]?.pos_x ?? 0) === 0,
-      sub: 'Fine-tunes grip along the palm axis in centimeters.'
+      sub: 'Trasla oggetto sull\'asse X'
     });
     row(gripBox.body, 'Offset Y', posYWrap, {
       reset: async () => {
@@ -1317,7 +1460,7 @@
         await saveGrip();
       },
       isDefault: () => (config.object_tracking?.grip?.[propSelect.value]?.pos_y ?? 0) === 0,
-      sub: 'Fine-tunes vertical grip alignment in centimeters.'
+      sub: 'Trasla oggetto sull\'asse Y'
     });
     row(gripBox.body, 'Offset Z', posZWrap, {
       reset: async () => {
@@ -1328,7 +1471,51 @@
         await saveGrip();
       },
       isDefault: () => (config.object_tracking?.grip?.[propSelect.value]?.pos_z ?? 0) === 0,
-      sub: 'Fine-tunes depth inside the palm in centimeters.'
+      sub: 'Trasla oggetto sull\'asse Z'
+    });
+    row(gripBox.body, 'Pitch (X)', rotXWrap, {
+      reset: async () => {
+        const pKey = propSelect.value;
+        if (config.object_tracking?.grip?.[pKey]) config.object_tracking.grip[pKey].rot_x = 0;
+        syncGripInputs();
+        XRA.stage?.updateGripTransforms?.();
+        await saveGrip();
+      },
+      isDefault: () => (config.object_tracking?.grip?.[propSelect.value]?.rot_x ?? 0) === 0,
+      sub: 'Ruota oggetto sull\'asse X'
+    });
+    row(gripBox.body, 'Yaw (Y)', rotYWrap, {
+      reset: async () => {
+        const pKey = propSelect.value;
+        if (config.object_tracking?.grip?.[pKey]) config.object_tracking.grip[pKey].rot_y = 0;
+        syncGripInputs();
+        XRA.stage?.updateGripTransforms?.();
+        await saveGrip();
+      },
+      isDefault: () => (config.object_tracking?.grip?.[propSelect.value]?.rot_y ?? 0) === 0,
+      sub: 'Ruota oggetto sull\'asse Y'
+    });
+    row(gripBox.body, 'Roll (Z)', rotZWrap, {
+      reset: async () => {
+        const pKey = propSelect.value;
+        if (config.object_tracking?.grip?.[pKey]) config.object_tracking.grip[pKey].rot_z = 0;
+        syncGripInputs();
+        XRA.stage?.updateGripTransforms?.();
+        await saveGrip();
+      },
+      isDefault: () => (config.object_tracking?.grip?.[propSelect.value]?.rot_z ?? 0) === 0,
+      sub: 'Ruota oggetto sull\'asse Z'
+    });
+    row(gripBox.body, 'Scale', scaleWrap, {
+      reset: async () => {
+        const pKey = propSelect.value;
+        if (config.object_tracking?.grip?.[pKey]) config.object_tracking.grip[pKey].scale = 1.0;
+        syncGripInputs();
+        XRA.stage?.updateGripTransforms?.();
+        await saveGrip();
+      },
+      isDefault: () => (config.object_tracking?.grip?.[propSelect.value]?.scale ?? 1.0) === 1.0,
+      sub: 'Modifica la dimensione dell\'oggetto'
     });
   }
 

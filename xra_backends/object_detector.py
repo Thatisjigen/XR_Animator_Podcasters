@@ -225,17 +225,20 @@ class ObjectDetectorWorker:
 
                     # Determine hand proximity if hand landmarks are available
                     assigned_hand = None
+                    dists = {}
                     if hands_info:
-                        min_dist = 0.35  # Threshold in normalized screen distance
+                        min_dist = 0.50  # Generous threshold in normalized screen distance
                         for hand_side in ("right", "left"):
                             wrist = hands_info.get(f"{hand_side}_wrist")
                             if wrist:
                                 wx, wy = wrist[0], wrist[1]
-                                dist = np.hypot(center_x - wx, center_y - wy)
+                                dist = float(np.hypot(center_x - wx, center_y - wy))
+                                dists[hand_side] = round(dist, 3)
                                 if dist < min_dist:
                                     min_dist = dist
                                     assigned_hand = hand_side
 
+                    print(f"[OBJ_DET] {category_name} center=({center_x:.2f},{center_y:.2f}) dists={dists} -> assigned={assigned_hand}", flush=True)
                     detections.append({
                         "category": category_name,
                         "score": round(score, 3),

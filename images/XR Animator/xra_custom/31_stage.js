@@ -425,6 +425,14 @@
   }
 
   function updateHeldProps() {
+    try {
+      updateHeldProps_inner();
+    } catch (e) {
+      console.error("Error in updateHeldProps:", e);
+    }
+  }
+
+  function updateHeldProps_inner() {
     if (!config.object_tracking?.enabled) {
       resetAllProps();
       return;
@@ -562,7 +570,10 @@
       }
 
       if (propKey) {
-        detectedMap[propKey] = det.hand || 'right';
+        console.log('[PROPS AI]', cat, '-> prop:', propKey, 'hand:', det.hand);
+        if (det.hand) {
+          detectedMap[propKey] = det.hand;
+        }
       }
     }
 
