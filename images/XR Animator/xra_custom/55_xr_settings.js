@@ -1426,13 +1426,43 @@
         if (window.MMD_SA_options?.user_camera?.streamer_mode) MMD_SA_options.user_camera.streamer_mode.VMC_sender_enabled = value;
       });
 
+    addSelect(vmc.body, 'Protocol',
+      [['UDP', 'UDP (Standard)'], ['WebSocket', 'WebSocket (Web / Network)']],
+      () => window.MMD_SA?.OSC?.VMC?.options?.protocol || 'UDP',
+      value => {
+        if (window.MMD_SA?.OSC?.VMC) {
+          MMD_SA.OSC.VMC.options.protocol = value || 'UDP';
+          MMD_SA.OSC.VMC.update?.('send');
+        }
+      });
+
+    addToggle(vmc.body, 'Send avatar data',
+      () => !!window.MMD_SA?.OSC?.VMC?.send_avatar_data,
+      value => {
+        if (window.MMD_SA?.OSC?.VMC) MMD_SA.OSC.VMC.send_avatar_data = value;
+      });
+
+    addToggle(vmc.body, 'Send camera data',
+      () => !!window.MMD_SA?.OSC?.VMC?.send_camera_data,
+      value => {
+        if (window.MMD_SA?.OSC?.VMC) MMD_SA.OSC.VMC.send_camera_data = value;
+      });
+
     addText(vmc.body, 'Host',
       () => window.MMD_SA?.OSC?.VMC?.options?.plugin?.send?.host || 'localhost',
-      value => { const send = window.MMD_SA?.OSC?.VMC?.options?.plugin?.send; if (send) send.host = value; });
+      value => {
+        const send = window.MMD_SA?.OSC?.VMC?.options?.plugin?.send;
+        if (send) send.host = value;
+        window.MMD_SA?.OSC?.VMC?.update?.('send');
+      });
 
     addNumber(vmc.body, 'Port',
       () => Number(window.MMD_SA?.OSC?.VMC?.options?.plugin?.send?.port || 39539),
-      value => { const send = window.MMD_SA?.OSC?.VMC?.options?.plugin?.send; if (send && value != null) send.port = value; },
+      value => {
+        const send = window.MMD_SA?.OSC?.VMC?.options?.plugin?.send;
+        if (send && value != null) send.port = value;
+        window.MMD_SA?.OSC?.VMC?.update?.('send');
+      },
       { min: 1, max: 65535, step: 1 });
 
     addNumber(vmc.body, 'Delay',

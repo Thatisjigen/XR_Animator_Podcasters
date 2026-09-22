@@ -11,9 +11,9 @@
 				},
 				"info": {
 					"_translation_": {
-						"_default_": "Double-click (or press Ctrl+Pause) to start \"Streamer mode\", a shortcut to automatically start your mocap session, including selecting webcam, changing avatar's pose, loading mocap AI, and turning on VMC protocol (if enabled in last session). Your preferences in webcam, pose, mocap and VMC will be saved and applied automatically.",
-						"ja": "ダブルクリック（または Ctrl+Pause キーを押す）して \"ストリーマーモード\" を開始します。 これは、Web カメラの選択、アバターのポーズの変更、モーキャプ AI の読み込み、VMC プロトコルのオン（前回のセッションで有効になっていた場合）など、モーキャプ セッションを自動的に開始するショートカットです。 Webカメラ、ポーズ、モーキャプ、VMC の設定は保存され、自動的に適用されます。",
-						"zh": "按兩下(或按 Ctrl+Pause 鍵)啟動「直播主模式」，一次過將攝影機選擇、人物姿勢轉換、動捕AI載入、VMC協定等全數啟動。 所有相關的設定亦會自動保存及適用。"
+						"_default_": "Double-click (or press <hotkey>) to start \"Streamer mode\", a shortcut to automatically start your mocap session, including selecting webcam, changing avatar's pose, loading mocap AI, and turning on VMC protocol (if enabled in last session). Your preferences in webcam, pose, mocap and VMC will be saved and applied automatically.",
+						"ja": "ダブルクリック（または <hotkey> キーを押す）して \"ストリーマーモード\" を開始します。 これは、Web カメラの選択、アバターのポーズの変更、モーキャプ AI の読み込み、VMC プロトコルのオン（前回のセッションで有効になっていた場合）など、モーキャプ セッションを自動的に開始するショートカットです。 Webカメラ、ポーズ、モーキャプ、VMC の設定は保存され、自動的に適用されます。",
+						"zh": "按兩下(或按 <hotkey> 鍵)啟動「直播主模式」，一次過將攝影機選擇、人物姿勢轉換、動捕AI載入、VMC協定等全數啟動。 所有相關的設定亦會自動保存及適用。"
 					}
 				},
 				"press_x_to_abort": {
@@ -65,6 +65,13 @@
 						"zh": "動作已轉換"
 					}
 				},
+				"3D_camera_lock": {
+					"_translation_": {
+						"_default_": "3D camera lock",
+						"ja": "3Dカメラのロック",
+						"zh": "鎖定3D鏡頭模式"
+					}
+				},
 				"webcam_not_accessible": {
 					"_translation_": {
 						"_default_": "Target webcam is not accessible.",
@@ -81,15 +88,15 @@
 				},
 				"VMC_protocol_on": {
 					"_translation_": {
-						"_default_": "VMC protocol: ON",
-						"ja": "VMCプロトコル: ON",
-						"zh": "VMC協定: ON"
+						"_default_": "VMC: Avatar data",
+						"ja": "VM: アバターデータ",
+						"zh": "VMC: 人物數據"
 					},
 					"send_camera_data": {
 						"_translation_": {
-							"_default_": "Send camera data",
-							"ja": "カメラデータを送信する",
-							"zh": "傳送攝影機數據"
+							"_default_": "VMC: 3D camera data",
+							"ja": "VMC: 3D カメラデータ",
+							"zh": "VMC: 3D 攝影機數據"
 						}
 					}
 				},
@@ -123,9 +130,9 @@
 				},
 				"finish": {
 					"_translation_": {
-						"_default_": "XR Animator is now ready. You may choose to turn UI off for streaming (press Esc to toggle the bottom UI afterwards).\n1. Finish and turn UI off\nX. Finish",
-						"ja": "XR Animator の準備が整いました。 ストリーミング用に UI をオフにすることもできます (後で Esc キーを押して下部の UI を切り替えます)。\n1. UIをオフにして終了する\nX. 終了する",
-						"zh": "XR Animator已準備就緒。 你可以選擇隱藏UI顯示以方便直播 (及後按Esc切換下方UI顯示).\n1. 完成及隱藏UI\nX. 完成"
+						"_default_": "XR Animator is now ready. You may choose to turn UI off for streaming (press <Esc> to toggle the bottom UI afterwards).\n1. Finish and turn UI off\nX. Finish",
+						"ja": "XR Animator の準備が整いました。 ストリーミング用に UI をオフにすることもできます (後で <Esc> キーを押して下部の UI を切り替えます)。\n1. UIをオフにして終了する\nX. 終了する",
+						"zh": "XR Animator已準備就緒。 你可以選擇隱藏UI顯示以方便直播 (及後按 <Esc> 切換下方UI顯示).\n1. 完成及隱藏UI\nX. 完成"
 					}
 				}
 			},
@@ -528,9 +535,9 @@
 				"info": {
 					"ML_on": {
 						"_translation_": {
-							"_default_": "- To record motion during mocap, change options or turn mocap off, double-click this item.\n- Press Pause key to pause (delayed)/resume mocap, Ctrl+Pause to toggle mocap on/off.",
-							"ja": "- モーションを記録したり、オプションを変更したり、モーキャプをオフにしたりするには、ここをダブルクリックします。\n- モーキャプを一時停止(遅延あり)/再開するには Pause キーを押し、オン/オフを切り替えるには Ctrl+Pause を押します。",
-							"zh": "- 要記錄動作、更改設定或關閉動捕，按此兩下。\n- 按Pause鍵暫停(數秒延遲)/恢復動捕，按「Ctrl+Pause」鍵開啟/關閉動捕。"
+							"_default_": "- To record motion during mocap, change options or turn mocap off, double-click this item.\n- Press Pause key to pause (delayed)/resume mocap, <hotkey> to toggle mocap on/off.",
+							"ja": "- モーションを記録したり、オプションを変更したり、モーキャプをオフにしたりするには、ここをダブルクリックします。\n- モーキャプを一時停止(遅延あり)/再開するには Pause キーを押し、オン/オフを切り替えるには <hotkey> を押します。",
+							"zh": "- 要記錄動作、更改設定或關閉動捕，按此兩下。\n- 按Pause鍵暫停(數秒延遲)/恢復動捕，按「<hotkey>」鍵開啟/關閉動捕。"
 						},
 						"camera_off": {
 							"_translation_": {
@@ -659,9 +666,9 @@
 				},
 				"mocap_options": {
 					"_translation_": {
-						"_default_": "1. Body tracking options\n2. Hand tracking options\n3. Face tracking options\n4. Object tracking optionsⓋ\n5. Mocap data smoothing: <smoothing>\n6. Upper body blend modeⓋ: <upper_body_blend_mode>\n7. Webcam angle offset correction\n8. Clear bounding box",
-						"ja": "1. ボディトラッキング設定\n2. ハンドトラッキング設定\n3. フェイストラッキング設定\n4. オブジェクトトラッキング設定Ⓥ\n5. モーキャプデータ平滑化: <smoothing>\n6. 上半身ブレンドモードⓋ: <upper_body_blend_mode>\n7. Webカメラの角度オフセット補正\n8. 境界ボックスをクリアする",
-						"zh": "1. 身體追蹤設定\n2. 手部追蹤設定\n3. 面部追蹤設定\n4. 物體追蹤設定Ⓥ\n5. 動作捕捉數據平滑化: <smoothing>\n6. 上半身混合模式Ⓥ: <upper_body_blend_mode>\n7. 攝影機角度偏移補正\n8. 清除邊界框"
+						"_default_": "1. Body tracking options\n2. Hand tracking options\n3. Face tracking options\n4. Object tracking optionsⓋ\n5. Mocap data smoothing: <smoothing>\n6. Upper body blend modeⓋ: <upper_body_blend_mode>\n7. Hide on tracking loss: <hide_avatar_on_tracking_loss>\n8. Webcam angle offset correction\n9. Clear bounding box",
+						"ja": "1. ボディトラッキング設定\n2. ハンドトラッキング設定\n3. フェイストラッキング設定\n4. オブジェクトトラッキング設定Ⓥ\n5. モーキャプデータ平滑化: <smoothing>\n6. 上半身ブレンドモードⓋ: <upper_body_blend_mode>\n7. 追跡喪失時にアバターを隠す: <hide_avatar_on_tracking_loss>\n8. Webカメラの角度オフセット補正\n9. 境界ボックスをクリアする",
+						"zh": "1. 身體追蹤設定\n2. 手部追蹤設定\n3. 面部追蹤設定\n4. 物體追蹤設定Ⓥ\n5. 動作捕捉數據平滑化: <smoothing>\n6. 上半身混合模式Ⓥ: <upper_body_blend_mode>\n7. 動捕失效時隱藏人物: <hide_avatar_on_tracking_loss>\n8. 攝影機角度偏移補正\n9. 清除邊界框"
 					},
 					"body_tracking_options": {
 						"AI_model_quality": {
@@ -703,6 +710,20 @@
 									"_default_": "Shoulder tracking:\nWhen enabled, shoulder motion and shrugging will be tracked. Note that shrug tracking requires face tracking enabled. Default is \"ON\".",
 									"ja": "肩トラッキング:\n有効にすると、肩の動きと肩をすくめる動作が追跡されます。 肩をすくめるトラッキングには顔トラッキングが有効になっている必要があることに注意してください。 デフォルトは「ON」です。",
 									"zh": "肩動作捕捉:\n當此設定為有效時，肩膀的動作會被捕捉。 要捕捉聳肩動作的話，面部追蹤也要同時開啟。 預設是「ON」。"
+								}
+							}
+						},
+						"shoulder_angle_offset": {
+							"_translation_": {
+								"_default_": "Shoulder angle offset",
+								"ja": "肩角オフセット",
+								"zh": "肩角偏移"
+							},
+							"tooltip": {
+								"_translation_": {
+									"_default_": "Either shoulder may appear higher or lower than expected during mocap due to webcam placement, posture or other reasons. Use this setting to apply an angle offset on the target shoulder (positive angle raises left shoulder). Default is 0°.",
+									"ja": "ウェブカメラの配置、姿勢、その他の理由により、モーキャプ中にどちらかの肩が想定よりも高くまたは低く表示されることがあります。 この設定を使用して、ターゲットの肩に角度オフセットを適用します（正の角度にすると左肩が上がります）。 デフォルトは0°です。",
+									"zh": "由於網路攝影機位置、姿勢或其他原因，在動捕過程中，單側肩部可能會顯得比預期更高或更低。 使用此設定可在目標肩膀上套用角度偏移（正角度會抬高左肩）。 預設值為 0°"
 								}
 							}
 						},
@@ -756,9 +777,9 @@
 							},
 							"tooltip": {
 								"_translation_": {
-									"_default_": "Body bend reduction:\nSometimes the mocap AI may misrecognize your body gesture as bending forward or backward, especially when you are close to the camera. When enabled, this option reduces the bending of avatar's body by a certain ratio. Default is \"OFF\".",
-									"ja": "体の曲がりを軽減する:\n特にカメラに近づいている場合、モーションキャプチャ AI が体のジェスチャを前屈または後屈と誤認識することがあります。 このオプションを有効にすると、アバターの体の曲がりが一定の比率で軽減されます。 デフォルトは「OFF」です。",
-									"zh": "減少身體前後彎曲:\n有時動捕 AI 會誤認身體為前傾或後傾，尤其當你較接近鏡頭的時候。 更改此設定的比例以減少人物身體前後彎曲的情況。 預設是「OFF」。"
+									"_default_": "Body bend reduction:\nSometimes the mocap AI may misrecognize your body gesture as bending forward or backward, especially when you are close to the camera. When enabled, this option reduces the bending of avatar's body by a certain ratio. Default is \"Small\".",
+									"ja": "体の曲がりを軽減する:\n特にカメラに近づいている場合、モーションキャプチャ AI が体のジェスチャを前屈または後屈と誤認識することがあります。 このオプションを有効にすると、アバターの体の曲がりが一定の比率で軽減されます。 デフォルトは「小」です。",
+									"zh": "減少身體前後彎曲:\n有時動捕 AI 會誤認身體為前傾或後傾，尤其當你較接近鏡頭的時候。 更改此設定的比例以減少人物身體前後彎曲的情況。 預設是「小」。"
 								}
 							}
 						},
@@ -1501,9 +1522,9 @@
 							},
 							"tooltip": {
 								"_translation_": {
-									"_default_": "AI model inference device:\nThis option determines whether to use CPU or GPU to run the face tracking model. While GPU inference is slightly faster, face tracking model is fairly optimized for CPU, and by using CPU instead, you save some valuable GPU resources usable for other tasks. Default is \"CPU\".",
-									"ja": "AIモデル推論装置:\nこのオプションは、顔追跡モデルを実行するために CPU を使用するか GPU を使用するかを決定します。 GPU 推論の方がわずかに高速ですが、顔追跡モデルは CPU 用にかなり最適化されており、代わりに CPU を使用することで、他のタスクに使用できる貴重な GPU リソースを節約できます。 デフォルトは「CPU」です。",
-									"zh": "AI模型推理裝置:\n此選項決定是使用CPU還是GPU來運行人臉追蹤模型。 雖然 GPU 推理速度稍快，但臉部追蹤模型針對 CPU 進行了相當最佳化，透過使用 CPU，您可以節省一些可用於其他任務的寶貴 GPU 資源。 預設為「CPU」。"
+									"_default_": "AI model inference device:\nThis option determines whether to use CPU or GPU to run the face tracking model. While GPU inference is slightly faster, face tracking model is fairly optimized for CPU, and by using CPU instead, you save some valuable GPU resources usable for other tasks. Default is \"<inference_mode>\".",
+									"ja": "AIモデル推論装置:\nこのオプションは、顔追跡モデルを実行するために CPU を使用するか GPU を使用するかを決定します。 GPU 推論の方がわずかに高速ですが、顔追跡モデルは CPU 用にかなり最適化されており、代わりに CPU を使用することで、他のタスクに使用できる貴重な GPU リソースを節約できます。 デフォルトは「<inference_mode>」です。",
+									"zh": "AI模型推理裝置:\n此選項決定是使用CPU還是GPU來運行人臉追蹤模型。 雖然 GPU 推理速度稍快，但臉部追蹤模型針對 CPU 進行了相當最佳化，透過使用 CPU，您可以節省一些可用於其他任務的寶貴 GPU 資源。 預設為「<inference_mode>」。"
 								}
 							}
 						},
@@ -1934,13 +1955,6 @@
 						"zh": "- VMC發送器將動作數據發送到其他支援的應用程式，如VSeeFace、VNyan、Warudo、Unity 及 Unreal Engine 等。\n- VMC接收器從外部應用程式接收動作數據。\n- 按兩下進行設定。\n- 以滑鼠或英數字鍵選擇選項。"
 					}
 				},
-				"tooltip": {
-					"_translation_": {
-						"_default_": "VMC-protocol:\nVMC-protocol allows sending 3D motion data in real time from XR Animator to other supported apps, such as VSeeFace, VNyan, Warudo, Unity and Unreal Engine. Default is \"OFF\".",
-						"ja": "VMCプロトコル:\nVMCプロトコルを使用すると、XR Animatorから他のサポートされているアプリ (VSeeFace、VNyan、Warudo、Unity、Unreal Engine など) に 3D モーション データをリアルタイムで送信できます。 デフォルトは「OFF」です。",
-						"zh": "VMC協定:\nVMC協定容許 XR Animator 將 3D 動作數據實時傳送到其他應用程式，如VSeeFace、VNyan、Warudo、Unity 及 Unreal Engine 等。 預設是「OFF」。"
-					}
-				},
 				"parameters": {
 					"_translation_": {
 						"_default_": "VMC sender parameters",
@@ -1950,9 +1964,9 @@
 				},
 				"not_supported": {
 					"_translation_": {
-						"_default_": "This feature is available only for Windows/Linux app version using VRM model.",
-						"ja": "この機能はVRMモデルを使用したWindows/Linuxアプリ版でのみ利用可能です。",
-						"zh": "此功能僅適用於使用 VRM 模型的 Windows/Linux 應用程式版本。"
+						"_default_": "This feature is available only for VRM model.",
+						"ja": "この機能は VRM モデルでのみ使用できます。",
+						"zh": "此功能僅適用於 VRM 模型。"
 					}
 				},
 				"port": {
@@ -2025,24 +2039,52 @@
 						}
 					}
 				},
+				"protocol": {
+					"_translation_": {
+						"_default_": "Protocol",
+						"ja": "プロトコル",
+						"zh": "協定"
+					},
+					"tooltip": {
+						"_translation_": {
+							"_default_": "Protocol:\nMost apps that support VMC protocol use UDP (User Datagram Protocol) as the network protocol. However, in some cases, such as when connecting XRA web app / mobile app to the desktop version, you will need to use WebSocket protocol instead. Default is \"UDP\".",
+							"ja": "プロトコル:\nVMCプロトコルをサポートするほとんどのアプリは、ネットワークプロトコルとしてUDP（User Datagram Protocol）を使用します。 ただし、XRAウェブアプリ／モバイルアプリをデスクトップ版に接続する場合など、一部のケースではWebSocketプロトコルを使用する必要があります。 デフォルトは「UDP」です。",
+							"zh": "協定:\n大多數支援 VMC 協定的應用程式皆使用 UDP（User Datagram Protocol）作為網路協定。 但是，在某些情況下，例如將 XRA 網頁版/行動版應用程式連接到桌面版時，您需要使用 WebSocket 協定。 預設為「UDP」。"
+						}
+					}
+				},
 				"port_host_extra": {
 					"_translation_": {
-						"_default_": "・Press R to reset to default\n・Press Enter to apply changes\n・Press Esc to cancel",
-						"ja": "・Rを押してデフォルトにリセットします\n・Enterを押して変更を適用します\n・Escを押してキャンセルします",
-						"zh": "・按 R 重置到預設狀態\n・按 Enter 接受更改\n・接 Esc 取消"
+						"_default_": "・Press <R> to reset to default\n・Press <Enter> to apply changes\n・Press <Esc> to cancel",
+						"ja": "・<R>を押してデフォルトにリセットします\n・<Enter>を押して変更を適用します\n・<Esc>を押してキャンセルします",
+						"zh": "・按 <R> 重置到預設狀態\n・按 <Enter> 接受更改\n・接 <Esc> 取消"
+					}
+				},
+				"send_avatar_data": {
+					"_translation_": {
+						"_default_": "Send 3D avatar data",
+						"ja": "3D アバターデータを送信",
+						"zh": "傳送 3D 人物數據"
+					},
+					"tooltip": {
+						"_translation_": {
+							"_default_": "Send 3D avatar data:\nVMC-protocol allows sending 3D motion data in real time from XR Animator to other supported apps, such as VSeeFace, VNyan, Warudo, Unity and Unreal Engine. Turn on this setting to send 3D avatar data. Default is \"OFF\".",
+							"ja": "3D アバターデータを送信:\nVMCプロトコルを使用すると、XR Animatorから他のサポートされているアプリ (VSeeFace、VNyan、Warudo、Unity、Unreal Engine など) に 3D モーション データをリアルタイムで送信できます。 3Dアバターデータを送信するには、この設定をオンにします。 デフォルトは「OFF」です。",
+							"zh": "傳送 3D 人物數據:\nVMC協定容許 XR Animator 將 3D 動作數據實時傳送到其他應用程式，如VSeeFace、VNyan、Warudo、Unity 及 Unreal Engine 等。 開啟此設定可以傳送 3D 人物數據。 預設是「OFF」。"
+						}
 					}
 				},
 				"send_camera_data": {
 					"_translation_": {
-						"_default_": "Send camera data",
-						"ja": "カメラデータを送信する",
-						"zh": "傳送攝影機數據"
+						"_default_": "Send 3D camera data",
+						"ja": "3D カメラデータを送信",
+						"zh": "傳送 3D 攝影機數據"
 					},
 					"tooltip": {
 						"_translation_": {
-							"_default_": "Send camera data:\nWhen VMC-protocol is on, this option sends 3D camera data as well. Some VTubing apps such as VNyan and Warudo support reading VMC camera data. This virtually allows a complete synchronization of motion and camera visual between XR Animator and external app. Default is \"OFF\".",
-							"ja": "カメラデータを送信する:\nVMCプロトコルがオンの場合、このオプションは 3D カメラ データも送信します。 VNyan や Warudo などの一部の VTuber アプリは、VMC カメラ データの読み取りをサポートしています。 これにより、XR Animator と外部アプリの間でモーションとカメラのビジュアルを仮想的に完全に同期できます。 デフォルトは「OFF」です。",
-							"zh": "傳送攝影機數據:\n當使用 VMC協定時，啟動此選項可以同時傳送 3D 攝影機數據。 部份 VTubing 軟件如 VNyan 及 Warudo 等支援讀取 VMC 攝影機數據。 這可達至 XR Animator 和外部程式的動作和鏡頭完全同步。 預設是「OFF」。"
+							"_default_": "Send 3D camera data:\nTurn on this setting to send 3D camera data via VMC protocol. Some VTubing apps such as VNyan and Warudo support reading VMC camera data. This virtually allows a complete synchronization of motion and camera visual between XR Animator and external app. Default is \"OFF\".",
+							"ja": "3D カメラデータを送信:\nこの設定をオンにすると、3D カメラ データが VMC プロトコル経由で送信されます。 VNyan や Warudo などの一部の VTuber アプリは、VMC カメラ データの読み取りをサポートしています。 これにより、XR Animator と外部アプリの間でモーションとカメラのビジュアルを仮想的に完全に同期できます。 デフォルトは「OFF」です。",
+							"zh": "傳送 3D 攝影機數據:\n開啟此設定可透過 VMC 協定傳送 3D 攝影機數據。 部份 VTubing 軟件如 VNyan 及 Warudo 等支援讀取 VMC 攝影機數據。 這可達至 XR Animator 和外部程式的動作和鏡頭完全同步。 預設是「OFF」。"
 						}
 					}
 				},
@@ -2302,9 +2344,9 @@
 				},
 				"info": {
 					"_translation_": {
-						"_default_": "- Double-click for UI settings and other options.\n- Press Esc key to close speech bubble menu, or toggle UI when no menu is on.\n- Use mouse or keys to pick an alphanumeric option.",
-						"ja": "- ダブルクリックして UI 設定やその他のオプションを変更します。\n- Esc キーを押して吹き出しメニューを閉じるか、メニューが表示されていない場合は UI を切り替えます。\n- マウスまたは英数字キーを使用してオプションを選択する。",
-						"zh": "- 按兩下更改介面設定及其他選項。\n- 按 Esc 鍵關閉對話框選單，或於沒有選單時切換介面顯示。\n- 以滑鼠或英數字鍵選擇選項。"
+						"_default_": "- Double-click for UI settings and other options.\n- Press <Esc> key to close speech bubble menu, or toggle UI when no menu is on.\n- Use mouse or keys to pick an alphanumeric option.",
+						"ja": "- ダブルクリックして UI 設定やその他のオプションを変更します。\n- <Esc> キーを押して吹き出しメニューを閉じるか、メニューが表示されていない場合は UI を切り替えます。\n- マウスまたは英数字キーを使用してオプションを選択する。",
+						"zh": "- 按兩下更改介面設定及其他選項。\n- 按 <Esc> 鍵關閉對話框選單，或於沒有選單時切換介面顯示。\n- 以滑鼠或英數字鍵選擇選項。"
 					}
 				},
 				"UI_and_overlays": {
@@ -3057,11 +3099,18 @@
 								"zh": " 切換腰間攝影機模式"
 							}
 						},
+						"mocap_toggle": {
+							"_translation_": {
+								"_default_": " to toggle mocap on/off",
+								"ja": "でモーキャプのオン/オフを切り替る",
+								"zh": " 開啟/關閉動作捕捉"
+							}
+						},
 						"extra": {
 							"_translation_": {
-								"_default_": "・✔️Ctrl+L to toggle 3D camera lock\n・✔️Ctrl+M to mirror the current pose\n・✔️Pause to pause (delayed)/resume mocap\n・✔️Ctrl+Pause to toggle mocap on/off\n・✔️F9 to start video capture\n・✔️F10 to stop video capture\n・✔️F12 to capture still shot\nA. ✔️<switch_avatar_model> to switch avatar model",
-								"ja": "・✔️Ctrl+Lで3Dカメラのロックを切り替える\n・✔️Ctrl+Mで現在のポーズをミラーリングする\n・✔️Pauseでモーキャプを一時停止(遅延あり)/再開する\n・✔️Ctrl+Pauseでモーキャプのオン/オフを切り替る\n・✔️F9でビデオキャプチャを開始する\n・✔️F10でビデオキャプチャを停止する\n・✔️F12で静止画をキャプチャする\nA. ✔️<switch_avatar_model>でアバターモデルを切り替える",
-								"zh": "・✔️Ctrl+L 切換鎖定3D鏡頭模式\n・✔️Ctrl+M 鏡像化現在的姿勢\n・✔️Pause 暫停(數秒延遲)/重開動作捕捉\n・✔️Ctrl+Pause 開啟/關閉動作捕捉\n・✔️F9 開始螢幕錄影\n・✔️F10 停止螢幕錄影\n・✔️F12 截圖\nA. ✔️<switch_avatar_model> 切換人物模型"
+								"_default_": "・✔️Ctrl+L to toggle 3D camera lock\n・✔️Ctrl+M to mirror the current pose\n・✔️Pause to pause (delayed)/resume mocap\n・✔️F9 to start video capture\n・✔️F10 to stop video capture\n・✔️F12 to capture still shot\nA. ✔️<switch_avatar_model> to switch avatar model",
+								"ja": "・✔️Ctrl+Lで3Dカメラのロックを切り替える\n・✔️Ctrl+Mで現在のポーズをミラーリングする\n・✔️Pauseでモーキャプを一時停止(遅延あり)/再開する\n・✔️F9でビデオキャプチャを開始する\n・✔️F10でビデオキャプチャを停止する\n・✔️F12で静止画をキャプチャする\nA. ✔️<switch_avatar_model>でアバターモデルを切り替える",
+								"zh": "・✔️Ctrl+L 切換鎖定3D鏡頭模式\n・✔️Ctrl+M 鏡像化現在的姿勢\n・✔️Pause 暫停(數秒延遲)/重開動作捕捉\n・✔️F9 開始螢幕錄影\n・✔️F10 停止螢幕錄影\n・✔️F12 截圖\nA. ✔️<switch_avatar_model> 切換人物模型"
 							},
 							"switch_avatar_model": {
 								"tooltip": {
@@ -3565,6 +3614,13 @@
 						"ja": "- <hand_camera_hotkey> を押すかダブルクリックすると、モーキャプ中に手をカメラとして使用します (状態: <hand_camera_status>)。\n- 繰り返して左手、右手、OFFを切り替えます。\n- <selfie_mode_hotkey> を押して「自撮りモード」を切り替える (状態: <selfie_mode_status>)。\n- キー<auto_look_at_camera_hotkey>で️自動「カメラを見る」を切り替える (状態: <auto_look_at_camera_status>)",
 						"zh": "- 按 <hand_camera_hotkey> / 按兩下以使用手部作攝影機 (狀態: <hand_camera_status>).\n- 重複操作在左手、右手、及OFF之間作切換。\n- 按 <selfie_mode_hotkey> 切換自動對焦面部的自拍模式 (狀態: <selfie_mode_status>)。\n- 按 <auto_look_at_camera_hotkey> 切換自動「望向鏡頭」模式 (狀態: <auto_look_at_camera_status>)。"
 					},
+					"mobile_sensor_mode": {
+						"_translation_": {
+							"_default_": "- Dblclick to toggle \"Mobile sensor mode\", adding extra rotational control to 3D camera via mobile sensor.\n- Click screen quickly to toggle \"Rotation mode\". \"Standing\" rotates with position fixed. \"Orbiting\" revolves around the avatar.\n- Turn on any mocap mode (camera not required) to switch to selfie mode during \"Orbiting\" rotation mode.",
+							"ja": "- ダブルクリックして「モバイル センサー モード」を切り替え、モバイル センサーを介して 3D カメラに追加の回転制御を追加します。\n- 画面をすばやくクリックすると、「回転モード」が切り替わり、カメラの位置が固定されるか、アバターの周りを回転します。\n- 任意のモーキャプ モードをオンにして (カメラは不要)、「Orbiting」回転モード中にセルフィー モードに切り替えます。",
+							"zh": "- 雙擊切換「移動感應器模式」，並透過移動感應器為 3D 相機添加額外的旋轉控制。\n- 快速點擊螢幕切換「旋轉模式」。 「Standing」時相機在位置固定情況下旋轉。 「Orbiting」時相機圍繞角色旋轉。\n- 開啟任何動捕模式（不需要相機）即可在「Orbiting」旋轉模式下切換至自拍模式。"
+						}
+					},
 					"left_hand": {
 						"_translation_": {
 							"_default_": "left hand",
@@ -3719,9 +3775,17 @@
 			},
 			"camera": {
 				"_translation_": {
-					"_default_": "Drag to rotate 3D camera. Hold Ctrl key to pan. Double-click to reset.",
-					"ja": "ドラッグして 3D カメラを回転します。 Ctrl キーを押したままパンします。 ダブルクリックしてリセットします。",
-					"zh": "拖曳以旋轉 3D 攝影機。 同持按住 Ctrl 鍵作平移。 按兩下重置攝影機。"
+					"_default_": "Drag to rotate 3D camera, mouse scroll to zoom, Ctrl key to pan. Double-click to reset.",
+					"ja": "ドラッグして 3D カメラを回転させ、マウスでスクロールしてズームし、Ctrl キーでパンします。 ダブルクリックしてリセットします。",
+					"zh": "拖曳可旋轉 3D 相機，滑鼠滾動可縮放，Ctrl 鍵可平移。 按兩下重置。"
+				},
+				"mobile": {
+					"_translation_": {
+						"_default_": "Touch and drag to rotate 3D camera, 2 fingers to zoom, 3 fingers to pan. Double-click to reset.",
+						"ja": "タッチしてドラッグすると 3D カメラが回転し、2 本の指でズーム、3 本の指でパンします。 ダブルクリックしてリセットします。",
+						"zh": "觸碰並拖曳可旋轉 3D 相機，2 根手指可縮放，3 根手指可平移。 按兩下重置。"
+					}
+
 				}
 			},
 			"move": {
