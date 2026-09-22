@@ -268,9 +268,25 @@ def _optimize_v4l2_device(device_spec: str) -> dict:
             check=False,
         )
         applied = result.returncode == 0
+        used_ctrl = "exposure_dynamic_framerate"
+
+        if not applied:
+            # Fallback for standard UVC devices (e.g. Logitech)
+            result_uvc = subprocess.run(
+                [v4l2_ctl, "-d", dev_str, "-c", "exposure_auto_priority=0"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=0.6,
+                check=False,
+            )
+            if result_uvc.returncode == 0:
+                applied = True
+                used_ctrl = "exposure_auto_priority"
+
         return {
             "available": True,
             "applied": applied,
+            "control": used_ctrl if applied else None,
             "reason": "control_applied" if applied else "control_unsupported",
         }
     except subprocess.TimeoutExpired:

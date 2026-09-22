@@ -74,6 +74,8 @@ def open_browser_when_ready(port: int, chat: bool) -> None:
                     "--disable-background-timer-throttling",
                     "--disable-renderer-backgrounding",
                     "--disable-backgrounding-occluded-windows",
+                    "--ignore-gpu-blocklist",
+                    "--enable-gpu-rasterization",
                 ]
 
                 if gpu_pref == "high-performance":
@@ -81,7 +83,6 @@ def open_browser_when_ready(port: int, chat: bool) -> None:
                     env["__NV_PRIME_RENDER_OFFLOAD"] = "1"
                     env["__GLX_VENDOR_LIBRARY_NAME"] = "nvidia"
                     env["__VK_LAYER_NV_optimus"] = "NVIDIA_only"
-                    nw_cmd.extend(["--ignore-gpu-blocklist", "--enable-gpu-rasterization"])
                 else:
                     print(f"[XRA] Launching NW.js runtime with System / Integrated GPU ({gpu_pref})")
                     # DRI_PRIME=0 is rejected by Mesa ("Should be > 0"); remove it
