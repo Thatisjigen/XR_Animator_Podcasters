@@ -1208,7 +1208,7 @@
     statusRow.style.marginTop = '6px';
     statusRow.style.background = 'rgba(255,255,255,0.05)';
     statusRow.style.borderRadius = '4px';
-    statusRow.innerHTML = 'Props: <b>cell_phone</b>, <b>cup</b>, <b>microphone</b><br><span style="opacity:0.8">Anti-drop hold active: props stay in hand until lowered to desk.</span>';
+    statusRow.innerHTML = 'Props: <b>17 objects</b> (COCO classes)<br><span style="opacity:0.8">Anti-drop hold active: props stay in hand until lowered to desk.</span>';
     box.body.appendChild(statusRow);
 
     const resetBtn = button('↺ Reset props to desk');
@@ -1223,9 +1223,23 @@
     gripBox.details.style.marginTop = '8px';
 
     const propSelect = select([
-      ['cell_phone', 'Smartphone (cell_phone)'],
-      ['cup', 'Cup / Bottle (cup)'],
-      ['microphone', 'Microphone (microphone)'],
+      ['cell_phone', 'Smartphone'],
+      ['cup', 'Cup'],
+      ['microphone', 'Microphone'],
+      ['bottle', 'Bottle'],
+      ['book', 'Book'],
+      ['knife', 'Knife'],
+      ['fork', 'Fork'],
+      ['spoon', 'Spoon'],
+      ['scissors', 'Scissors'],
+      ['apple', 'Apple'],
+      ['orange', 'Orange'],
+      ['banana', 'Banana'],
+      ['donut', 'Donut'],
+      ['mouse', 'Mouse'],
+      ['laptop', 'Laptop'],
+      ['toothbrush', 'Toothbrush'],
+      ['vase', 'Vase'],
     ]);
     row(gripBox.body, 'Prop to adjust', propSelect);
 

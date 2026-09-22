@@ -34,31 +34,46 @@
     cell_phone: { pos: [-2.8, 8.05, 3.2], rot: [Math.PI / 2, 0, 0.15], scale: 1.0 },
     cup:        { pos: [ 2.8, 8.55, 3.2], rot: [0, 0, 0], scale: 1.0 },
     microphone: { pos: [ 0.0, 8.90, 2.6], rot: [0.35, 0, 0], scale: 1.0 },
+    bottle:     { pos: [ 4.0, 8.55, 3.2], rot: [0, 0, 0], scale: 1.0 },
+    book:       { pos: [-4.0, 8.05, 3.2], rot: [Math.PI / 2, 0, 0], scale: 1.0 },
+    knife:      { pos: [ 5.0, 8.05, 3.2], rot: [0, 0, 0.3], scale: 1.0 },
+    fork:       { pos: [ 5.5, 8.05, 3.2], rot: [0, 0, 0.3], scale: 1.0 },
+    spoon:      { pos: [ 6.0, 8.05, 3.2], rot: [0, 0, 0.3], scale: 1.0 },
+    apple:      { pos: [-5.0, 8.30, 3.2], rot: [0, 0, 0], scale: 1.0 },
+    orange:     { pos: [-5.5, 8.30, 3.2], rot: [0, 0, 0], scale: 1.0 },
+    banana:     { pos: [-6.0, 8.20, 3.2], rot: [0, 0, 0.5], scale: 1.0 },
+    scissors:   { pos: [ 1.5, 8.05, 3.2], rot: [0, 0, 0], scale: 1.0 },
+    mouse:      { pos: [-1.5, 8.10, 3.2], rot: [0, 0, 0], scale: 1.0 },
+    laptop:     { pos: [ 0.0, 8.05, 5.0], rot: [0, 0, 0], scale: 1.0 },
+    donut:      { pos: [-6.5, 8.30, 3.2], rot: [0, 0, 0], scale: 1.0 },
+    toothbrush: { pos: [ 6.5, 8.05, 3.2], rot: [0, 0, 0.3], scale: 1.0 },
+    vase:       { pos: [ 7.0, 8.55, 3.2], rot: [0, 0, 0], scale: 1.0 },
   };
 
   // Fine-tuned grip transforms in XR Animator world units relative to wrist bone:
   // Palm center is ~0.5 units (5cm) along the hand axis into the palm.
+  // Offsets relative to palm center (45% wrist->middle MCP)
   const PROP_GRIP_TRANSFORMS = {
     cell_phone: {
-      right: { pos: [-0.55, -0.15, 0.25], rot: [0.10, 0.25, -Math.PI / 2] },
-      left:  { pos: [ 0.55, -0.15, 0.25], rot: [0.10, -0.25, Math.PI / 2] },
+      right: { pos: [0.0, -0.02, 0.08], rot: [0.10, 0.15, -Math.PI / 2] },
+      left:  { pos: [0.0, -0.02, 0.08], rot: [0.10, -0.15, Math.PI / 2] },
       scale: 1.0,
     },
     cup: {
-      right: { pos: [-0.55, -0.20, 0.20], rot: [0.0, 0.10, 0.0] },
-      left:  { pos: [ 0.55, -0.20, 0.20], rot: [0.0, -0.10, 0.0] },
+      right: { pos: [0.0, -0.05, 0.04], rot: [0.0, 0.0, 0.0] },
+      left:  { pos: [0.0, -0.05, 0.04], rot: [0.0, 0.0, 0.0] },
       scale: 1.0,
     },
     microphone: {
-      right: { pos: [-0.45, -0.20, 0.30], rot: [-0.35, 0.20, -Math.PI / 2] },
-      left:  { pos: [ 0.45, -0.20, 0.30], rot: [-0.35, -0.20, Math.PI / 2] },
+      right: { pos: [0.0, -0.03, 0.06], rot: [-0.25, 0.10, -Math.PI / 2] },
+      left:  { pos: [0.0, -0.03, 0.06], rot: [-0.25, -0.10, Math.PI / 2] },
       scale: 1.0,
     },
   };
 
   const DEFAULT_GRIP = {
-    right: { pos: [-0.50, -0.15, 0.20], rot: [0, 0, -Math.PI / 2] },
-    left:  { pos: [ 0.50, -0.15, 0.20], rot: [0, 0, Math.PI / 2] },
+    right: { pos: [0.0, -0.02, 0.05], rot: [0, 0, -Math.PI / 2] },
+    left:  { pos: [0.0, -0.02, 0.05], rot: [0, 0, Math.PI / 2] },
     scale: 1.0,
   };
 
@@ -125,7 +140,6 @@
     const avatar = getAvatarModel();
     if (!avatar) return null;
     const isVRM = isVRMModel(avatar);
-
     if (isVRM) {
       const vrmBoneName = handSide === 'right' ? 'rightHand' : 'leftHand';
       return (
@@ -135,9 +149,48 @@
         avatar.get_bone_by_MMD_name?.(handSide === 'right' ? '右手首' : '左手首')
       );
     }
-    // MMD
     const mmdBoneName = handSide === 'right' ? '右手首' : '左手首';
     return avatar.get_bone_by_MMD_name?.(mmdBoneName) || avatar.mesh?.bones_by_name?.[mmdBoneName];
+  }
+
+  function getMiddleFingerBone(handSide) {
+    const avatar = getAvatarModel();
+    if (!avatar) return null;
+    if (isVRMModel(avatar)) {
+      const name = handSide === 'right' ? 'rightMiddleProximal' : 'leftMiddleProximal';
+      return (
+        avatar.getBoneNode?.(name) ||
+        avatar.model?.humanoid?.getNormalizedBoneNode?.(name) ||
+        avatar.model?.humanoid?.getBoneNode?.(name)
+      );
+    }
+    const mmd = handSide === 'right' ? '右中指１' : '左中指１';
+    return avatar.get_bone_by_MMD_name?.(mmd) || avatar.mesh?.bones_by_name?.[mmd] || null;
+  }
+
+  function getGripTransform(handSide) {
+    const THREE = getRuntimeThree();
+    if (!THREE) return null;
+    const wrist = getWristBone(handSide);
+    if (!wrist) return null;
+    try { wrist.updateWorldMatrix?.(true, false); } catch (_) {}
+    const pos = new THREE.Vector3();
+    const quat = new THREE.Quaternion();
+    const mid = getMiddleFingerBone(handSide);
+    if (mid) {
+      try { mid.updateWorldMatrix?.(true, false); } catch (_) {}
+      const wPos = new THREE.Vector3();
+      const mPos = new THREE.Vector3();
+      wrist.getWorldPosition(wPos);
+      mid.getWorldPosition(mPos);
+      // Grip point: 45% along wrist -> middle finger MCP
+      pos.lerpVectors(wPos, mPos, 0.45);
+      wrist.getWorldQuaternion(quat);
+    } else {
+      wrist.getWorldPosition(pos);
+      wrist.getWorldQuaternion(quat);
+    }
+    return { position: pos, quaternion: quat };
   }
 
   function getWristWorldPosition(handSide) {
@@ -360,17 +413,11 @@
     if (!THREE) return;
     for (const [propKey, prop] of Object.entries(activeProps)) {
       if (!prop.currentHand || !prop.mesh) continue;
-      const bone = getWristBone(prop.currentHand);
-      if (!bone) continue;
+      const grip = getGripTransform(prop.currentHand);
+      if (!grip) continue;
 
-      try {
-        bone.updateWorldMatrix?.(true, false);
-      } catch (e) {}
-
-      const wristPos = new THREE.Vector3();
-      const wristQuat = new THREE.Quaternion();
-      bone.getWorldPosition(wristPos);
-      bone.getWorldQuaternion(wristQuat);
+      const wristPos = grip.position;
+      const wristQuat = grip.quaternion;
 
       const userGrip = config.object_tracking?.grip?.[propKey] || {};
       const defaultGrip = PROP_GRIP_TRANSFORMS[propKey] || DEFAULT_GRIP;
@@ -469,10 +516,30 @@
     const detectedMap = {};
     for (const det of detections) {
       const cat = (det.category || '').toLowerCase();
+      // Map COCO class to prop key (loads props/<key>.glb)
+      const CLASS_TO_PROP = {
+        'cell phone': 'cell_phone', 'remote': 'cell_phone',
+        'cup': 'cup', 'wine glass': 'cup',
+        'bottle': 'bottle',
+        'microphone': 'microphone',
+        'book': 'book',
+        'laptop': 'laptop',
+        'scissors': 'scissors',
+        'knife': 'knife',
+        'fork': 'fork',
+        'spoon': 'spoon',
+        'apple': 'apple',
+        'orange': 'orange',
+        'banana': 'banana',
+        'donut': 'donut',
+        'mouse': 'mouse',
+        'toothbrush': 'toothbrush',
+        'vase': 'vase',
+      };
       let propKey = null;
-      if (cat.includes('phone')) propKey = 'cell_phone';
-      else if (cat.includes('cup') || cat.includes('bottle')) propKey = 'cup';
-      else if (cat.includes('mic')) propKey = 'microphone';
+      for (const [cls, key] of Object.entries(CLASS_TO_PROP)) {
+        if (cat.includes(cls)) { propKey = key; break; }
+      }
 
       if (propKey) {
         detectedMap[propKey] = det.hand || 'right';
