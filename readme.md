@@ -1,3 +1,79 @@
+# XR Animator — Podcasters Edition
+
+### Standalone, real-time AI motion capture and virtual studio optimized for Podcasters, Streamers, and VTubers on Linux & Desktop.
+
+> **Fork Notice & Attribution**:  
+> This project is an advanced, standalone fork of **[XR Animator](https://github.com/ButzYung/SystemAnimatorOnline)** created by **[ButzYung](https://github.com/ButzYung)** (Anime Theme).  
+> All original core credits, background story, licenses, and donation links to support ButzYung's foundational work are preserved in full below.
+
+---
+
+## 🌟 What Changes in Podcasters Edition (Key Differences from Upstream)
+
+The **Podcasters Edition** is specifically re-engineered for seated desktop setups, podcasts, multi-person streaming shows, and low-latency virtual production on Linux:
+
+### 1. 🎭 Native Python MediaPipe Backend & Parallel GPU Pipeline
+* **Native Python Tasks Engine**: Replaces browser-only WebGL/WASM inference with a high-throughput native Python backend powered by MediaPipe Tasks (`HolisticLandmarker`, `FaceLandmarker`, `PoseLandmarker`, `HandLandmarker`).
+* **Parallel GPU Split Engine**: Multi-threaded concurrent execution across separate GPU contexts for Face, Pose, and Hands.
+* **Full-Precision Model Support**: Automatic fetching and real-time execution of the `pose_landmarker_full` model for superior arm and shoulder accuracy.
+
+### 2. 🪑 Desk Seated Kinematics & Torso Guard
+* **Seated Posture Stabilization (Desk Guard)**: Synthesizes stable hips, spine, and lower-body anchors when sitting behind a table, eliminating the common AI mocap glitch where avatars bend backwards or collapse into the floor.
+* **Smart Arm Sync & Anti-Jerk Hysteresis**: Protects against tracking loss and anomalous coordinate jumps when elbows or wrists are occluded by desks or microphones.
+* **Automatic Arm Stabilization Switching**: Seamlessly adapts between Full-Body kinematics and Upper-Body mocap modes based on active posture.
+* **Biacromial Torso Anchor**: Maintains anatomically proportional torso framing even when leaning close to the camera.
+
+### 3. 📱 AR 3D Props & Physical Object Tracking
+* **Real-World Prop Snapping**: Tracks physical everyday objects (smartphones, cups, microphones, bottles, books, etc.) using COCO vision models and automatically snaps corresponding 3D `.glb` meshes to the nearest hand.
+* **Full 3D Transform Controls**: In-app fine-tuning of props with sliders for position (X/Y/Z), rotation (Pitch/Yaw/Roll), and scale per object.
+* **Smart Anti-Drop Hysteresis**: Objects remain firmly held while hands are raised in conversational gestures, detaching smoothly back to the desk surface only when hands are resting.
+* **Custom Prop Importer**: Drag-and-drop or upload custom 3D models via UI and link them to custom or standard trigger classes.
+
+### 4. 🏛️ Custom 3D Stages & Environments
+* **Stage Loader**: Import 3D stage environments (`.glb`, `.gltf`, `.fbx`, `.pmx`) with automated bounding-box centering and ground-level auto-alignment.
+* **Scene Controls**: Adjust stage translation, 360° rotation, and scaling directly from the Control Panel.
+
+### 5. 🎙️ Integrated Audio, Lip-Sync & Multi-Format Recording
+* **Native Audio Lip-Sync**: Real-time mouth shaping driven directly from your microphone stream.
+* **Smart Noise Gate**: Automatic room-noise calibration and adjustable dB thresholding.
+* **Local Studio Recorder**: Direct MP4/WebM recording with automatic file segmentation (every 30 or 60 minutes) and automated crash-recovery indexing.
+* **Parallel Uncompressed Audio Backup**: Automatically saves a pristine, lossless audio track alongside the video.
+
+### 6. 🌐 Studio Link (P2P Multi-User & OBS Integration)
+* **P2P Virtual Studio Link**: Host or join collaborative podcasts and multi-avatar streams with direct end-to-end encrypted WebRTC connections (with Nostr and PeerJS signaling).
+* **Wayland & OBS Native Camera Preview**: High-speed MJPEG loopback endpoint (`/__xra_obs/camera.mjpg`) and native Wayland desktop capture integration.
+
+### 7. 📡 VMC Protocol Overhaul (Upstream ButzYung Sync)
+* **Dual Transport**: Supports standard UDP broadcast (for local desktop software like VNyan, Warudo, VSeeFace) and WebSocket streams (for remote/browser clients).
+* **Granular Streaming**: Independent toggles for Avatar bones and 3D Virtual Camera data.
+* **Warudo VRM1 Compatibility**: Full support for VRM 1.0 blendshape nomenclature.
+
+### 8. ⚡ Thermal Management & Linux Optimization
+* **Thermal Headroom Control**: Profiles for Maximum Smoothness, Balanced (-25%), and Power Saving (-50%) to prevent hardware throttling on laptops.
+* **CPU Core Pinning**: Binds compute threads to Linux performance cores (P-cores), bypassing hyper-threading jitter.
+* **Flexible AI Resolution**: Dynamic scaling from 240p to native input resolution.
+
+---
+
+## 🚀 Getting Started (Linux)
+
+### Running from Source:
+```bash
+# 1. Install dependencies and build launcher
+./build.sh
+
+# 2. Start XR Animator Podcasters
+python3 xr_launcher.py
+```
+
+### Running the Bundled Release:
+```bash
+./release/XR_Animator_Bundled/XR_Animator
+```
+
+---
+
+
 ﻿# XR Animator
 
 ### Full-body, real-time motion tracking with a single webcam, on your PC and web browser
