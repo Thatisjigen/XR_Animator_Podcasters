@@ -52,7 +52,6 @@
 
   // Fine-tuned grip transforms in XR Animator world units relative to wrist bone:
   // Palm center is ~0.5 units (5cm) along the hand axis into the palm.
-  // Offsets relative to palm center (45% wrist->middle MCP)
   const PROP_GRIP_TRANSFORMS = {
     cell_phone: {
       right: { pos: [0.0, -0.02, 0.08], rot: [0.10, 0.15, -Math.PI / 2] },
@@ -183,7 +182,6 @@
       const mPos = new THREE.Vector3();
       wrist.getWorldPosition(wPos);
       mid.getWorldPosition(mPos);
-      // Grip point: 45% along wrist -> middle finger MCP
       pos.lerpVectors(wPos, mPos, 0.45);
       wrist.getWorldQuaternion(quat);
     } else {
@@ -267,16 +265,33 @@
       loader.load(
         url,
         (result) => {
-          activeStageMesh = isFBX ? result : (result.scene || result.scenes?.[0]);
-          if (!activeStageMesh) return;
-          activeStageMesh._xra_path = path;
+          const rawMesh = isFBX ? result : (result.scene || result.scenes?.[0]);
+          if (!rawMesh) return;
 
-          // Lights are scene-global in Three.js even when parented to the
-          // stage.  Do not inject helper lights here: they also illuminate the
-          // avatar and every loaded prop, changing the user's established look.
           const THREE = getRuntimeThree();
 
-          activeStageMesh.traverse((node) => {
+          const stageGroup = new THREE.Group();
+          stageGroup._xra_path = path;
+
+          rawMesh.position.set(0, 0, 0);
+          rawMesh.rotation.set(0, 0, 0);
+          rawMesh.scale.set(1, 1, 1);
+          rawMesh.updateMatrixWorld?.(true);
+
+          if (THREE?.Box3) {
+            try {
+              const bbox = new THREE.Box3().setFromObject(rawMesh);
+              if (!bbox.isEmpty()) {
+                const center = bbox.getCenter(new THREE.Vector3());
+                const minY = bbox.min.y;
+                rawMesh.position.set(-center.x, -minY, -center.z);
+              }
+            } catch (boxErr) {
+              console.warn(TAG, 'Auto-center failed:', boxErr);
+            }
+          }
+
+          rawMesh.traverse((node) => {
             if (node.isMesh) {
               node.frustumCulled = false;
               if (node.material) {
@@ -289,7 +304,9 @@
             }
           });
 
-          scene.add(activeStageMesh);
+          stageGroup.add(rawMesh);
+          scene.add(stageGroup);
+          activeStageMesh = stageGroup;
           updateStageTransform();
           console.log(TAG, 'Loaded 3D stage from:', path);
           events.emit('stage-updated', { enabled: true, path });
@@ -311,14 +328,17 @@
     if (!activeStageMesh) return;
     const stageConf = config.stage || {};
 
+    const offsetX = Number(stageConf.offset_x ?? 0.0);
     const offsetY = Number(stageConf.offset_y ?? 0.0);
     const offsetZ = Number(stageConf.offset_z ?? 0.0);
     const scale = Number(stageConf.scale ?? 1.0);
+    const rotX = Number(stageConf.rotation_x ?? 0.0) * (Math.PI / 180.0);
     const rotY = Number(stageConf.rotation_y ?? 0.0) * (Math.PI / 180.0);
+    const rotZ = Number(stageConf.rotation_z ?? 0.0) * (Math.PI / 180.0);
 
-    activeStageMesh.position.set(0, offsetY, offsetZ);
+    activeStageMesh.position.set(offsetX, offsetY, offsetZ);
     activeStageMesh.scale.set(scale, scale, scale);
-    activeStageMesh.rotation.set(0, rotY, 0);
+    activeStageMesh.rotation.set(rotX, rotY, rotZ);
   }
 
   async function listStages(force = false) {
@@ -413,11 +433,11 @@
     if (!THREE) return;
     for (const [propKey, prop] of Object.entries(activeProps)) {
       if (!prop.currentHand || !prop.mesh) continue;
-      const grip = getGripTransform(prop.currentHand);
-      if (!grip) continue;
+      const gripTransform = getGripTransform(prop.currentHand);
+      if (!gripTransform) continue;
 
-      const wristPos = grip.position;
-      const wristQuat = grip.quaternion;
+      const wristPos = gripTransform.position;
+      const wristQuat = gripTransform.quaternion;
 
       const userGrip = config.object_tracking?.grip?.[propKey] || {};
       const defaultGrip = PROP_GRIP_TRANSFORMS[propKey] || DEFAULT_GRIP;

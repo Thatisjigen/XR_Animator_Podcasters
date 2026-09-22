@@ -2564,66 +2564,89 @@
       isDefault: () => !config.stage?.path
     });
 
-    const heightWrap = el('div', 'xra-stack-control');
-    const heightInput = document.createElement('input');
-    heightInput.type = 'range'; heightInput.min = '-15.0'; heightInput.max = '15.0'; heightInput.step = '0.2';
-    const heightText = el('div', 'xra-sub');
-    heightWrap.append(heightInput, heightText);
-    bindRefresh(() => {
-      const v = Number(config.stage?.offset_y ?? 0.0);
-      heightInput.value = String(v);
-      heightText.textContent = `Floor level: ${v.toFixed(1)}`;
-    });
-    heightInput.oninput = () => {
-      config.stage ||= {};
-      config.stage.offset_y = Number(heightInput.value);
-      heightText.textContent = `Floor level: ${config.stage.offset_y.toFixed(1)}`;
-      XRA.stage?.updateTransform();
-    };
-    heightInput.onchange = async () => {
-      await XRA.profileService.save();
-    };
-    row(box.body, 'Floor height', heightWrap, {
-      reset: async () => {
-        config.stage ||= {};
-        config.stage.offset_y = 0.0;
-        XRA.stage?.updateTransform();
-      },
-      isDefault: () => Number(config.stage?.offset_y ?? 0.0) === 0.0,
-      sub: 'Adjusts vertical floor alignment with avatar feet and desk height.'
-    });
+    const makeStageRow = (label, key, min, max, step, defVal, sub = '') => {
+      const wrap = el('div', 'xra-stack-control');
+      const flex = el('div');
+      flex.style.cssText = 'display:flex;align-items:center;gap:8px;width:100%;';
 
-    const scaleWrap = el('div', 'xra-stack-control');
-    const scaleInput = document.createElement('input');
-    scaleInput.type = 'range'; scaleInput.min = '0.2'; scaleInput.max = '3.0'; scaleInput.step = '0.1';
-    const scaleText = el('div', 'xra-sub');
-    scaleWrap.append(scaleInput, scaleText);
-    bindRefresh(() => {
-      const v = Number(config.stage?.scale ?? 1.0);
-      scaleInput.value = String(v);
-      scaleText.textContent = `Scale: ${v.toFixed(1)}x`;
-    });
-    scaleInput.oninput = () => {
-      config.stage ||= {};
-      config.stage.scale = Number(scaleInput.value);
-      scaleText.textContent = `Scale: ${config.stage.scale.toFixed(1)}x`;
-      XRA.stage?.updateTransform();
-    };
-    scaleInput.onchange = async () => {
-      await XRA.profileService.save();
-    };
-    row(box.body, 'Stage scale', scaleWrap, {
-      reset: async () => {
-        config.stage ||= {};
-        config.stage.scale = 1.0;
-        XRA.stage?.updateTransform();
-      },
-      isDefault: () => Number(config.stage?.scale ?? 1.0) === 1.0
-    });
+      const slider = document.createElement('input');
+      slider.type = 'range';
+      slider.min = String(min);
+      slider.max = String(max);
+      slider.step = String(step);
+      slider.style.flex = '1';
 
+      const numInput = stopInputPropagation(document.createElement('input'));
+      numInput.type = 'number';
+      numInput.min = '-20000';
+      numInput.max = '20000';
+      numInput.step = String(step);
+      numInput.style.cssText = 'width:68px;padding:2px 4px;font-size:12px;text-align:right;background:#181c20;color:#eee;border:1px solid #444;border-radius:4px;';
+
+      flex.append(slider, numInput);
+      wrap.appendChild(flex);
+
+      bindRefresh(() => {
+        const val = Number(config.stage?.[key] ?? defVal);
+        slider.value = String(val);
+        numInput.value = String(val);
+      });
+
+      const commit = (val) => {
+        config.stage ||= {};
+        config.stage[key] = val;
+        slider.value = String(val);
+        numInput.value = String(val);
+        XRA.stage?.updateTransform();
+      };
+
+      slider.oninput = () => commit(Number(slider.value));
+      slider.onchange = async () => { await XRA.profileService.save(); };
+
+      numInput.oninput = () => {
+        const val = parseFloat(numInput.value);
+        if (!isNaN(val)) commit(val);
+      };
+      numInput.onchange = async () => { await XRA.profileService.save(); };
+
+      row(box.body, label, wrap, {
+        reset: async () => {
+          config.stage ||= {};
+          config.stage[key] = defVal;
+          XRA.stage?.updateTransform();
+        },
+        isDefault: () => Number(config.stage?.[key] ?? defVal) === defVal,
+        sub
+      });
+    };
+
+    makeStageRow('Position X', 'offset_x', -3000, 3000, 2.0, 0.0, 'Spostamento laterale (sinistra/destra).');
+    makeStageRow('Position Y', 'offset_y', -3000, 3000, 2.0, 0.0, 'Spostamento verticale (alto/basso).');
+    makeStageRow('Position Z', 'offset_z', -3000, 3000, 2.0, 0.0, 'Spostamento in profondità (avanti/indietro).');
+    makeStageRow('Stage scale', 'scale', 0.05, 50.0, 0.05, 1.0, 'Scala scenografia.');
+    makeStageRow('Rotation Y', 'rotation_y', -180, 180, 1, 0, 'Rotazione orizzontale (yaw).');
+    makeStageRow('Rotation X', 'rotation_x', -180, 180, 1, 0, 'Inclinazione avanti/dietro (pitch).');
+    makeStageRow('Rotation Z', 'rotation_z', -180, 180, 1, 0, 'Inclinazione laterale (roll).');
+
+    const btnRow = el('div', 'xra-actions');
+    const resetCenterBtn = button('↺ Reset stage position');
+    resetCenterBtn.onclick = async () => {
+      config.stage ||= {};
+      config.stage.offset_x = 0.0;
+      config.stage.offset_y = 0.0;
+      config.stage.offset_z = 0.0;
+      config.stage.rotation_x = 0.0;
+      config.stage.rotation_y = 0.0;
+      config.stage.rotation_z = 0.0;
+      config.stage.scale = 1.0;
+      XRA.stage?.updateTransform();
+      await XRA.profileService.save();
+      refreshAll();
+    };
     const refresh = button('↻ Refresh 3D stage files');
     refresh.onclick = () => { stagesLoaded = false; refreshStages(true); };
-    box.body.appendChild(refresh);
+    btnRow.append(resetCenterBtn, refresh);
+    box.body.appendChild(btnRow);
   }
 
   function downloadJSON(name, object) {
