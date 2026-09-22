@@ -1,5 +1,5 @@
 // MMD for System Animator
-// (2025-06-30)
+// (2025-08-24)
 
 var use_full_spectrum = true
 
@@ -6126,6 +6126,10 @@ anchor._data.update(anchor._data.obj);
     this.camera.position.getPositionFromMatrix(this.camera.matrix)
   }
 
+//const pqs = this.camera.matrix.decompose();
+//this.camera.position.copy(pqs[0]);
+//this.camera.quaternion.copy(pqs[1]);
+
   this.camera.updateMatrixWorld(true);
 }
 //else { DEBUG_show(0,0,1) }
@@ -6447,6 +6451,14 @@ static mod_list = {};
 static get_mod(id) {
   return Camera_mod.mod_list[id] || new Camera_mod(id);
 }
+
+static delete_mod(id) {
+  const mod = Camera_mod.mod_list[id];
+  if (mod) {
+    mod.adjust(v1.set(0,0,0), v2.set(0,0,0), 0);
+    delete Camera_mod.mod_list[id];
+  }
+}
       }
 
       window.addEventListener('MMDCameraReset_after', (e)=>{
@@ -6476,6 +6488,10 @@ return c_mod;
 
       get_mod: function (id) {
 return camera_mod.get_mod(id);
+      },
+
+      delete_mod: function (id) {
+camera_mod.delete_mod(id);
       },
 
       get_camera_base: function (ignore_list, update_camera_base) {
@@ -7125,7 +7141,7 @@ if (model.skin.time > 72/30) {
     );
 
     MMD_SA_options.Dungeon.item_base.power_up = {
-      icon_path: System.Gadget.path + '/images/_dungeon/item_icon.zip#/misc_icon/superpower_64x64.png'
+      icon_path: System.Gadget.path + '/images/cdungeon/item_icon.zip#/misc_icon/superpower_64x64.png'
      ,info_short: "????"
      ,index_default: MMD_SA_options.Dungeon.inventory.max_base-3
      ,stock_max: 1
@@ -7170,7 +7186,7 @@ MMD_SA._force_motion_shuffle = true
   { name:"explosion_purple_01", url:System.Gadget.path+'/images/sprite_sheet.zip#/explosions/explosion_03_strip13_v01-min.png', col:6, row:2, frame_count:12 },
   { name:"blood_01", url:System.Gadget.path+'/images/sprite_sheet.zip#/blood/blood_hit_splash-min.png', col:4, row:4, frame_count:16, scale:20 },
   { name:"hit_yellow_01", url:System.Gadget.path+'/images/sprite_sheet.zip#/hit/hit_yellow_v00-min.png', col:4, row:4, frame_count:16, scale:20 },
-  { name:"pointer_blue_01", url:System.Gadget.path+'/images/_dungeon/item_icon.zip#/misc_icon/arrow_down_blue_128x128.png', col:1, row:1, frame_count:1, scale:2 },
+  { name:"pointer_blue_01", url:System.Gadget.path+'/images/cdungeon/item_icon.zip#/misc_icon/arrow_down_blue_128x128.png', col:1, row:1, frame_count:1, scale:2 },
 
   { name:"explosion_red_01", url:System.Gadget.path+'/images/sprite_sheet.zip#/explosions/explosion_01_strip13_v01-min.png', col:6, row:2, frame_count:12 },
   { name:"explosion_sinestesia-01_03",  url:System.Gadget.path+'/images/sprite_sheet.zip#/explosions/explosion_sinestesia-01_03_v01-min.png', col:4, row:8, frame_count:32, scale:20, blending:"additive" },
@@ -9860,7 +9876,7 @@ setTimeout(()=>{
 //let _t=performance.now()
 
   const bone_msgs = [];
-  for (let name_VMC in VRMSchema.HumanoidBoneName) {
+  for (let name_VMC in ((MMD_SA.OSC.VMC.send_avatar_data) ? VRMSchema.HumanoidBoneName : {})) {
     const name = VRMSchema.HumanoidBoneName[name_VMC];
     const bone = this.getBoneNode(name);
     if (!bone) continue;
@@ -9894,9 +9910,10 @@ b_pos.x, b_pos.y, -b_pos.z,
       blendshape_weight[name] = v;
   }
 
-  for (const name in blendshape_weight) {
+  for (const name in ((MMD_SA.OSC.VMC.send_avatar_data) ? blendshape_weight : {})) {
     const name_for_blendshapes = (use_faceBlendshapes && this.faceBlendshapes_map_reversed[name]) || name;
     morph_msgs.push([
+// v0.34.4-b
 // Recent Warudo no longer uses VRM0 blendshape names for VRM1 model. Use VRM1 blendshape names for VRM1 model by default.
 this.blendshape_map_name(name_for_blendshapes, this.is_VRM1),
 
@@ -9990,6 +10007,8 @@ msg,
   MMD_SA.OSC.VMC.send(MMD_SA.OSC.VMC.Message("/VMC/Ext/OK", [1], 'i'));
 
 //  MMD_SA.OSC.VMC.send(MMD_SA.OSC.VMC.Message("/VMC/Ext/T", [Date.now()], 't'));
+
+  window.dispatchEvent(new CustomEvent('SA_MMD_VMC_send'));
 
   MMD_SA.OSC.VMC.ready = true;
 //System._browser.camera.DEBUG_show(performance.now()-_t);
@@ -13829,6 +13848,7 @@ else {
 //      tracks.push( new THREE.VectorKeyframeTrack( (!VRM_mode)?vrmNodeName:`${vrmNodeName}.${propertyName}`, track.times, value ) );
 
     }
+//else { console.log('NOTE: Unknown track type') }
 
   }
 
@@ -15189,6 +15209,34 @@ on_hit: colliders_for_hands.record_hit
 //colliders_for_hands.hip=null;
       },
 
+      getRotationAroundAxis: (()=>{
+        window.addEventListener('jThree_ready', ()=>{
+        });
+
+        return function (q, axis) {
+  // Vector part of the quaternion
+  const ra = new THREE.Vector3(q.x, q.y, q.z);
+  
+  // Project ra onto axis
+  const dot = ra.dot(axis);
+  const proj = axis.clone().multiplyScalar(dot);
+  
+  // Create twist quaternion
+  let twist = new THREE.Quaternion(proj.x, proj.y, proj.z, q.w).normalize();
+  
+  // Ensure twist axis points in the same direction (negate if needed)
+  if (dot < 0) {
+    twist.x = -twist.x;
+    twist.y = -twist.y;
+    twist.z = -twist.z;
+    twist.w = -twist.w;
+  }
+  
+//  return twist;
+return 2 * Math.acos(twist.w);
+        };
+      })(),
+
 // headless_mode
       press_key: function (k) {
 const ck = k.split('+');
@@ -15277,6 +15325,9 @@ if (!options.plugin) {
   };
 }
 
+if (!options.protocol)
+  options.protocol = (webkit_electron_mode) ? 'UDP' : 'WebSocket';
+
 this.options = options;
 this.options_default = Object.clone(options);
     }
@@ -15284,8 +15335,8 @@ this.options_default = Object.clone(options);
     #VMC_enabled=false;
     #VMC_initialized;
     #VMC_ready;
-    #VMC_sender_enabled=false;
-    #VMC_receiver_enabled=false;
+    #VMC_sender_enabled   = false;
+    #VMC_receiver_enabled = false;
     #VMC_delay = 0;
 
     get enabled() { return this.#VMC_enabled; }
@@ -15316,12 +15367,53 @@ if (this.#VMC_sender_enabled) {
 else {
   if (!this.#VMC_receiver_enabled)
     this.enabled = false;
+
+// a trick to allow reconnection to WebSocket server when enabled again
+  if (this.#VMC_initialized == 'WebSocket') {
+    this.#VMC_initialized = this.#VMC_ready = false;
+    this.vmc.close();
+    console.log('OSC/VMC plugin closed:WebSocket');
+  }
+
   DEBUG_show('(OSC/VMC sender:OFF)', 3)
 }
 
 // Warudo mode
 _OSC.VMC_camera.sender_enabled = v;
 _OSC.VMC_misc.sender_enabled = v;
+    }
+
+// default to null for backward compatibility
+    #VMC_send_avatar_data = null;
+// reset it to false for XRA v0.35.0+
+    set _send_avatar_data(v) { this.#VMC_send_avatar_data = !!v; }
+
+    get send_avatar_data() {
+// default to true for backward compatibility
+return (this.#VMC_send_avatar_data == null) ? true : this.#VMC_send_avatar_data;
+    }
+    set send_avatar_data(v) {
+if (this.#VMC_send_avatar_data == !!v) return;
+
+this.#VMC_send_avatar_data = !!v;
+
+this.sender_enabled = this.#VMC_send_avatar_data || this.#VMC_send_camera_data;
+
+DEBUG_show('(VMC avatar data:' + ((this.#VMC_send_avatar_data) ? 'ON' : 'OFF') + ')', 3);
+    }
+
+    #VMC_send_camera_data = false;
+    get send_camera_data() { return this.#VMC_send_camera_data; }
+    set send_camera_data(v) {
+if (this.#VMC_send_camera_data == !!v) return;
+
+this.#VMC_send_camera_data = !!v;
+
+// skip for backward compatibility
+if (this.#VMC_send_avatar_data != null)
+  this.sender_enabled = this.#VMC_send_avatar_data || this.#VMC_send_camera_data;
+
+DEBUG_show('(VMC camera data:' + ((this.#VMC_send_camera_data) ? 'ON' : 'OFF') + ')', 3);
     }
 
     get receiver_enabled() { return this.#VMC_receiver_enabled; }
@@ -15344,6 +15436,7 @@ if (this.#VMC_receiver_enabled) {
 else {
   if (!this.#VMC_sender_enabled) this.enabled = false;
   this.vmc.close();
+  console.log('OSC/VMC receiver(' + this.#VMC_initialized + '):Closed');
 
   this.vmc = null;
 }
@@ -15355,21 +15448,133 @@ else {
     get delay() { return this.#VMC_delay; }
     set delay(v) { this.#VMC_delay = v || 0; }
 
+    update(mode) {
+if (!MMD_SA.OSC.VMC.plugin) return;
+
+let restart_plugin;
+if (mode == 'send') {
+  if (this.options.protocol != this.#VMC_initialized) {
+    restart_plugin = this.sender_enabled;
+  }
+  else if (this.options.protocol == 'WebSocket') {
+    if (this.plugin.options.port != this.options.plugin.send.port) {
+      this.plugin.options.port = this.options.plugin.send.port;
+      restart_plugin = this.sender_enabled;
+    }
+    if (this.plugin.options.host != this.options.plugin.send.host) {
+      this.plugin.options.host = this.options.plugin.send.host;
+      restart_plugin = this.sender_enabled;
+    }
+  }
+  else {
+    this.plugin.options.send.port = this.options.plugin.send.port;
+    this.plugin.options.send.host = this.options.plugin.send.host;
+  }
+
+  if (restart_plugin) {
+    console.log('(Restart VMC plugin)');
+    this.sender_enabled = false;
+    this.sender_enabled = true;
+  }
+}
+    }
+
     init() {
-if (this.#VMC_initialized) return;
-this.#VMC_initialized = true;
+if (!webkit_electron_mode)
+  this.options.protocol = 'WebSocket';
+
+if (this.#VMC_initialized == this.options.protocol) return;
+
+this.#VMC_ready = false;
+if (this.#VMC_initialized) {
+  this.vmc.close();
+  console.log('OSC/VMC plugin closed:' + this.#VMC_initialized);
+}
+this.#VMC_initialized = this.options.protocol;
+
+console.log('OSC/VMC plugin initializing:' + this.options.protocol);
 
 OSC_init();
 
-this.plugin = new OSC.DatagramPlugin(this.options.plugin);
-this.vmc = new OSC({ plugin:this.plugin });
+// v0.34.4-b
+if (this.options.plugin.open)
+  this.options.plugin.open.host = undefined;
 
-this.vmc.on('open', () => {
+let plugin_type, options;
+if (this.options.protocol == 'UDP') {
+  plugin_type = 'DatagramPlugin';
+  options = this.options.plugin;
+}
+else {
+  if (this.options.plugin.send) {
+    plugin_type = 'WebsocketClientPlugin';
+    options = this.options.plugin.send;
+  }
+  else {
+    plugin_type = 'WebsocketServerPlugin';
+    options = this.options.plugin.open;
+  }
+}
+
+this.plugin = new OSC[plugin_type](options);
+this.vmc = new OSC({ plugin:this.plugin, discardLateMessages:(this.options.protocol == 'WebSocket') });
+
+if (this.options.protocol == 'WebSocket') {
+  this.vmc.on('open', () => {
+    if (this.options.protocol != 'WebSocket') return;
+
+    this.#VMC_ready = true;
+    console.log('OSC/VMC Websocket:Connected');
+  });
+
+  this.vmc.on('close', () => {
+    if (this.options.protocol != 'WebSocket') return;
+
+    if (this.#VMC_ready && this.sender_enabled) {
+      this.sender_enabled = false;
+      this.sender_enabled = true;
+    }
+  });
+
+  this.vmc.on('error', (()=>{
+    let timerID;
+    return (err) => {
+      if (this.options.protocol != 'WebSocket') return;
+
+      if (this.#VMC_ready) {
+        if (this.sender_enabled) {
+          console.log('OSC/VMC Websocket:Error', err);
+          if (this.plugin.socket.readyState != 1) {
+            this.sender_enabled = false;
+            this.sender_enabled = true;
+          }
+        }
+        return;
+      }
+
+      this.vmc.close();
+
+      if (timerID) clearTimeout(timerID);
+      timerID = setTimeout(()=>{
+        if (this.#VMC_ready || (this.#VMC_initialized != 'WebSocket')) return;
+
+        timerID = null;
+        console.log('OSC/VMC Websocket:Reconnecting');
+        this.vmc.open();
+      }, 1000*5);
+    };
+  })());
+
+  this.vmc.open();
+}
+else {
+  this.vmc.on('open', () => {
 //  this.#VMC_ready = true;
-  DEBUG_show('(OSC/VMC receiver:ON/Port:' + this.options.plugin.open.port + ')', 5);
-});
+    DEBUG_show('(OSC/VMC receiver:ON/Port:' + this.options.plugin.open.port + ')', 5);
+  });
 
-this.#VMC_ready = true;
+  this.#VMC_ready = true;
+}
     }
 
     Message(address, args=[], types) {
@@ -15379,11 +15584,12 @@ return msg;
     }
 
     Bundle(...args) {
-return new OSC.Bundle([...args], 0);
+return (args[0]) ? new OSC.Bundle([...args], 0) : null;
     }
 
     send(...args) {
-this.vmc.send(...args);
+if (args[0])
+  this.vmc.send(...args);
     }
 
 //const msg_obj = MMD_SA.OSC.VMC.time_control({ pos_msgs, bone_msgs, morph_msgs, camera_msgs, tracker_msgs });
@@ -15418,11 +15624,17 @@ return msg_obj_timed;
     }
   }
 
-  function OSC_init() {
+  async function OSC_init() {
 if (initialized) return;
 initialized = true;
 
-OSC = require('node_modules.asar/OSC-js/node_modules/osc-js');
+if (webkit_electron_mode) {
+  OSC = require('node_modules.asar/OSC-js/node_modules/osc-js');
+}
+else {
+  await System._browser.load_script(toFileProtocol(System.Gadget.path + '/js/osc.min.js'))
+  OSC = self.OSC;
+}
 //console.log(OSC)
 
 ready = true;
@@ -15455,7 +15667,7 @@ if (enabled) {
 
   (()=>{
     function VMC_warudo() {
-if (_OSC.app_mode == 'Warudo') {
+if ((_OSC.app_mode == 'Warudo') && webkit_electron_mode) {
   _OSC._VMC_warudo = _OSC._VMC_warudo || new VMC({ plugin:{ send: { port:19190, host:_OSC.VMC.options.plugin.send.host||'localhost' } } });
   if (_OSC.VMC.options.plugin.send.host && _OSC._VMC_warudo.plugin && (_OSC._VMC_warudo.plugin.options.send.host != _OSC.VMC.options.plugin.send.host))
     _OSC._VMC_warudo.plugin.options.send.host = _OSC.VMC.options.plugin.send.host
@@ -15482,6 +15694,34 @@ return VMC_warudo();
 
   window.addEventListener('load', ()=>{
     _OSC.VMC = new VMC();//{ plugin:{ send:MMD_SA_options.OSC?.VMC.send } });
+
+    if (!webkit_electron_mode)
+      OSC_init();
+  });
+
+  window.addEventListener('SA_Dungeon_onstart', ()=>{
+if (webkit_electron_mode) return;
+
+const vmc_sender_para = System._browser.url_search_params.vmc_sender_para?.split('|');// || '192.168.1.101|9000|0|1'.split('|');
+if (!vmc_sender_para) return;
+//console.log(vmc_sender_para)
+if (vmc_sender_para[0]) {
+  const host = vmc_sender_para[0];
+  MMD_SA.OSC.VMC.options.plugin.send.host = host;
+  if (MMD_SA.OSC.VMC.plugin)
+    MMD_SA.OSC.VMC.plugin.options.send.host = host;
+}
+
+if (vmc_sender_para[1]) {
+  const port_number = parseInt(vmc_sender_para[1]);
+  MMD_SA.OSC.VMC.options.plugin.send.port = port_number;
+  if (MMD_SA.OSC.VMC.plugin)
+    MMD_SA.OSC.VMC.plugin.options.send.port = port_number;
+}
+
+MMD_SA.OSC.VMC.send_avatar_data = !!parseInt(vmc_sender_para[2]);
+
+MMD_SA.OSC.VMC.send_camera_data = !!parseInt(vmc_sender_para[3]);
   });
 
   return _OSC;

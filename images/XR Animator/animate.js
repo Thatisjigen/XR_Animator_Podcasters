@@ -1,5 +1,5 @@
 // XR Animator
-// (2025-06-30)
+// (2025-08-24)
 
 var MMD_SA_options = {
 
@@ -230,22 +230,30 @@ var MMD_SA_options = {
    ,"standmix" : { onended: function () { MMD_SA._no_fading=true; } }
    ,"standmix2_modified" : { onended: function () { MMD_SA._no_fading=true; }
 
-,allows_kissing: true
-,look_at_screen_bone_list: [
-  { name:"首", weight_screen:0.5, weight_screen_y:0.25, weight_motion:1 }
- ,{ name:"頭", weight_screen:0.5, weight_screen_y:0.25, weight_motion:1 }
- ,{ name:"上半身",  weight_screen:0.5, weight_screen_x:0,weight_screen_y:0.75, weight_motion:1 }
- ,{ name:"上半身2", weight_screen:0.5, weight_screen_x:0,weight_screen_y:0.75, weight_motion:1 }
-]
+ ,allows_kissing: true
+ ,look_at_screen_bone_list: [
+    { name:"首", weight_screen:0.5, weight_screen_y:0.25, weight_motion:1 }
+   ,{ name:"頭", weight_screen:0.5, weight_screen_y:0.25, weight_motion:1 }
+   ,{ name:"上半身",  weight_screen:0.5, weight_screen_x:0,weight_screen_y:0.75, weight_motion:1 }
+   ,{ name:"上半身2", weight_screen:0.5, weight_screen_x:0,weight_screen_y:0.75, weight_motion:1 }
+  ]
 
-,adjustment_per_model: {
+// v0.34.4
+ ,get motion_tracking_enabled() { return System._browser.camera.facemesh.enabled && !System._browser.camera.poseNet.enabled && !System._browser.camera.VMC_receiver.active; }
+ ,motion_tracking_upper_body_only: true
+ ,motion_tracking: {
+    look_at_screen:true,
+//    arm_default_stickiness: { default_position_weight:0, default_rotation_weight:0 },
+  }
+
+  ,adjustment_per_model: {
     _default_ : {
   skin_default: {
     "左足ＩＫ": { keys: [{time:0, pos:{x: 0.2, y:0, z:0}, rot:{x:0, y: 10, z:0}}] }
    ,"右足ＩＫ": { keys: [{time:0, pos:{x:-0.2, y:0, z:0}, rot:{x:0, y:-10, z:0}}] }
   }
     }
-}
+  }
 
     }
    ,"_sleep90" : { onended: function () { MMD_SA._no_fading=true; } }
@@ -1485,12 +1493,23 @@ System._browser.camera.poseNet.enable_IK('右腕ＩＫ', true)
  ,trackball_camera_limit: { "min": { length:8 } }
 
  ,motion_tracking_enabled: true
- ,get motion_tracking_upper_body_only() { return this.center_view_enforced || !MMD_SA_options.Dungeon_options.character_movement_disabled; }
+// v0.34.4
+ ,get motion_tracking_upper_body_only() { return this.center_view_enforced || !MMD_SA_options.Dungeon_options.character_movement_disabled || (System._browser.camera.facemesh.enabled && !System._browser.camera.poseNet.enabled && !System._browser.camera.VMC_receiver.active); }
 
  ,camera_auto_adjust: false
  ,get camera_auto_adjust_fov() { return !!this.center_view_enforced; }
 
+ ,look_at_screen_bone_list: [
+    { name:"首", weight_screen:0.5, weight_screen_y:0.5, weight_motion:1 },
+    { name:"頭", weight_screen:0.5, weight_screen_y:0.5, weight_motion:1 },
+    { name:"上半身",  weight_screen:0.5, weight_screen_x:0,weight_screen_y:0.5, weight_motion:1 },
+    { name:"上半身2", weight_screen:0.5, weight_screen_x:0,weight_screen_y:0.5, weight_motion:1 },
+  ]
+
  ,motion_tracking: {
+    get look_at_screen() { return MMD_SA._trackball_camera.selfie_mode; },
+// AFTER
+    set look_at_screen(v) {},
     hip_adjustment: {
       rotation_weight: 0.5,
       displacement_weight: 0.5,
@@ -3338,7 +3357,7 @@ window.addEventListener('SA_Dungeon_onstart', ()=>{
 
   MMD_SA.SpeechBubble.message(0, System._browser.translation.get('XR_Animator.intro.welcome'), 3*1000, {group_index:0, group:{name:"onstart", loop:2}});
   if (webkit_electron_mode) MMD_SA.SpeechBubble.message(0, System._browser.translation.get('XR_Animator.intro.move'), 4*1000, {group:{name:"onstart"}});
-  MMD_SA.SpeechBubble.message(0, System._browser.translation.get('XR_Animator.intro.camera'), 5*1000, {group:{name:"onstart"}});
+  MMD_SA.SpeechBubble.message(0, System._browser.translation.get('XR_Animator.intro.camera' + ((is_mobile)?'.mobile':'')), 6*1000, {group:{name:"onstart"}});
   MMD_SA.SpeechBubble.message(0, System._browser.translation.get('XR_Animator.intro.mocap'), 4*1000, {group:{name:"onstart"}});
   MMD_SA.SpeechBubble.message(0, System._browser.translation.get('XR_Animator.intro.webcam'), 4*1000, {no_word_break:true, group:{name:"onstart"}});
   MMD_SA.SpeechBubble.message(0, System._browser.translation.get('XR_Animator.intro.motion'), 4*1000, {group:{name:"onstart"}});
@@ -3907,12 +3926,12 @@ return [
   icon_path: Settings.f_path + '/assets/assets.zip#/icon/yellow-target_64x64.png'
  ,info_short: "AR reticle"
 
- ,is_base_inventory: is_mobile
+ ,is_base_inventory: is_mobile && !SA_topmost_window.is_cordova
 // NOTE: use undefined for index_default ((null >= 0) is true...)
  ,index_default: undefined
 // ,get index_default() { return (is_mobile) ? undefined : MMD_SA_options.Dungeon.inventory.max_base+1; }
 
- ,stock_default: (is_mobile) ? 1 : 0
+ ,stock_default: (is_mobile && !SA_topmost_window.is_cordova) ? 1 : 0
  ,stock_max: 1
  ,action: {
     func: function (item) {
@@ -3935,7 +3954,7 @@ else {
  ,get info_short() { return System._browser.translation.get('XR_Animator.UI.streamer_mode.info_short'); }
 // ,is_base_inventory: true
 
- ,index_default: (is_mobile) ? undefined : 0
+ ,index_default: (is_mobile && !SA_topmost_window.is_cordova) ? undefined : 0
 
  ,stock_max: 1
  ,stock_default: 1
@@ -3946,7 +3965,7 @@ else {
 //   ,anytime: true
   }
 
- ,get info() { return System._browser.translation.get('XR_Animator.UI.streamer_mode.info'); }
+ ,get info() { return System._browser.translation.get('XR_Animator.UI.streamer_mode.info').replace(/\<hotkey\>/, System._browser.hotkeys.config_by_id['mocap_toggle']?.accelerator[0]||''); }
       };
 
       return streamer_mode;
@@ -3982,6 +4001,11 @@ MMD_SA_options._motion_shuffle_list_default = [index];
 MMD_SA_options.motion_shuffle_list_default = MMD_SA_options._motion_shuffle_list_default.slice();
 MMD_SA._force_motion_shuffle = true;
 window.addEventListener('SA_MMD_model0_onmotionchange', ()=>{ MMD_SA.WebXR.ground_plane.visible=System._browser.camera.poseNet.ground_plane_visible }, {once:true});
+
+// v0.34.4
+// skip the next MMD_SA.reset_camera() in v2.1.2_jThree.MMD (L381) to avoid glitch during motion change transition when 3D camera is locked
+if (MMD_SA_options._XRA_camera_lock?.locked)
+  window.addEventListener('MMDCameraReset', (e)=>{ e.detail.result.return_value=true; }, {once:true});
 
 System._browser.on_animation_update.add(()=>{
   if (MMD_SA_options._XRA_pose_list?.[0].find(p=>p.is_custom_motion && p.name==MMD_SA.MMD.motionManager.filename) != null) {
@@ -4885,7 +4909,7 @@ return info;
     }
 
    ,"facemesh" : (()=>{
-      let mocap_initialized;
+      let mocap_pause_timerID, mocap_pause_countdown;
       function mocap_hotkeys(e) {
 if (System._browser.hotkeys.disabled) return;
 
@@ -4893,27 +4917,7 @@ const ev = e.detail.e;
 switch (ev.code) {
   case 'Pause':
     const camera = System._browser.camera;
-    if (ev.ctrlKey) {
-      if (MMD_SA_options.Dungeon.event_mode)
-        document.dispatchEvent(new KeyboardEvent('keydown', { code:'Escape' }));
-
-      if (camera.ML_enabled) {
-        mocap_initialized = true;
-        MMD_SA.WebXR.user_camera.facemesh.enabled = false;
-        MMD_SA.WebXR.user_camera.poseNet.enabled = false;
-        MMD_SA.WebXR.user_camera.handpose.enabled = false;
-      }
-      else {
-        if (!mocap_initialized) {
-          mocap_initialized = true;
-          System._browser.camera.streamer_mode.start();
-        }
-        else {
-          System._browser.camera.streamer_mode.init_mocap(MMD_SA_options.user_camera.streamer_mode.mocap_type);
-        }
-      }
-    }
-    else {
+    if (!ev.ctrlKey && !ev.shiftKey && !ev.altKey) {
       if (camera.initialized && camera.ML_enabled) {
         if (mocap_pause_timerID) {
           clearInterval(mocap_pause_timerID);
@@ -4950,8 +4954,6 @@ switch (ev.code) {
 
 e.detail.result.return_value = true;
       }
-
-      let mocap_pause_timerID, mocap_pause_countdown;
 
       window.addEventListener('MMDStarted', ()=>{
         window.addEventListener('SA_keydown', mocap_hotkeys);
@@ -4996,7 +4998,7 @@ else if (System._browser.camera.motion_recorder.speed) {
 else if (System._browser.camera.ML_enabled) {
   if (!System._browser.camera.visible)
     info += System._browser.translation.get('XR_Animator.UI.motion_capture.info.ML_on.camera_off') + '\n';
-  info += System._browser.translation.get('XR_Animator.UI.motion_capture.info.ML_on');
+  info += System._browser.translation.get('XR_Animator.UI.motion_capture.info.ML_on').replace(/\<hotkey\>/, System._browser.hotkeys.config_by_id['mocap_toggle']?.accelerator[0]||'');
 }
 else {
   info += System._browser.translation.get('XR_Animator.UI.motion_capture.info.ML_off');
@@ -5031,7 +5033,7 @@ v3b = new THREE.Vector3()
  ,info_short: "Baseball catcher"
 // ,is_base_inventory: true
 
- ,get index_default() { return (is_mobile) ? 5 : (MMD_SA_options.Dungeon.inventory.max_base+MMD_SA_options.Dungeon.inventory.max_base*(MMD_SA_options.Dungeon.inventory.max_row-1))+1; }
+ ,get index_default() { return (is_mobile && !SA_topmost_window.is_cordova) ? 5 : (MMD_SA_options.Dungeon.inventory.max_base+MMD_SA_options.Dungeon.inventory.max_base*(MMD_SA_options.Dungeon.inventory.max_row-1))+1; }
 // ,get index_default() { return (is_mobile) ? undefined : MMD_SA_options.Dungeon.inventory.max_base+1; }
 
  ,stock_max: 1
@@ -5460,12 +5462,233 @@ window.addEventListener('SA_MMD_before_render', ()=>{
 //}, 0,1,-1);
       });
 
+      const mobile_hand_camera = (()=>{
+        let orientation_timestamp;
+        function handle_orientation(event) {
+orientation_timestamp = Date.now();
+
+if (rotation_ini_countdown && (--rotation_ini_countdown > 0)) return;
+
+let { alpha, beta, gamma } = event;
+
+alpha *= Math.PI/180;
+beta *= Math.PI/180;
+gamma *= Math.PI/180;
+
+let a_orientation = screen.orientation.angle * Math.PI/180;
+alpha += a_orientation;
+
+const euler = MMD_SA.TEMP_v3.set(beta, gamma, alpha);
+
+const rotation = new THREE.Quaternion().setFromEuler(euler, 'ZXY');
+
+const q_orientation = MMD_SA.TEMP_q.set(0,0,Math.sin(-a_orientation/2), Math.cos(-a_orientation/2));
+rotation.premultiply(q_orientation).multiply(q_orientation);
+
+if (!rotation_ini) {
+//  rotation.setFromEuler(MMD_SA.TEMP_v3.set(Math.PI/2, gamma, Math.PI/2), 'ZXY');
+
+  rotation_ini = rotation.conjugate();
+
+  if (!MMD_SA._trackball_camera.rotate_with_up_fixed)
+    MMD_SA._trackball_camera.rotate_with_up_fixed = true;
+}
+else {
+//DEBUG_show(['XYZ', 'XZY', 'YXZ', 'YZX', 'ZXY', 'ZYX'].map((order)=>{ return order + ':' + (new THREE.Vector3().setEulerFromQuaternion(rotation, order).y*180/Math.PI); }).join('\n')+'\n\n'+(MMD_SA.THREEX.utils.getRotationAroundAxis(rotation, MMD_SA.TEMP_v3.set(0,1,0))*180/Math.PI))
+
+//  rotation_offset_filter.filters[0].filter.add(rotation.premultiply(rotation_ini).toArray(), RAF_timestamp);
+
+  const r_offset = rotation.fromArray(rotation_offset_filter.filter(rotation.premultiply(rotation_ini).toArray()));
+  rotation_offset_filter.filters[0].filter.minCutOff = 0.5;
+  if (!standing_rotation_mode) {
+    r_offset.y *= -1;
+    r_offset.w *= -1;
+    MMD_SA._trackball_camera._eye_rotation_offset = r_offset;
+  }
+  else {
+    MMD_SA._trackball_camera._rotation_offset2 = r_offset;
+  }
+
+}
+        }
+
+        let initialized;
+        let rotation_offset_filter;
+        function init() {
+if (initialized) return;
+initialized = true;
+
+rotation_offset_filter = new System._browser.data_filter([{ type:'one_euro', id:'rotation_offset_filter', para:[30, 0.5,1,1, 4] }]);//new System._browser.data_filter([{ type:'moving_average', para:[0.2, 4] }]);//
+        }
+
+        let standing_rotation_mode = false;
+        let rotation_mode_ini = 0;
+        let rotation_mode_timerID;
+
+        function touchstart(e) {
+cancel_rotation_mode_toggle();
+if (e.touches.length == 1)
+  rotation_mode_ini = Date.now();
+        }
+
+        function touchend(e) {
+cancel_rotation_mode_toggle();
+// for some reasons, e.touches.length is always 0
+//DEBUG_show(e.touches.length)
+if (!MMD_SA_options.Dungeon.event_mode && (rotation_mode_ini > Date.now() - 250)) {
+  rotation_mode_ini = 0;
+  rotation_mode_timerID = setTimeout(rotation_mode_toggle, 500);
+}
+        }
+
+        function dblclick(e) {
+cancel_rotation_mode_toggle();
+        }
+
+        function cancel_rotation_mode_toggle() {
+if (rotation_mode_timerID) {
+  clearTimeout(rotation_mode_timerID);
+  rotation_mode_timerID = null;
+}
+        }
+
+        function rotation_mode_toggle() {
+rotation_mode_timerID = null
+
+if (!mobile_hand_camera.enabled) return;
+
+standing_rotation_mode = !standing_rotation_mode;
+
+rotation_ini = null;
+rotation_ini_countdown = 1;
+
+MMD_SA._trackball_camera._rotation_offset2 = null;
+
+//rotation_offset_filter.filters[0].filter.data_list = [];
+rotation_offset_filter.filters[0].filter.minCutOff = 99;
+
+DEBUG_show('Rotation mode: ' + ((standing_rotation_mode) ? 'Standing' : 'Orbiting'), 5);
+        }
+
+/*
+        function update_rotation() {
+if (!rotation_offset_filter.filters[0].filter.data_list.length) return;
+
+const r_offset = new THREE.Quaternion().fromArray(rotation_offset_filter.filter([], RAF_timestamp));
+
+if (!standing_rotation_mode) {
+  r_offset.y *= -1;
+  r_offset.w *= -1;
+  MMD_SA._trackball_camera._eye_rotation_offset = r_offset;
+}
+else {
+  MMD_SA._trackball_camera._rotation_offset2 = r_offset;
+}
+        }
+*/
+
+        function update_VMC_selfie_mode() {
+if (MMD_SA.OSC.VMC.send_camera_data)
+  MMD_SA.OSC.VMC.send(MMD_SA.OSC.VMC.Message("/XRA/Ext/Cam/selfie_mode", [((MMD_SA._trackball_camera.selfie_mode) ? ((standing_rotation_mode)?2:1) : 0), ...[MMD_SA.center_view[0], MMD_SA.center_view[1], MMD_SA._trackball_camera.object.position.distanceTo(MMD_SA._trackball_camera.target) - MMD_SA_options.camera_position_base[2]], ...MMD_SA.center_view_lookAt], 'iffffff'));
+        }
+
+        let rotation_ini, rotation_ini_countdown;
+
+        return {
+          enabled: false,
+
+          start: function () {
+if (this.enabled) return;
+this.enabled = true;
+
+init();
+
+rotation_ini = null;
+rotation_ini_countdown = 3;
+
+standing_rotation_mode = true;
+
+//rotation_offset_filter.filters[0].filter.data_list = [];
+//System._browser.on_animation_update.add(update_rotation, 0,0,-1);
+
+rotation_offset_filter.filters[0].filter.minCutOff = 99;
+
+SL.addEventListener('touchstart', touchstart);
+SL.addEventListener('touchend', touchend);
+SL.addEventListener('dblclick', dblclick);
+
+if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+  DeviceOrientationEvent.requestPermission()
+    .then(permissionState => {
+      if (permissionState === 'granted') {
+        window.addEventListener('deviceorientation', handle_orientation);
+      } else {
+        console.error('DeviceOrientation permission denied');
+      }
+    })
+    .catch(error => console.error('DeviceOrientation permission error:', error));
+} else {
+  window.addEventListener('deviceorientation', handle_orientation);
+}
+
+window.addEventListener('SA_MMD_VMC_send', update_VMC_selfie_mode);
+
+MMD_SA.reset_camera();
+MMD_SA._trackball_camera.rotation_disabled = true;
+
+System._browser.screen_orientation_lock(true, 'mobile_hand_camera');
+
+DEBUG_show('Hand camera (mobile mode): ON', 5);
+          },
+
+          stop: function () {
+if (!this.enabled) return;
+this.enabled = false;
+
+MMD_SA._trackball_camera._eye_rotation_offset = MMD_SA._trackball_camera._rotation_offset = MMD_SA._trackball_camera._rotation_offset2 = null;
+
+if (MMD_SA._trackball_camera.rotate_with_up_fixed && !MMD_SA_options.Dungeon?.character.TPS_mode)
+  MMD_SA._trackball_camera.rotate_with_up_fixed = false;
+
+cancel_rotation_mode_toggle();
+
+//System._browser.on_animation_update.remove(update_rotation, 0);
+
+SL.removeEventListener('touchstart', touchstart);
+SL.removeEventListener('touchend', touchend);
+SL.removeEventListener('dblclick', dblclick);
+
+window.removeEventListener('deviceorientation', handle_orientation);
+
+window.removeEventListener('SA_MMD_VMC_send', update_VMC_selfie_mode);
+
+System._browser.on_animation_update.add(()=> { MMD_SA.reset_camera(); }, 0,0);
+MMD_SA._trackball_camera.rotation_disabled = false;
+
+System._browser.screen_orientation_lock(false, 'mobile_hand_camera');
+
+DEBUG_show('Hand camera (mobile mode): OFF', 5);
+          },
+
+          get orientation_timestamp() { return orientation_timestamp; },
+
+          get standing_rotation_mode() { return standing_rotation_mode; },
+
+          restore_deviceorientation: function () {
+window.removeEventListener('deviceorientation', handle_orientation);
+window.addEventListener('deviceorientation', handle_orientation);
+console.log('(deviceorientation restored)');
+          },
+        };
+      })();
+
       const _hand_camera = {
   icon_path: Settings.f_path + '/assets/assets.zip#/icon/hand_camera_64x64.png'
  ,get info_short() { return System._browser.translation.get('XR_Animator.UI.hand_camera.info_short'); }
 // ,is_base_inventory: true
 
- ,get index_default() { return (is_mobile) ? undefined : 6; }
+// ,get index_default() { return (is_mobile) ? undefined : 6; }
+ ,index_default: 6
 // ,get index_default() { return (is_mobile) ? undefined : (browser_native_mode) ? 4 : 6;}//MMD_SA_options.Dungeon.inventory.max_base+4; }
 
  ,stock_max: 1
@@ -5478,8 +5701,20 @@ window.addEventListener('SA_MMD_before_render', ()=>{
  ,get _hand_camera_active() { return hand_camera_enabled && hand_camera_active; }
  ,get _hand_camera_side() { return hand_camera_enabled && hand_camera_side; }
 
+ ,get _mobile_hand_camera() { return mobile_hand_camera; }
+
  ,action: {
     func: function (item) {
+if (is_mobile) {
+  if (mobile_hand_camera.enabled) {
+    mobile_hand_camera.stop();
+  }
+  else {
+    mobile_hand_camera.start();
+  }
+  return;
+}
+
 const c = System._browser.camera;
 if (!c.poseNet.pose_enabled && !c.VMC_receiver.pose_enabled) {
   DEBUG_show('(For mocap mode only)', 3);
@@ -5513,15 +5748,7 @@ else {
   }
 
  ,get info() {
-/*
-return [
-'- Press ' + (System._browser.hotkeys.config_by_id['hand_camera']?.accelerator[0]||'') + ' / double-click to use your hand as camera during mocap (status: ' + ((hand_camera_enabled) ? ((hand_camera_side == '右') ? 'left hand' : 'right hand') : 'OFF') + ').',
-'- Repeat to switch among left hand, right hand, and OFF.',
-'- Press ' + (System._browser.hotkeys.config_by_id['selfie_mode']?.accelerator[0]||'') + ' to toggle "Selfie mode" which automatically focuses on your face (status: ' + ((_hand_camera.selfie_mode) ? 'ON' : 'OFF') + ').',
-'- Press ' + (System._browser.hotkeys.config_by_id['auto_look_at_camera']?.accelerator[0]||'') + ' to toggle auto "look at camera" (status: ' + ((System._browser.camera.facemesh.auto_look_at_camera) ? 'ON' : 'OFF') + ').',
-  ].join('\n');
-*/
-return System._browser.translation.get('XR_Animator.UI.hand_camera.info').replace(/\<hand_camera_hotkey\>/, System._browser.hotkeys.config_by_id['hand_camera']?.accelerator[0]||'').replace(/\<hand_camera_status\>/, (hand_camera_enabled) ? ((hand_camera_side == '右') ? System._browser.translation.get('XR_Animator.UI.hand_camera.info.left_hand') : System._browser.translation.get('XR_Animator.UI.hand_camera.info.right_hand')) : 'OFF').replace(/\<selfie_mode_hotkey\>/, System._browser.hotkeys.config_by_id['selfie_mode']?.accelerator[0]||'').replace(/\<selfie_mode_status\>/, (_hand_camera.selfie_mode) ? 'ON' : 'OFF').replace(/\<auto_look_at_camera_hotkey\>/, System._browser.hotkeys.config_by_id['auto_look_at_camera']?.accelerator[0]||'').replace(/\<auto_look_at_camera_status\>/, (System._browser.camera.facemesh.auto_look_at_camera) ? 'ON' : 'OFF');
+return (is_mobile) ? System._browser.translation.get('XR_Animator.UI.hand_camera.info.mobile_sensor_mode') : System._browser.translation.get('XR_Animator.UI.hand_camera.info').replace(/\<hand_camera_hotkey\>/, System._browser.hotkeys.config_by_id['hand_camera']?.accelerator[0]||'').replace(/\<hand_camera_status\>/, (hand_camera_enabled) ? ((hand_camera_side == '右') ? System._browser.translation.get('XR_Animator.UI.hand_camera.info.left_hand') : System._browser.translation.get('XR_Animator.UI.hand_camera.info.right_hand')) : 'OFF').replace(/\<selfie_mode_hotkey\>/, System._browser.hotkeys.config_by_id['selfie_mode']?.accelerator[0]||'').replace(/\<selfie_mode_status\>/, (_hand_camera.selfie_mode) ? 'ON' : 'OFF').replace(/\<auto_look_at_camera_hotkey\>/, System._browser.hotkeys.config_by_id['auto_look_at_camera']?.accelerator[0]||'').replace(/\<auto_look_at_camera_status\>/, (System._browser.camera.facemesh.auto_look_at_camera) ? 'ON' : 'OFF');
   }
       };
 
@@ -5707,7 +5934,7 @@ MMD_SA_options.Dungeon.run_event('_MEDIA_RECORDER_OPTIONS_', 0);
  ,get info_short() { return System._browser.translation.get('XR_Animator.UI.UI_options.info_short');}
 // ,is_base_inventory: true
 
- ,index_default: (is_mobile) ? 4 : 5
+ ,index_default: (is_mobile && !SA_topmost_window.is_cordova) ? 4 : 5
 
  ,stock_max: 1
  ,stock_default: 1
@@ -5720,7 +5947,7 @@ MMD_SA_options.Dungeon.run_event("_FACEMESH_OPTIONS_",0);
 //   ,anytime: true
   }
 
- ,get info() { return System._browser.translation.get('XR_Animator.UI.UI_options.info');}
+ ,get info() { return System._browser.translation.get('XR_Animator.UI.UI_options.info').replace(/\<Esc\>/, (is_mobile)?'/':'Esc'); }
     }
 
    ,"VMC_protocol" : {
@@ -5728,13 +5955,13 @@ MMD_SA_options.Dungeon.run_event("_FACEMESH_OPTIONS_",0);
  ,get info_short() { return System._browser.translation.get('XR_Animator.UI.VMC_protocol.info_short'); }
 // ,is_base_inventory: true
 
- ,index_default: (is_mobile) ? undefined : 4
- ,stock_default: (is_mobile) ? 0 : 1
+ ,index_default: (is_mobile && !SA_topmost_window.is_cordova) ? undefined : 4
+ ,stock_default: (is_mobile && !SA_topmost_window.is_cordova) ? 0 : 1
 
  ,stock_max: 1
  ,action: {
     func: function (item) {
-if (!webkit_electron_mode || !MMD_SA.THREEX.enabled) {
+if (!MMD_SA.THREEX.enabled) {
   MMD_SA.SpeechBubble.message(0, System._browser.translation.get('XR_Animator.UI.VMC_protocol.not_supported'), 5*1000);
   return true;
 }
@@ -6328,7 +6555,7 @@ else if (change_port) {
     port += e.key;
     MMD_SA_options.Dungeon.run_event(null,null,0);
   }
-  else if (e.key == 'Enter') {
+  else if ((is_mobile) ? e.code == 'ArrowDown' : e.key == 'Enter') {
     const port_number = parseInt(port);
     const port_min = 99;
 
@@ -6354,8 +6581,7 @@ else if (change_port) {
     else if ((port_number > port_min) && (port_number < 65536)) {
       if (VMC_receiver_index == -1) {
         MMD_SA.OSC.VMC.options.plugin.send.port = port_number;
-        if (MMD_SA.OSC.VMC.plugin)
-          MMD_SA.OSC.VMC.plugin.options.send.port = port_number;
+        MMD_SA.OSC.VMC.update('send');
       }
       else {
         const R = System._browser.camera.VMC_receiver;
@@ -6381,7 +6607,7 @@ else if (change_port) {
       MMD_SA_options.Dungeon.run_event(null,null,0);
     }
   }
-  else if (e.code == 'KeyR') {
+  else if ((is_mobile) ? e.code == 'ArrowUp' : e.code == 'KeyR') {
     port = (VMC_receiver_index == -1) ? MMD_SA.OSC.VMC.options_default.plugin.send.port : System._browser.camera.VMC_receiver.options.receiver[VMC_receiver_index].port_default;
     msg = '';
     MMD_SA_options.Dungeon.run_event(null,null,0);
@@ -6399,7 +6625,7 @@ else if (change_host) {
     host += e.key;
     MMD_SA_options.Dungeon.run_event(null,null,0);
   }
-  else if (e.key == 'Enter') {
+  else if ((is_mobile) ? e.code == 'ArrowDown' : e.key == 'Enter') {
     let valid_host;
     if (host == MMD_SA.OSC.VMC.options_default.plugin.send.host) {
       valid_host = true;
@@ -6410,8 +6636,7 @@ else if (change_host) {
 
     if (valid_host) {
       MMD_SA.OSC.VMC.options.plugin.send.host = host;
-      if (MMD_SA.OSC.VMC.plugin)
-        MMD_SA.OSC.VMC.plugin.options.send.host = host;
+      MMD_SA.OSC.VMC.update('send');
 
       MMD_SA_options.Dungeon.run_event(null,0,0);
     }
@@ -6421,7 +6646,7 @@ else if (change_host) {
       MMD_SA_options.Dungeon.run_event(null,null,0);
     }
   }
-  else if (e.code == 'KeyR') {
+  else if ((is_mobile) ? e.code == 'ArrowUp' : e.code == 'KeyR') {
     host = MMD_SA.OSC.VMC.options_default.plugin.send.host;
     msg = '';
     MMD_SA_options.Dungeon.run_event(null,null,0);
@@ -6445,15 +6670,33 @@ const branch_list = [
   key_any,
   { key:'A', branch_index:1 },
   { key:'B', branch_index:2 },
-  { key:1, event_id:{ func:()=>{ MMD_SA.OSC.VMC.sender_enabled   = MMD_SA_options.user_camera.streamer_mode.VMC_sender_enabled   = !MMD_SA.OSC.VMC.sender_enabled; System._browser.update_tray(); }, goto_event: { id:"_VMC_PROTOCOL_", branch_index:0 } },
+  { key:'C', event_id:{ func:()=>{
+MMD_SA.OSC.VMC.options.protocol = (!webkit_electron_mode) ? 'WebSocket' : ((MMD_SA.OSC.VMC.options.protocol == 'WebSocket') ? 'UDP' : 'WebSocket');
+if (MMD_SA.OSC.VMC.enabled)
+  MMD_SA.OSC.VMC.init();
+    }, goto_event: { id:"_VMC_PROTOCOL_", branch_index:0 } },
     onmouseover: function (e) {
 MMD_SA_options.Dungeon.utils.tooltip(
   e.clientX, e.clientY,
-  System._browser.translation.get('XR_Animator.UI.VMC_protocol.tooltip')
+  System._browser.translation.get('XR_Animator.UI.VMC_protocol.protocol.tooltip')
 );
     }
   },
-  { key:2, event_id:{ func:()=>{ MMD_SA.OSC.VMC.send_camera_data = MMD_SA_options.user_camera.streamer_mode.VMC_send_camera_data = !MMD_SA.OSC.VMC.send_camera_data; System._browser.update_tray(); }, goto_event: { id:"_VMC_PROTOCOL_", branch_index:0 } },
+  { key:1, event_id:{ func:()=>{
+MMD_SA.OSC.VMC.send_avatar_data = MMD_SA_options.user_camera.streamer_mode.VMC_sender_enabled = !MMD_SA.OSC.VMC.send_avatar_data;
+System._browser.update_tray();
+    }, goto_event: { id:"_VMC_PROTOCOL_", branch_index:0 } },
+    onmouseover: function (e) {
+MMD_SA_options.Dungeon.utils.tooltip(
+  e.clientX, e.clientY,
+  System._browser.translation.get('XR_Animator.UI.VMC_protocol.send_avatar_data.tooltip')
+);
+    }
+  },
+  { key:2, event_id:{ func:()=>{
+MMD_SA.OSC.VMC.send_camera_data = MMD_SA_options.user_camera.streamer_mode.VMC_send_camera_data = !MMD_SA.OSC.VMC.send_camera_data;
+System._browser.update_tray();
+    }, goto_event: { id:"_VMC_PROTOCOL_", branch_index:0 } },
     onmouseover: function (e) {
 MMD_SA_options.Dungeon.utils.tooltip(
   e.clientX, e.clientY,
@@ -6500,8 +6743,15 @@ MMD_SA_options.Dungeon.utils.tooltip(
 );
     }
   },
-  { key:6, func:()=>{ VMC_receiver_index=0; },
-    branch_index:3,
+  { key:6, func:()=>{
+if (webkit_electron_mode) {
+  VMC_receiver_index = 0;
+}
+else {
+  System._browser.camera.DEBUG_show('(VMC receiver not supported in web app mode)', 5);
+}
+    },
+    branch_index: (webkit_electron_mode) ? 3 : 0,
     onmouseover: function (e) {
 MMD_SA_options.Dungeon.utils.tooltip(
   e.clientX, e.clientY,
@@ -6545,7 +6795,25 @@ MMD_SA_options.Dungeon.utils.tooltip(
     },
   },
   { key:3, branch_index:1 },
-  { key:4, func:()=>{
+  { key:4, event_id:{ func:()=>{
+const R = System._browser.camera.VMC_receiver;
+const o = R.options.receiver[VMC_receiver_index];
+const r = R.receiver[VMC_receiver_index];
+o.protocol = r.VMC.options.protocol = (!webkit_electron_mode) ? 'WebSocket' : ((o.protocol == 'WebSocket') ? 'UDP' : 'WebSocket');
+if (r.enabled) {
+// recreate socket
+  r.enabled = false;
+  r.enabled = true;
+}
+    }, goto_event: { id:"_VMC_PROTOCOL_", branch_index:3 } },
+    onmouseover: function (e) {
+MMD_SA_options.Dungeon.utils.tooltip(
+  e.clientX, e.clientY,
+  System._browser.translation.get('XR_Animator.UI.VMC_protocol.protocol.tooltip')
+);
+    }
+  },
+  { key:5, func:()=>{
 const R = System._browser.camera.VMC_receiver;
 const r = R.receiver[VMC_receiver_index];
 if (++r.config.face > 3)
@@ -6563,7 +6831,7 @@ MMD_SA_options.Dungeon.utils.tooltip(
 );
     },
   },
-  { key:5, func:()=>{
+  { key:6, func:()=>{
 const R = System._browser.camera.VMC_receiver;
 const r = R.receiver[VMC_receiver_index];
 if (++r.config.pose > 2)
@@ -6581,7 +6849,7 @@ MMD_SA_options.Dungeon.utils.tooltip(
 );
     },
   },
-  { key:6, func:()=>{
+  { key:7, func:()=>{
 const R = System._browser.camera.VMC_receiver;
 const r = R.receiver[VMC_receiver_index];
 if (++r.config.hand > 3)
@@ -6697,8 +6965,9 @@ System._browser.on_animation_update.add(update_VMC_status, 0,0,-1);
     return [
 System._browser.translation.get('XR_Animator.UI.VMC_protocol.parameters'),
 'A. ┣ ' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.port') + ': ' + MMD_SA.OSC.VMC.options.plugin.send.port,
-'B. ┗ ' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.host') + ': ' + MMD_SA.OSC.VMC.options.plugin.send.host,
-'1. ' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.info_short') + ': ' + ((MMD_SA.OSC.VMC.sender_enabled) ? 'ON' : 'OFF'),
+'B. ┣ ' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.host') + ': ' + MMD_SA.OSC.VMC.options.plugin.send.host,
+'C. ┗ ' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.protocol') + ': ' + MMD_SA.OSC.VMC.options.protocol,
+'1. ' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.send_avatar_data') + ': ' + ((MMD_SA.OSC.VMC.send_avatar_data) ? 'ON' : 'OFF'),
 '2. ' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.send_camera_data') + ': ' + ((MMD_SA.OSC.VMC.send_camera_data) ? 'ON':  'OFF'),
 '3. ' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.app_mode') + ': ' + ((MMD_SA.OSC.app_mode && (MMD_SA.OSC.app_mode != 'Others')) ? MMD_SA.OSC.app_mode : System._browser.translation.get('Misc.others')),
 '4. ' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.delay') + ': ' + MMD_SA.OSC.VMC.delay + 'ms' + '➕➖',
@@ -6707,7 +6976,7 @@ System._browser.translation.get('XR_Animator.UI.VMC_protocol.parameters'),
 'X. ' + System._browser.translation.get('Misc.done')
     ].join('\n');
   }
- ,para: { row_max:11 }
+ ,para: { row_max:12, font_scale:0.95 }
  ,bubble_index: 3
  ,branch_list: branch_list
           }
@@ -6727,7 +6996,7 @@ change_host = false;
           },
           message: {
   get content() {
-return System._browser.translation.get('XR_Animator.UI.VMC_protocol.port.current_port') + ': ' + (port||((VMC_receiver_index == -1) ? MMD_SA.OSC.VMC.options.plugin.send.port : System._browser.camera.VMC_receiver.options.receiver[VMC_receiver_index].port)) + ((msg) ? '\n'+msg : '') + '\n・' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.port.enter_valid_port') + '\n' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.port_host_extra');
+return System._browser.translation.get('XR_Animator.UI.VMC_protocol.port.current_port') + ': ' + (port||((VMC_receiver_index == -1) ? MMD_SA.OSC.VMC.options.plugin.send.port : System._browser.camera.VMC_receiver.options.receiver[VMC_receiver_index].port)) + ((msg) ? '\n'+msg : '') + '\n・' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.port.enter_valid_port') + '\n' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.port_host_extra').replace(/\<R\>/, (is_mobile)?'⬆':'R').replace(/\<Enter\>/, (is_mobile)?'⬇':'Enter').replace(/\<Esc\>/, (is_mobile)?'/':'Esc');
   }
  ,index: 1
  ,bubble_index: 3
@@ -6749,7 +7018,7 @@ change_host = true;
           },
           message: {
   get content() {
-return System._browser.translation.get('XR_Animator.UI.VMC_protocol.host.current_host') + ': ' + (host||MMD_SA.OSC.VMC.options.plugin.send.host) + ((msg) ? '\n'+msg : '') + '\n・' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.host.enter_valid_IP') + '\n' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.port_host_extra');
+return System._browser.translation.get('XR_Animator.UI.VMC_protocol.host.current_host') + ': ' + (host||MMD_SA.OSC.VMC.options.plugin.send.host) + ((msg) ? '\n'+msg : '') + '\n・' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.host.enter_valid_IP') + '\n' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.port_host_extra').replace(/\<R\>/, (is_mobile)?'⬆':'R').replace(/\<Enter\>/, (is_mobile)?'⬇':'Enter').replace(/\<Esc\>/, (is_mobile)?'/':'Esc');
   }
  ,index: 1
  ,bubble_index: 3
@@ -6797,16 +7066,17 @@ MMD_SA.SpeechBubble.list[1].hide();
 //if (i == VMC_receiver_index) return VMC_receiver_icon[i];
 if (!R.receiver[i].enabled)
   return '⚫';
-return (R.receiver[i].active || R.receiver[i].expression_active) ? '🟢' : '🔴';
+return (R.receiver[i].active || R.receiver[i].expression_active || R.receiver[i].camera_active) ? '🟢' : '🔴';
     }).join('');
 
     return [
 '1. ' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.VMC_receiver_options.VMC_receiver') + ': ' + VMC_receiver_icon[VMC_receiver_index] + VMC_status + '⬅️➡️',
-'2. ┣ ' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.VMC_receiver_options.status') + ': ' + ((!R.receiver[VMC_receiver_index].enabled) ? '⚫' : ((R.receiver[VMC_receiver_index].active || R.receiver[VMC_receiver_index].expression_active) ? '🟢' : '🔴')) + ((R.receiver[VMC_receiver_index].enabled) ? 'ON' : 'OFF'),
+'2. ┣ ' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.VMC_receiver_options.status') + ': ' + ((!R.receiver[VMC_receiver_index].enabled) ? '⚫' : ((R.receiver[VMC_receiver_index].active || R.receiver[VMC_receiver_index].expression_active || R.receiver[VMC_receiver_index].camera_active) ? '🟢' : '🔴')) + ((R.receiver[VMC_receiver_index].enabled) ? 'ON' : 'OFF'),
 '3. ┣ ' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.port') + ': ' + R.receiver[VMC_receiver_index].config.port,
-'4. ┣ ' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.VMC_receiver_options.face') + ': ' + face[R.receiver[VMC_receiver_index].config.face],
-'5. ┣ ' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.VMC_receiver_options.pose') + ': ' + pose[R.receiver[VMC_receiver_index].config.pose],
-'6. ┗ ' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.VMC_receiver_options.hand') + ': ' + hand[R.receiver[VMC_receiver_index].config.hand],
+'4. ┣ ' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.protocol') + ': ' + R.receiver[VMC_receiver_index].config.protocol,
+'5. ┣ ' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.VMC_receiver_options.face') + ': ' + face[R.receiver[VMC_receiver_index].config.face],
+'6. ┣ ' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.VMC_receiver_options.pose') + ': ' + pose[R.receiver[VMC_receiver_index].config.pose],
+'7. ┗ ' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.VMC_receiver_options.hand') + ': ' + hand[R.receiver[VMC_receiver_index].config.hand],
 'A. ' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.VMC_receiver_options.mocap_expression_constraint') + ': ' + ((R.config.mocap_expression_constraint) ? System._browser.translation.get('XR_Animator.UI.VMC_protocol.VMC_receiver_options.mocap_expression_constraint.mouth') : 'OFF'),
 'B. ' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.VMC_receiver_options.mocap_head_constraint') + ': ' + ((R.config.mocap_head_constraint) ? 'ON' : 'OFF'),
 'C. ' + System._browser.translation.get('XR_Animator.UI.VMC_protocol.VMC_receiver_options.mocap_wrist_constraint') + ': ' + ((R.config.mocap_wrist_constraint) ? 'ON' : 'OFF'),
@@ -6815,7 +7085,7 @@ return (R.receiver[i].active || R.receiver[i].expression_active) ? '🟢' : '�
     ].join('\n');
   }
  ,bubble_index: 3
- ,para: { row_max:11, font_scale:0.95 }
+ ,para: { row_max:12, font_scale:0.90 }
  ,branch_list: branch_list_VMC_receiver
           }
         }
@@ -7594,6 +7864,7 @@ function animate_object3D() {
 // v0.37.3
 window.addEventListener('SA_MMD_before_render', animate_object3D);
 
+
 const adjust_object3D = (function () {
   const parent_bone_list = ['ROOT', '頭','首', '上半身2','上半身','左腕','左ひじ','左手首','右腕','右ひじ','右手首', '左足','左ひざ','左足首','右足','右ひざ','右足首'];
 
@@ -8019,11 +8290,12 @@ function remove_object3D(index) {
 
 var panorama_loading;
 var panorama_src, panorama_index;
+var panorama_f = (SA_topmost_window.is_cordova) ? 'cdungeon' : '_dungeon';
 var panorama_list = [
   '',
-  System.Gadget.path + '/images/_dungeon/tex/ryntaro_nukata/blue_sky.jpg',
-  System.Gadget.path + '/images/_dungeon/tex/ryntaro_nukata/angel_staircase.jpg',
-  System.Gadget.path + '/images/_dungeon/tex/stars_milky_way.jpg',
+  System.Gadget.path + '/images/' + panorama_f + '/tex/ryntaro_nukata/blue_sky.jpg',
+  System.Gadget.path + '/images/' + panorama_f + '/tex/ryntaro_nukata/angel_staircase.jpg',
+  System.Gadget.path + '/images/' + panorama_f + '/tex/stars_milky_way.jpg',
 ];
 
 var canvas_dummy, canvas_dummy2;
@@ -8284,7 +8556,7 @@ async function change_HDRI(index, use_background) {
   if ((use_background == null) || !MMD_SA.THREEX.utils.HDRI.mode)
     use_background = (!MMD_SA.THREEX.utils.HDRI.mode) ? false : ((MMD_SA.THREEX.utils.HDRI.mode == 1) ? (!MMD_SA_options.mesh_obj_by_id["DomeMESH"]?._obj.visible && (!!MMD_SA.THREEX.scene.background || !MMD_SA.THREEX._object3d_list_?.length)) : true);
 
-  await MMD_SA.THREEX.utils.HDRI.load(System.Gadget.path + '/images/_dungeon/hdri/' + ((use_background)?'full/':'') + HDRI_list[index-1], use_background);
+  await MMD_SA.THREEX.utils.HDRI.load(System.Gadget.path + '/images/cdungeon/hdri/' + ((use_background)?'full/':'') + HDRI_list[index-1], use_background);
 
   if (use_background) {
     remove_skybox();
@@ -9009,8 +9281,9 @@ window.addEventListener('jThree_ready', ()=>{
     id:'face',
 // use .condition instead of .enabled to save some headaches when .camera_face_locking can change at any time
 //    enabled: MMD_SA_options.camera_face_locking,
+// save some headaches and disable face locking whenever selfie_mode is on
     condition: ()=>{
-return MMD_SA_options.camera_face_locking || ((MMD_SA_options.camera_face_locking !== false) && !explorer_mode && !MMD_SA_options.Dungeon_options.item_base.hand_camera._hand_camera_active && MMD_SA_options.Dungeon.started && (MMD_SA.Wallpaper3D.visible || MMD_SA_options.mesh_obj_by_id["DomeMESH"]._obj.visible || (MMD_SA.THREEX.enabled && MMD_SA.THREEX.scene.background) || object3d_list.some(obj=>!obj.parent_bone)) && !MMD_SA.THREEX._THREE.MMD.getCameraMotion().length);
+return !MMD_SA._trackball_camera?.selfie_mode && (MMD_SA_options.camera_face_locking || ((MMD_SA_options.camera_face_locking !== false) && !explorer_mode && !MMD_SA_options.Dungeon_options.item_base.hand_camera._hand_camera_active && !MMD_SA_options.Dungeon_options.item_base.hand_camera._mobile_hand_camera.enabled && MMD_SA_options.Dungeon.started && (MMD_SA.Wallpaper3D.visible || MMD_SA_options.mesh_obj_by_id["DomeMESH"]._obj.visible || (MMD_SA.THREEX.enabled && MMD_SA.THREEX.scene.background) || object3d_list.some(obj=>!obj.parent_bone)) && !MMD_SA.THREEX._THREE.MMD.getCameraMotion().length && (!MMD_SA.OSC.VMC.sender_enabled || MMD_SA.OSC.VMC.send_avatar_data)));
     },
   });
 
@@ -10471,7 +10744,7 @@ MMD_SA_options.Dungeon.para_by_grid_id[2].ground_y = explorer_ground_y;
      ,[
         {
           message: {
-  get content() { return 'XR Animator (v0.34.3)\n' + System._browser.translation.get('XR_Animator.UI.UI_options.about_XR_Animator.message'); }
+  get content() { return 'XR Animator (v0.35.0)\n' + System._browser.translation.get('XR_Animator.UI.UI_options.about_XR_Animator.message'); }
  ,bubble_index: 3
  ,branch_list: [
     { key:1, event_id: {
@@ -11069,7 +11342,7 @@ MMD_SA_options.Dungeon.run_event(null,null,5);
 
 return true;
     } },
-    ...['switch_motion','arm_to_leg_control_mode','mocap_auto_grounding','hand_camera','selfie_mode','auto_look_at_camera','hip_camera'].map((id,i)=>{
+    ...['switch_motion','arm_to_leg_control_mode','mocap_auto_grounding','hand_camera','selfie_mode','auto_look_at_camera','hip_camera','mocap_toggle'].map((id,i)=>{
       return { key:i+1, event_id:{ func:()=>{
 hotkey_id = id;
 hotkey_combo = hotkey_info = hotkey_acc = null;
@@ -11189,17 +11462,17 @@ return [
   '1. ' + get_state('switch_motion') + 'Alt/Ctrl+Num0-9' + System._browser.translation.get('XR_Animator.UI.UI_options.miscellaneous_options.hotkey.switch_motion'),
   '2. ' + get_state('arm_to_leg_control_mode') + hotkeys.config_by_id['arm_to_leg_control_mode'].accelerator[0] + System._browser.translation.get('XR_Animator.UI.UI_options.miscellaneous_options.hotkey.arm_as_leg_control'),
   '3. ' + get_state('mocap_auto_grounding') + hotkeys.config_by_id['mocap_auto_grounding'].accelerator[0] + System._browser.translation.get('XR_Animator.UI.UI_options.miscellaneous_options.hotkey.auto_grounding'),
-//  '・' + get_state('camera_3D_lock') + 'Ctrl+L to toggle 3D camera lock',
   '4. ' + get_state('hand_camera') + hotkeys.config_by_id['hand_camera'].accelerator[0] + System._browser.translation.get('XR_Animator.UI.UI_options.miscellaneous_options.hotkey.hand_camera'),
   '5. ' + get_state('selfie_mode') + hotkeys.config_by_id['selfie_mode'].accelerator[0] + System._browser.translation.get('XR_Animator.UI.UI_options.miscellaneous_options.hotkey.selfie_mode'),
   '6. ' + get_state('auto_look_at_camera') + hotkeys.config_by_id['auto_look_at_camera'].accelerator[0] + System._browser.translation.get('XR_Animator.UI.UI_options.miscellaneous_options.hotkey.auto_look_at_camera'),
   '7. ' + get_state('hip_camera') + hotkeys.config_by_id['hip_camera'].accelerator[0] + System._browser.translation.get('XR_Animator.UI.UI_options.miscellaneous_options.hotkey.hip_camera'),
+  '8. ' + get_state('mocap_toggle') + hotkeys.config_by_id['mocap_toggle'].accelerator[0] + System._browser.translation.get('XR_Animator.UI.UI_options.miscellaneous_options.hotkey.mocap_toggle'),
   'G. ' + System._browser.translation.get('XR_Animator.UI.UI_options.miscellaneous_options.hotkey.global_hotkey_mode') + '🌐: ' + ((System._browser.hotkeys.is_global) ? 'ON' : 'OFF'),
   'X. ' + System._browser.translation.get('Misc.done'),
 ].join('\n');
   },
   bubble_index: 3,
-  para: { no_word_break:true, font_scale:0.9 },
+  para: { row_max:11, no_word_break:true, font_scale:0.9 },
   branch_list: branch_list,
               },
             },
@@ -11743,8 +12016,9 @@ const object_tracking_page_index = tilt_page_index+1;
 return [
         {
           message: {
-  get content() { return System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options').replace(/\<smoothing\>/, System._browser.translation.get('Misc.' + ((System._browser.camera.mocap_data_smoothing == 1) ? 'Small' : ((System._browser.camera.mocap_data_smoothing == 2) ? 'Normal' : 'Min')))).replace(/\<upper_body_blend_mode\>/, (System._browser.camera.upper_body_blend_mode_raw == 1) ? System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.upper_body_blend_mode.simple') : System._browser.translation.get('Misc.' + ((System._browser.camera.upper_body_blend_mode_raw == 2) ? 'Normal' : 'auto'))) + '\n9. ' + System._browser.translation.get('Misc.done'); }
+  get content() { return System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options').replace(/\<smoothing\>/, System._browser.translation.get('Misc.' + ((System._browser.camera.mocap_data_smoothing == 1) ? 'Small' : ((System._browser.camera.mocap_data_smoothing == 2) ? 'Normal' : 'Min')))).replace(/\<upper_body_blend_mode\>/, (System._browser.camera.upper_body_blend_mode_raw == 1) ? System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.upper_body_blend_mode.simple') : System._browser.translation.get('Misc.' + ((System._browser.camera.upper_body_blend_mode_raw == 2) ? 'Normal' : 'auto'))).replace(/\<hide_avatar_on_tracking_loss\>/, ((System._browser.camera.poseNet.hide_avatar_on_tracking_loss == 1) ? System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.hide_avatar_on_tracking_loss.non_VMC') : ((System._browser.camera.poseNet.hide_avatar_on_tracking_loss)?'ON':'OFF'))) + '\nX. ' + System._browser.translation.get('Misc.done'); }
  ,bubble_index: 3
+ ,para: { row_max:10 }
  ,branch_list: [
   { key:1, event_index:1 },
   { key:2, event_index:hand_page_index },
@@ -11779,8 +12053,22 @@ MMD_SA_options.Dungeon.utils.tooltip(
 );
     }
   },
-  { key:7, event_index:tilt_page_index },
-  { key:8, branch_index:mocap_options_branch+4,
+  { key:7, event_id: {
+      func: function () {
+if (++System._browser.camera.poseNet.hide_avatar_on_tracking_loss > 2)
+  System._browser.camera.poseNet.hide_avatar_on_tracking_loss = 0;
+      },
+      goto_event: { branch_index:mocap_options_branch },
+    },
+    onmouseover: function (e) {
+MMD_SA_options.Dungeon.utils.tooltip(
+  e.clientX, e.clientY,
+  System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.hide_avatar_on_tracking_loss.tooltip')
+);
+    }
+  },
+  { key:8, event_index:tilt_page_index },
+  { key:9, branch_index:mocap_options_branch+4,
     onmouseover: function (e) {
 MMD_SA_options.Dungeon.utils.tooltip(
   e.clientX, e.clientY,
@@ -11788,7 +12076,7 @@ MMD_SA_options.Dungeon.utils.tooltip(
 );
     }
   },
-  { key:9, is_closing_event:true, branch_index:done_branch }
+  { key:'X', is_closing_event:true, branch_index:done_branch }
   ]
           }
         },
@@ -11826,7 +12114,7 @@ MMD_SA_options.Dungeon.run_event(null,mocap_options_branch,hip_adjustment_index)
           const body_collider_options = ['Head size', 'Chest size', 'Waist size', 'Hip size'];
 
           let option_plus_minus = 'arm_horizontal_offset';
-          const body_tracking_options = ['arm_horizontal_offset', 'arm_vertical_offset', 'hip_depth_scale', 'hip_z_position_offset', 'hip_y_position_offset', 'limb_entry_duration', 'limb_return_duration', 'upper_rotation_offset'];
+          const body_tracking_options = ['arm_horizontal_offset', 'arm_vertical_offset', 'hip_depth_scale', 'hip_z_position_offset', 'hip_y_position_offset', 'shoulder_angle_offset', 'limb_entry_duration', 'limb_return_duration', 'upper_rotation_offset'];
 
           return [
             {
@@ -12014,6 +12302,9 @@ else if ((e.key == '+') || (e.key == '-')) {
     const _pose = (MMD_SA.MMD.motionManager.para_SA.motion_tracking?.ML_models?.pose || MMD_SA_options.user_camera.ML_models.pose);
     _pose.upper_rotation_offset = ((_pose.upper_rotation_offset||0) + inc) % 360;
   }
+  else if (option_plus_minus == 'shoulder_angle_offset') {
+    System._browser.camera.poseNet.shoulder_angle_offset = THREE.Math.clamp((System._browser.camera.poseNet.shoulder_angle_offset||0) + inc, -30,30);
+  }
 }
 else {
   return false;
@@ -12168,16 +12459,16 @@ return page2_index;
 
     return [
 'A. ' + System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.shoulder_tracking') + ': ' + ((System._browser.camera.poseNet.shoulder_tracking) ? 'ON' : 'OFF'),
-'B. ' + System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.body_bend_reduction') + ': ' + ((body_bend_reduction_power) ? System._browser.translation.get('Misc.' + body_bend_reduction_power) : 'OFF'),
-'C. ' + System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.leg_IK') + ': ' + ((MMD_SA_options.user_camera.ML_models.pose.use_legIK)?'ON':'OFF'),
-'D. ' + System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.arm_IK') + ': ' + ((MMD_SA_options.user_camera.ML_models.pose.use_armIK)?'ON':'OFF'),
-'E. ' + System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.auto_grounding') + ' (' + (System._browser.hotkeys.config_by_id['mocap_auto_grounding']?.accelerator[0]||'') + '): ' + ((!System._browser.camera.poseNet.auto_grounding)?'OFF':'ON'),
-'F. ' + System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.hip_camera') + ' (' + (System._browser.hotkeys.config_by_id['hip_camera']?.accelerator[0]||'') + '): ' + ((System._browser.camera.poseNet.hip_camera) ? 'ON' : 'OFF'),
-'G. ' + System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.limb_entry_duration') + ': ' + System._browser.camera.poseNet.limb_entry_duration_percent + '%' + ((option_plus_minus == 'limb_entry_duration') ? '➕➖' : '  　　'),
-'H. ' + System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.limb_return_duration') + ': ' + System._browser.camera.poseNet.limb_return_duration_percent + '%' + ((option_plus_minus == 'limb_return_duration') ? '➕➖' : '  　　'),
-'I. ' + System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.upper_rotation_offset') + ': ' + ((MMD_SA.MMD.motionManager.para_SA.motion_tracking?.ML_models?.pose || MMD_SA_options.user_camera.ML_models.pose).upper_rotation_offset||0) + '°' + ((option_plus_minus == 'upper_rotation_offset') ? '➕➖' : ''),
-'J. ┗ ' + System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.upper_rotation_offset.inverted') + ': ' + ((MMD_SA_options.user_camera.ML_models.pose.upper_rotation_offset_inverted)?'ON':'OFF'),
-'K. ' + System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.hide_avatar_on_tracking_loss') + ': ' + ((System._browser.camera.poseNet.hide_avatar_on_tracking_loss == 1) ? System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.hide_avatar_on_tracking_loss.non_VMC') : ((System._browser.camera.poseNet.hide_avatar_on_tracking_loss)?'ON':'OFF')),
+'B. ' + System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.shoulder_angle_offset') + ': ' + System._browser.camera.poseNet.shoulder_angle_offset + '°' + ((option_plus_minus == 'shoulder_angle_offset') ? '➕➖' : '  　　'),
+'C. ' + System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.body_bend_reduction') + ': ' + ((body_bend_reduction_power) ? System._browser.translation.get('Misc.' + body_bend_reduction_power) : 'OFF'),
+'D. ' + System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.leg_IK') + ': ' + ((MMD_SA_options.user_camera.ML_models.pose.use_legIK)?'ON':'OFF'),
+'E. ' + System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.arm_IK') + ': ' + ((MMD_SA_options.user_camera.ML_models.pose.use_armIK)?'ON':'OFF'),
+'F. ' + System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.auto_grounding') + ' (' + (System._browser.hotkeys.config_by_id['mocap_auto_grounding']?.accelerator[0]||'') + '): ' + ((!System._browser.camera.poseNet.auto_grounding)?'OFF':'ON'),
+'G. ' + System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.hip_camera') + ' (' + (System._browser.hotkeys.config_by_id['hip_camera']?.accelerator[0]||'') + '): ' + ((System._browser.camera.poseNet.hip_camera) ? 'ON' : 'OFF'),
+'H. ' + System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.limb_entry_duration') + ': ' + System._browser.camera.poseNet.limb_entry_duration_percent + '%' + ((option_plus_minus == 'limb_entry_duration') ? '➕➖' : '  　　'),
+'I.  ' + System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.limb_return_duration') + ': ' + System._browser.camera.poseNet.limb_return_duration_percent + '%' + ((option_plus_minus == 'limb_return_duration') ? '➕➖' : '  　　'),
+'J. ' + System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.upper_rotation_offset') + ': ' + ((MMD_SA.MMD.motionManager.para_SA.motion_tracking?.ML_models?.pose || MMD_SA_options.user_camera.ML_models.pose).upper_rotation_offset||0) + '°' + ((option_plus_minus == 'upper_rotation_offset') ? '➕➖' : ''),
+'K. ┗ ' + System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.upper_rotation_offset.inverted') + ': ' + ((MMD_SA_options.user_camera.ML_models.pose.upper_rotation_offset_inverted)?'ON':'OFF'),
     ].join('\n');
   },
   index: 1,
@@ -12199,6 +12490,20 @@ MMD_SA_options.Dungeon.utils.tooltip(
   },
   { key:'B', event_id: {
       func: function () {
+option_plus_minus = 'shoulder_angle_offset';
+      },
+      goto_event: { branch_index:mocap_options_branch, step:1 },
+    },
+    onmouseover: function (e) {
+MMD_SA_options.Dungeon.run_event(this.event_id);
+MMD_SA_options.Dungeon.utils.tooltip(
+  e.clientX, e.clientY,
+  System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.shoulder_angle_offset') + ((option_plus_minus == 'shoulder_angle_offset') ? ' (' + System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.press_to_change_value') + ')' : '') + ':\n' + System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.shoulder_angle_offset.tooltip')
+);
+    }
+  },
+  { key:'C', event_id: {
+      func: function () {
 let v = System._browser.camera.poseNet.body_bend_reduction_power || 0;
 v += 0.25;
 if (v > 1)
@@ -12214,7 +12519,7 @@ MMD_SA_options.Dungeon.utils.tooltip(
 );
     }
   },
-  { key:'C', branch_index:mocap_options_branch+1,
+  { key:'D', branch_index:mocap_options_branch+1,
     onmouseover: function (e) {
 MMD_SA_options.Dungeon.utils.tooltip(
   e.clientX, e.clientY,
@@ -12222,7 +12527,7 @@ MMD_SA_options.Dungeon.utils.tooltip(
 );
     }
   },
-  { key:'D', event_id: {
+  { key:'E', event_id: {
       func: function () {
 // Do not set .use_armIK to false as it will completely disable it instead of auto select
 MMD_SA_options.user_camera.ML_models.pose.use_armIK = (!MMD_SA_options.user_camera.ML_models.pose.use_armIK) || null;
@@ -12236,7 +12541,7 @@ MMD_SA_options.Dungeon.utils.tooltip(
 );
     }
   },
-  { key:'E', branch_index:mocap_options_branch+3,
+  { key:'F', branch_index:mocap_options_branch+3,
     onmouseover: function (e) {
 MMD_SA_options.Dungeon.utils.tooltip(
   e.clientX, e.clientY,
@@ -12244,7 +12549,7 @@ MMD_SA_options.Dungeon.utils.tooltip(
 );
     }
   },
-  { key:'F', event_id: {
+  { key:'G', event_id: {
       func: function () {
 System._browser.camera.poseNet.hip_camera = !System._browser.camera.poseNet.hip_camera;
       },
@@ -12257,7 +12562,7 @@ MMD_SA_options.Dungeon.utils.tooltip(
 );
     }
   },
-  { key:'G', event_id: {
+  { key:'H', event_id: {
       func: function () {
 option_plus_minus = 'limb_entry_duration';
       },
@@ -12271,7 +12576,7 @@ MMD_SA_options.Dungeon.utils.tooltip(
 );
     }
   },
-  { key:'H', event_id: {
+  { key:'I', event_id: {
       func: function () {
 option_plus_minus = 'limb_return_duration';
       },
@@ -12285,7 +12590,7 @@ MMD_SA_options.Dungeon.utils.tooltip(
 );
     }
   },
-  { key:'I', event_id: {
+  { key:'J', event_id: {
       func: function () {
 option_plus_minus = 'upper_rotation_offset';
       },
@@ -12299,7 +12604,7 @@ MMD_SA_options.Dungeon.utils.tooltip(
 );
     }
   },
-  { key:'J', event_id: {
+  { key:'K', event_id: {
       func: function () {
 MMD_SA_options.user_camera.ML_models.pose.upper_rotation_offset_inverted = !MMD_SA_options.user_camera.ML_models.pose.upper_rotation_offset_inverted;
       },
@@ -12309,20 +12614,6 @@ MMD_SA_options.user_camera.ML_models.pose.upper_rotation_offset_inverted = !MMD_
 MMD_SA_options.Dungeon.utils.tooltip(
   e.clientX, e.clientY,
   System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.upper_rotation_offset.inverted.tooltip')
-);
-    }
-  },
-  { key:'K', event_id: {
-      func: function () {
-if (++System._browser.camera.poseNet.hide_avatar_on_tracking_loss > 2)
-  System._browser.camera.poseNet.hide_avatar_on_tracking_loss = 0;
-      },
-      goto_event: { branch_index:mocap_options_branch, step:1 },
-    },
-    onmouseover: function (e) {
-MMD_SA_options.Dungeon.utils.tooltip(
-  e.clientX, e.clientY,
-  System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.body_tracking_options.hide_avatar_on_tracking_loss.tooltip')
 );
     }
   },
@@ -13620,7 +13911,7 @@ System._browser.camera.facemesh.model_inference_device = (System._browser.camera
       onmouseover: function (e) {
 MMD_SA_options.Dungeon.utils.tooltip(
   e.clientX, e.clientY,
-  System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.face_tracking_options.AI_model_inference_device.tooltip')
+  System._browser.translation.get('XR_Animator.UI.motion_capture.mocap_options.face_tracking_options.AI_model_inference_device.tooltip').replace(/\<inference_mode\>/, ((is_mobile) ? 'GPU' : 'CPU'))
 );
       }
     },
@@ -14159,39 +14450,62 @@ window.addEventListener("SA_AR_onARFrame", (function () {
 
 
 (()=>{
-  const v1 = new THREE.Vector3();
-  const v2 = new THREE.Vector3();
 
-  window.addEventListener('SA_MMD_Wallpaper3D_on_update_transform', ()=>{
+  MMD_SA_options._XRA_camera_lock = (()=>{
+    const v1 = new THREE.Vector3();
+    const v2 = new THREE.Vector3();
+
+    window.addEventListener('SA_MMD_Wallpaper3D_on_update_transform', ()=>{
 const mod = MMD_SA.Camera_MOD.get_mod('camera_lock');
 MMD_SA.Wallpaper3D.mesh.position.add(mod.pos_last);
-  });
+    });
 
-  let camera_locked;
-  function camera_lock() {
-    const obj = MMD_SA._trackball_camera;
+    let camera_locked;
 
-    camera_locked = !camera_locked;
-    if (camera_locked) {
-      const camera_raw = MMD_SA.Camera_MOD.get_camera_raw();
-      MMD_SA.Camera_MOD.adjust_camera('camera_lock', camera_raw.pos, camera_raw.target, camera_raw.up_z);
+    return {
+      get locked() { return camera_locked; },
 
-      MMD_SA.reset_camera();
-// needed for "auto_zoom" camera mod
-      System._browser.on_animation_update.add(()=>{ MMD_SA.reset_camera(); }, 3,0);
+      process: function (_camera_locked, camera_pos, camera_target, camera_up_z) {
+const obj = MMD_SA._trackball_camera;
 
-      MMD_SA.THREEX.camera.control.enabled = false;
-    }
-    else {
-      MMD_SA.Camera_MOD.adjust_camera('camera_lock', v1.set(0,0,0), v2.set(0,0,0), 0);
-      MMD_SA.THREEX.camera.control.enabled = true;
-      MMD_SA.reset_camera();
-    }
+camera_locked = (typeof _camera_locked == 'boolean') ? _camera_locked : !camera_locked;
 
-    MMD_SA.Wallpaper3D.update_transform();
-
-    DEBUG_show('Camera lock:'+((camera_locked)?'ON':'OFF'), 3);
+if (camera_locked) {
+  if (camera_pos) {
+    v1.fromArray(camera_pos);
+    v2.fromArray(camera_target);
   }
+  else {
+    const camera_raw = MMD_SA.Camera_MOD.get_camera_raw();
+    v1.copy(camera_raw.pos);
+    v2.copy(camera_raw.target);
+    camera_up_z = camera_raw.up_z;
+  }
+
+  MMD_SA.Camera_MOD.adjust_camera('camera_lock', v1, v2, camera_up_z);
+
+  MMD_SA.reset_camera();
+// needed for "auto_zoom" camera mod
+  System._browser.on_animation_update.add(()=>{ MMD_SA.reset_camera(); }, 3,0);
+
+  MMD_SA.THREEX.camera.control.enabled = false;
+}
+else {
+  MMD_SA.Camera_MOD.adjust_camera('camera_lock', v1.set(0,0,0), v2.set(0,0,0), 0);
+  MMD_SA.THREEX.camera.control.enabled = true;
+  MMD_SA.reset_camera();
+}
+
+if (System._browser.camera.ML_enabled) {
+  MMD_SA_options.user_camera.streamer_mode.camera_lock = (camera_locked) ? { pos:v1.toArray(), target:v2.toArray(), up_z:camera_up_z } : null;
+}
+
+MMD_SA.Wallpaper3D.update_transform();
+
+DEBUG_show('Camera lock:'+((camera_locked)?'ON':'OFF'), 3);
+      }
+    };
+  })();
 
   const hotkey_config = [
     {
@@ -14257,7 +14571,7 @@ DEBUG_show('Mocap auto-grounding:' + ((System._browser.camera.poseNet.auto_groun
       accelerator: ['Ctrl+L'],
       global_disabled: true,
       process: (e)=>{
-camera_lock();
+MMD_SA_options._XRA_camera_lock.process();
       }
     },
 
@@ -14304,6 +14618,36 @@ DEBUG_show('Auto "look at camera":' + ((System._browser.camera.facemesh.auto_loo
 System._browser.camera.poseNet.hip_camera = !System._browser.camera.poseNet.hip_camera;
       }
     },
+
+    {
+      id: 'mocap_toggle',
+      accelerator: ['Ctrl+P'],
+      process: (()=>{
+        let mocap_initialized;
+        return (e)=>{
+const camera = System._browser.camera;
+if (MMD_SA_options.Dungeon.event_mode)
+  document.dispatchEvent(new KeyboardEvent('keydown', { code:'Escape' }));
+
+if (camera.ML_enabled) {
+  mocap_initialized = true;
+  MMD_SA.WebXR.user_camera.facemesh.enabled = false;
+  MMD_SA.WebXR.user_camera.poseNet.enabled = false;
+  MMD_SA.WebXR.user_camera.handpose.enabled = false;
+}
+else {
+  if (!mocap_initialized) {
+    mocap_initialized = true;
+    System._browser.camera.streamer_mode.start();
+  }
+  else {
+    System._browser.camera.streamer_mode.init_mocap(MMD_SA_options.user_camera.streamer_mode.mocap_type);
+  }
+}
+        };
+      })()
+    },
+
   ];
 
   const hotkey_reserved = [];
@@ -14332,7 +14676,7 @@ System._browser.camera.poseNet.hip_camera = !System._browser.camera.poseNet.hip_
   MMD_SA_options._XRA_settings_export = ()=>{
 function custom_motion() {
   const cm = (webkit_electron_mode) ? MMD_SA_options._XRA_pose_list[0].filter(m=>m.is_custom_motion).map(m=>m.path) : [];
-  return cm.slice(Math.max(cm.length-10,0));
+  return cm.slice(Math.max(cm.length-100,0));
 }
 
 System._browser.camera.poseNet.hip_adjustment_set = null;
@@ -14362,6 +14706,7 @@ config.user_camera = {
       use_armIK: !!MMD_SA_options.user_camera.ML_models.pose.use_armIK,
       auto_grounding: System._browser.camera.poseNet.auto_grounding,
       shoulder_tracking: System._browser.camera.poseNet.shoulder_tracking,
+      shoulder_angle_offset: System._browser.camera.poseNet.shoulder_angle_offset,
       body_bend_reduction_power: System._browser.camera.poseNet.body_bend_reduction_power,
       hip_camera: System._browser.camera.poseNet.hip_camera,
 
@@ -14524,6 +14869,7 @@ config.VMC = {
   send: {
     port: MMD_SA.OSC.VMC.options.plugin.send.port,
     host: MMD_SA.OSC.VMC.options.plugin.send.host,
+    protocol: MMD_SA.OSC.VMC.options.protocol,
   },
   app_mode: MMD_SA.OSC.app_mode,
   delay: MMD_SA.OSC.VMC.delay,
@@ -14620,6 +14966,7 @@ try {
         MMD_SA_options.user_camera.ML_models.pose.upper_rotation_offset_inverted = config[p].ML_models.pose.upper_rotation_offset_inverted;
         System._browser.camera.poseNet.auto_grounding = config[p].ML_models.pose.auto_grounding;
         System._browser.camera.poseNet.shoulder_tracking = config[p].ML_models.pose.shoulder_tracking;
+        System._browser.camera.poseNet.shoulder_angle_offset = config[p].ML_models.pose.shoulder_angle_offset;
         System._browser.camera.poseNet.body_bend_reduction_power = config[p].ML_models.pose.body_bend_reduction_power;
         System._browser.camera.poseNet.hip_camera = config[p].ML_models.pose.hip_camera;
         System._browser.camera.poseNet.arm_horizontal_offset_percent = config[p].ML_models.pose.arm_horizontal_offset_percent;
@@ -14848,13 +15195,12 @@ try {
       case 'VMC':
         MMD_SA.OSC.VMC.options.plugin.send.port = parseInt(config[p].send?.port) || MMD_SA.OSC.VMC.options_default.plugin.send.port;
         MMD_SA.OSC.VMC.options.plugin.send.host = config[p].send?.host || MMD_SA.OSC.VMC.options_default.plugin.send.host;
-        if (MMD_SA.OSC.VMC.plugin) {
-          MMD_SA.OSC.VMC.plugin.options.send.port = MMD_SA.OSC.VMC.options.plugin.send.port;
-          MMD_SA.OSC.VMC.plugin.options.send.host = MMD_SA.OSC.VMC.options.plugin.send.host;
-        }
+        MMD_SA.OSC.VMC.options.protocol = config[p].send?.protocol || ((webkit_electron_mode) ? 'UDP' : 'WebSocket');
 
         MMD_SA.OSC.app_mode = config[p].app_mode;
         MMD_SA.OSC.VMC.delay = config[p].delay;
+
+        MMD_SA.OSC.VMC.update('send');
 
         if (config[p].VMC_receiver) {
           Object.assign(System._browser.camera.VMC_receiver.config, config[p].VMC_receiver.config);
@@ -15457,6 +15803,13 @@ d.result.return_value = true;
     });
   });
 
+
+  window.addEventListener('load', ()=>{
+    System._browser.on_animation_update.add(()=>{
+// reset it to false for XRA v0.35.0+
+      MMD_SA.OSC.VMC._send_avatar_data = false;
+    }, 0,0);
+  });
 
   EV_sync_update.fps_control = (function () {
     var update_frame = false
