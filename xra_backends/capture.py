@@ -239,12 +239,14 @@ class _FfmpegGrabber:
                 except Exception:
                     pass
 
-def _optimize_v4l2_device(device_spec: str) -> dict:
-    """Safely disable dynamic framerate throttling on Linux V4L2 webcams.
+def _optimize_v4l2_device(device_spec: str, target_fps: float = 30.0) -> dict:
+    """Safely disable dynamic framerate throttling and enforce 30 FPS on Linux V4L2 webcams.
 
     Many USB webcams default to exposure_dynamic_framerate=1, which halves
     the sensor framerate from 30 to 15 FPS in standard indoor lighting.
     Setting it to 0 forces the hardware sensor to maintain the negotiated 30 FPS.
+    Additionally, setting hardware streaming parameters (--set-parm) locks the
+    frame interval and prevents UVC drivers from falling back to 5 FPS.
 
     Gracefully no-ops on Windows/macOS or if v4l2-ctl is unavailable.
     """
@@ -260,6 +262,18 @@ def _optimize_v4l2_device(device_spec: str) -> dict:
         v4l2_ctl = shutil.which("v4l2-ctl")
         if not v4l2_ctl:
             return {"available": False, "applied": False, "reason": "tool_missing"}
+
+        # Lock hardware streaming parameters (frame rate) directly in the kernel driver
+        if target_fps and target_fps > 0:
+            fps_int = int(round(target_fps))
+            subprocess.run(
+                [v4l2_ctl, "-d", dev_str, f"--set-parm={fps_int}"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=0.6,
+                check=False,
+            )
+
         result = subprocess.run(
             [v4l2_ctl, "-d", dev_str, "-c", "exposure_dynamic_framerate=0"],
             stdout=subprocess.DEVNULL,
@@ -546,10 +560,17 @@ class _OpenCVGrabber:
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         cap.set(cv2.CAP_PROP_FPS, self.fps)
         if sys.platform.startswith("linux"):
-            self.v4l2_optimization = _optimize_v4l2_device(self.device)
-            # Do not set FOURCC a second time here.  Several UVC drivers reset
-            # the already-negotiated frame interval when the pixel format is
-            # changed after width/height/FPS, commonly falling back to 5 FPS.
+            # Verify if the driver kept MJPEG or fell back to uncompressed YUYV after geometry negotiation.
+            # If it fell back, re-apply MJPEG and enforce the hardware frame rate via v4l2-ctl.
+            try:
+                fourcc_val = int(cap.get(cv2.CAP_PROP_FOURCC) or 0)
+                cur_fmt = "".join(chr((fourcc_val >> (8 * s)) & 0xFF) for s in range(4)).rstrip("\x00").upper()
+                if cur_fmt != "MJPG":
+                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+                    cap.set(cv2.CAP_PROP_FPS, self.fps)
+            except Exception:
+                pass
+            self.v4l2_optimization = _optimize_v4l2_device(self.device, target_fps=self.fps)
         if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         try:
