@@ -1803,7 +1803,7 @@
           if (userCam?.facemesh) userCam.facemesh.enabled = true;
           const mm = window.MMD_SA?.MMD?.motionManager;
           if (mm?.para_SA) {
-            mm.para_SA.motion_tracking_enabled = true;
+            setCamPropertySafe(mm.para_SA, 'motion_tracking_enabled', true);
           }
         }
         return res;

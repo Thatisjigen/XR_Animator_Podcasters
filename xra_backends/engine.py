@@ -508,14 +508,6 @@ def to_wire(payload: dict, capture_hint: Optional[tuple[int, int]] = None) -> di
                 elif dy_se <= t_span * 0.35 and u_x >= 0.60 and el_sc >= 0.35 and w_sc < 0.20:
                     arm_active = True
 
-                debug_arm = os.environ.get("XRA_DEBUG_ARM", "0") in {"1", "true", "yes"}
-                if debug_arm:
-                    cur_w_pt = keypoints[wrist_idx] if wrist_idx < len(keypoints) else {}
-                    cur_w_sc = _float(cur_w_pt.get("score", 0.0))
-                    msg = f"[{time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d}] [XRA_DEBUG_ARM] {hand_key}: arm_active={arm_active} w_sc={cur_w_sc:.2f} el_sc={el_sc:.2f} has_hand={has_active_hand}"
-                    print(msg, flush=True)
-                    _write_debug_log(msg)
-
                 if smart_arm_sync:
                     if arm_active:
                         # If wrist is weak/occluded (< 0.35):
@@ -907,10 +899,6 @@ class EngineDispatcher:
         if not result.get("ok") and self._accelerated:
             failed_engine = getattr(candidate, "name", "GPU")
             candidate.unload()
-            print(
-                f"[XRA_MP] {failed_engine} init failed, falling back to CPU.",
-                flush=True,
-            )
             self._accelerated = False
             candidate = self._candidate()
             result = candidate.load(accelerated=False)
@@ -1141,8 +1129,6 @@ class EngineDispatcher:
                             p = rw.get("position") or rw
                             hands_info["left_wrist"] = (_norm(p.get("x", 0), w), _norm(p.get("y", 0), h))
 
-                if hands_info:
-                    print(f"[OBJ_HANDS] hands_info={hands_info}", flush=True)
                 frame_rgb = frame_bgr[..., ::-1]
                 self.object_detector.submit(frame_rgb, hands_info)
             return res

@@ -20,7 +20,6 @@ import numpy as np
 
 from . import registry
 
-TAG = "[XRA_OBJ_DETECT]"
 
 # Classes commonly used as 3D props in desktop/streaming setups
 DEFAULT_PROP_CLASSES = {
@@ -97,7 +96,6 @@ class ObjectDetectorWorker:
             return True
         model_path = self._get_model_path()
         if not model_path:
-            print(f"{TAG} efficientdet_lite0.tflite not found, object detection unavailable", flush=True)
             return False
         try:
             import mediapipe as mp
@@ -119,10 +117,8 @@ class ObjectDetectorWorker:
                 score_threshold=0.1,
             )
             self._detector = vision.ObjectDetector.create_from_options(options)
-            print(f"{TAG} ObjectDetector initialized successfully from {model_path.name}", flush=True)
             return True
         except Exception as exc:
-            print(f"{TAG} Failed to initialize ObjectDetector: {exc}", flush=True)
             self._detector = None
             return False
 
@@ -153,7 +149,6 @@ class ObjectDetectorWorker:
             except Exception:
                 pass
             self._detector = None
-        print(f"{TAG} Object detector stopped and resources released", flush=True)
 
     def submit(self, frame_rgb: np.ndarray, hands_info: Optional[dict] = None) -> bool:
         """Submit a frame for detection.
@@ -238,7 +233,6 @@ class ObjectDetectorWorker:
                                     min_dist = dist
                                     assigned_hand = hand_side
 
-                    print(f"[OBJ_DET] {category_name} center=({center_x:.2f},{center_y:.2f}) dists={dists} -> assigned={assigned_hand}", flush=True)
                     detections.append({
                         "category": category_name,
                         "score": round(score, 3),
@@ -256,12 +250,12 @@ class ObjectDetectorWorker:
                     try:
                         self.callback(payload)
                     except Exception as e:
-                        print(f"{TAG} Callback error: {e}", flush=True)
+                        pass
 
             except queue.Empty:
                 continue
             except Exception as exc:
-                print(f"{TAG} Worker detection error: {exc}", flush=True)
+                pass
 
         if self._detector is not None:
             try:

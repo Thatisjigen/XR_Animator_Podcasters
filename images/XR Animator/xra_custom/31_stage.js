@@ -231,7 +231,6 @@
       if (activeStageMesh) {
         disposeMesh(activeStageMesh);
         activeStageMesh = null;
-        console.log(TAG, 'Stage removed and disposed');
       }
       events.emit('stage-updated', { enabled: false, path: '' });
       return true;
@@ -308,7 +307,6 @@
           scene.add(stageGroup);
           activeStageMesh = stageGroup;
           updateStageTransform();
-          console.log(TAG, 'Loaded 3D stage from:', path);
           events.emit('stage-updated', { enabled: true, path });
         },
         undefined,
@@ -415,7 +413,6 @@
           currentHand: null,
           lastSeenTime: 0,
         };
-        console.log(TAG, `Prop loaded: ${propKey} at`, scaledPos);
         resolve(activeProps[propKey]);
       }, undefined, (err) => {
         console.warn(TAG, `Failed to load prop ${propKey}:`, err);
@@ -570,7 +567,6 @@
       }
 
       if (propKey) {
-        console.log('[PROPS AI]', cat, '-> prop:', propKey, 'hand:', det.hand);
         if (det.hand) {
           detectedMap[propKey] = det.hand;
         }

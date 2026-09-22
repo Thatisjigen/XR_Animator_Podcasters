@@ -273,16 +273,7 @@ class InferenceWorker:
             with self._pose_cond:
                 self._latest_pose = None
         self._subscribed = enabled
-        if os.environ.get("XRA_VERBOSE", "0") in {"1", "true", "yes", "on"}:
-            print(
-                "[XRA_WS_SUB] " + json.dumps({
-                    "connection_id": self.connection_id,
-                    "role": self._role,
-                    "enabled": enabled,
-                    "subscribers": capture.CAPTURE.subscriber_count,
-                }),
-                flush=True,
-            )
+
 
     def _queue_pose(self, wire: dict) -> None:
         if not isinstance(wire, dict) or self.conn.closed:
@@ -335,8 +326,6 @@ class InferenceWorker:
         self._next_infer_at = now + (1.0 / self._max_infer_fps)
 
         try:
-            if os.environ.get("XRA_VERBOSE", "0") in {"1", "true", "yes", "on"} and self._rx_bin_cnt % 30 == 1:
-                print(f"[XRA PYTHON] Ricevuto frame binario #{self._rx_bin_cnt} ({len(payload)} bytes)")
 
             w, h = struct.unpack("!HH", payload[:4])
             raw_bytes = payload[4:]
@@ -574,13 +563,7 @@ class InferenceWorker:
                 **self._status(),
             }
             self._send(response, obj)
-            if os.environ.get("XRA_VERBOSE", "0") in {"1", "true", "yes", "on"}:
-                print("[XRA_CAMERA_CONTROL] " + json.dumps({
-                    "action": action,
-                    "ok": True,
-                    "role": self._role,
-                    "capture": response.get("capture"),
-                }, ensure_ascii=False), flush=True)
+
         except Exception as exc:
             self.errors += 1
             response = {
@@ -591,14 +574,7 @@ class InferenceWorker:
                 **self._status(),
             }
             self._send(response, obj)
-            if os.environ.get("XRA_VERBOSE", "0") in {"1", "true", "yes", "on"}:
-                print("[XRA_CAMERA_CONTROL] " + json.dumps({
-                    "action": action,
-                    "ok": False,
-                    "role": self._role,
-                    "error": str(exc),
-                    "capture": response.get("capture"),
-                }, ensure_ascii=False), flush=True)
+
 
     def _load(self, model: str, model_complexity=None) -> dict:
         if not model or model == registry.MEDIAPIPE_ID:

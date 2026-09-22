@@ -72,7 +72,6 @@ def _check_gpu():
             if "renderer:" in line:
                 _GPU_NAME = line.split("renderer:")[-1].strip()
     except Exception as e:
-        print(f"[XRA_MP] GPU Delegate not supported or failed to init: {e}", flush=True)
         _GPU_AVAILABLE = False
     return _GPU_AVAILABLE
 
@@ -342,11 +341,8 @@ class HolisticTasksEngine:
             _is_size_crash = any(k in exc_str for k in ("rows", "batch size", "batch_size",
                                                           "Batch size", "divergent", "shape"))
             if _is_size_crash:
-                print(f"[XRA_MP_TASKS] graph size mismatch caught — reloading landmarker: {exc}", flush=True)
                 self.load()
                 self._last_shape = (h, w) if 'h' in locals() and 'w' in locals() else None
-            else:
-                print(f"[XRA_MP_TASKS] inference/conversion failed: {type(exc).__name__}: {exc}", flush=True)
             return None
 
 
@@ -472,8 +468,6 @@ class FaceTasksEngine:
             if any(k in exc_str for k in ("rows", "batch size", "batch_size", "divergent", "shape")):
                 self.load()
                 self._last_shape = (h, w) if 'h' in locals() and 'w' in locals() else None
-            else:
-                print(f"[XRA_MP_FACE] inference/conversion failed: {type(exc).__name__}: {exc}", flush=True)
             return None
 _BLAZEPOSE_NAMES = [
     "nose", "left_eye_inner", "left_eye", "left_eye_outer", "right_eye_inner",
@@ -1158,7 +1152,6 @@ class SplitTasksEngine:
             "pose": pose_model,
             "hand": model_dir / "hand_landmarker.task",
         }
-        print(f"[XRA_MP_SPLIT] Pose model: {pose_model.name}", flush=True)
         missing = [path.name for path in model_paths.values() if not path.is_file()]
         if missing:
             return {
@@ -1209,7 +1202,6 @@ class SplitTasksEngine:
     def _log_inference_error(self, message: str) -> None:
         now = time.monotonic()
         if now - self._last_error_log >= 2.0:
-            print(f"[XRA_MP_SPLIT] {message}", flush=True)
             self._last_error_log = now
 
     def infer(self, frame_bgr: np.ndarray) -> Optional[dict]:

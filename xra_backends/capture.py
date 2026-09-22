@@ -584,7 +584,7 @@ class _OpenCVGrabber:
         cap = self._cap
         if cap is None:
             return
-        failures = 0
+        failure_start = None
         while not self._grab_stop.is_set():
             try:
                 ok, frame = cap.read()
@@ -593,7 +593,7 @@ class _OpenCVGrabber:
                 self.last_error = f"grabber read exception: {exc}"
 
             if ok and frame is not None:
-                failures = 0
+                failure_start = None
                 self._rate_window_frames += 1
                 rate_now = time.monotonic()
                 rate_elapsed = rate_now - self._rate_window_at
@@ -605,8 +605,10 @@ class _OpenCVGrabber:
                     self._latest_frame = frame
                 self._new_frame_event.set()
             else:
-                failures += 1
-                if failures >= 10:
+                now = time.monotonic()
+                if failure_start is None:
+                    failure_start = now
+                if (now - failure_start) >= 2.0:
                     self.last_error = "camera disconnected or read failure"
                     self._grab_stop.wait(0.05)
                 else:
@@ -1043,7 +1045,6 @@ class CaptureSource:
             )
             self._tracking_log_thread = thread
             thread.start()
-        print(f"[XRA] MediaPipe OBS log: {path}", flush=True)
 
     def _stop_tracking_log(self) -> None:
         with self._tracking_log_lock:
@@ -1446,7 +1447,7 @@ class CaptureSource:
         # No-op on non-Linux / containers / when permissions are insufficient.
         _pin_thread_to_physical_cores(self._cpu_affinity)
         grabber = None
-        failures = 0
+        failure_start = None
         last_missed_deadline = False
         try:
             while not self._stop.is_set():
@@ -1488,7 +1489,7 @@ class CaptureSource:
                     if grabber is None:
                         self._stop.wait(0.5)
                         continue
-                    failures = 0
+                    failure_start = None
                     self._available = True
 
                 # Keep the device open, but do not run inference when no pose
@@ -1505,17 +1506,21 @@ class CaptureSource:
                 self._last_capture_ms = (time.perf_counter() - capture_started) * 1000.0
 
                 if frame is None:
-                    failures += 1
-                    if failures >= 4:
+                    now = time.monotonic()
+                    if failure_start is None:
+                        failure_start = now
+                    failure_duration = now - failure_start
+                    if failure_duration >= 1.0:
                         self._set_error(getattr(grabber, "last_error", "") or "frame grab failed")
-                    if failures >= 15:
-                        self._release_camera(); grabber = None; failures = 0
+                    if failure_duration >= 3.0:
+                        self._release_camera(); grabber = None; failure_start = None
                         self._stop.wait(0.5)
                     else:
-                        self._stop.wait(0.04)
+                        # Progressive backoff to avoid hammering the USB driver
+                        self._stop.wait(min(0.1, 0.02 + failure_duration * 0.03))
                     continue
 
-                failures = 0
+                failure_start = None
                 self._available = True
                 self._last_error = ""
                 # XR Animator's mocap solver works on raw (non-mirrored) frames.
@@ -3212,10 +3217,6 @@ class CaptureSource:
                                 if not was_moving_down:
                                     arm_active = True
 
-                    debug_arm = os.environ.get("XRA_DEBUG_ARM", "0") in {"1", "true", "yes"}
-                    if debug_arm:
-                        print(f"[{time.strftime('%H:%M:%S')}.{int(time.time()*1000)%1000:03d}] [XRA_CAPTURE_ARM] {part_name}: arm_active={arm_active} el_score={el_score:.2f} rising={getattr(self, '_wrist_moving_up', {}).get(index, False)}", flush=True)
-
                     if is_smart_sync and arm_active and el_xy is not None:
                         # 1. Arm is active in space: DO NOT put to rest!
                         # Wrist dynamically tracks relative to elbow (forearm follows elbow movement)
@@ -4020,9 +4021,9 @@ class CaptureSource:
                 reload_result = engine.ENGINE.load(active_id, force=True)
                 self._committed_infer_geometry = (0, 0)  # reset; will update after prepare
                 if not reload_result.get("ok"):
-                    print(f"[XRA] infer_mode reload failed: {reload_result.get('error')}", flush=True)
+                    pass
             except Exception as exc:
-                print(f"[XRA] infer_mode reload exception: {exc}", flush=True)
+                pass
 
         frame = self._prepare_inference_frame(frame)
         self._committed_infer_geometry = self._last_inference_geometry
@@ -4179,20 +4180,6 @@ class CaptureSource:
         if _verbose_logs and (first_frames or periodic or reason_changed):
             self._last_frame_log_at = log_now
             self._last_log_geometry_reason = geometry_reason
-            print("[XRA_FRAME] " + __import__("json").dumps({
-                "type": "pose", "frame_id": self._frames,
-                "width": width, "height": height,
-                "raw_geometry": list(self._last_raw_geometry),
-                "ms": round(self._last_infer_ms, 2),
-                "measured_fps": round(self._measured_fps, 2),
-                "subscribers": self.subscriber_count,
-                "raw": raw_summary,
-                "output": output_summary,
-                "held_this_frame": self._held_joints - held_before,
-                "geometry": wire.get("geometry"),
-                "provider": wire.get("provider"),
-                "error": wire.get("reason"),
-            }, ensure_ascii=False), flush=True)
         with self._lock:
             self._last_wire = copy.deepcopy(wire)
             subscribers = list(self._subscribers)

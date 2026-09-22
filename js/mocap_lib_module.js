@@ -227,7 +227,6 @@ function _onmessage(e) {
   if (data.canvas_hands)
     _canvas_hands = data.canvas_hands;
   canvas_hands = (data.options.use_canvas_hands && !data.options.use_holistic) ? _canvas_hands : null;
-  if (data.canvas_hands) console.log('(Transferred - canvas_hands)');
 
   if (data.canvas_hands_worker)
     _canvas_hands_worker = data.canvas_hands_worker;
@@ -406,7 +405,6 @@ function _onmessage(e) {
   if (data.canvas_hands)
     _canvas_hands = data.canvas_hands;
   canvas_hands = (data.options.use_canvas_hands && !data.options.use_holistic) ? _canvas_hands : null;
-  if (data.canvas_hands) console.log('(Transferred - canvas_hands_workers)');
 
   if (data.rgba) {
     process_video_buffer.call(this, data.rgba, data.w,data.h, data.options);
@@ -451,7 +449,6 @@ if (!use_mediapipe_pose_landmarker && !options.use_holistic && use_tfjs && !pose
 // https://blog.tensorflow.org/2020/03/face-and-hand-tracking-in-browser-with-mediapipe-and-tensorflowjs.html
     let tfjs_version = '';//'@3.9.0';//'@3.5.0';//'@3.3.0';//@2.8.5';
     await load_scripts('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs' + tfjs_version);
-    console.log('Use TFJS (pose/hands)')
   }
 }
 
@@ -508,9 +505,7 @@ skipFrames:5,
 minConfidence: 0.2
     }
   });
-//human.warmup().then(()=>{console.log('OK')});
 
-  console.log('(Human - body:' + !!use_human_pose + '/hand:' + !!use_human_hands + ')')
 
   human_initialized = true
 }
@@ -556,7 +551,6 @@ vision,
   numPoses: 1
 }
       );
-      console.log('Pose model quality:' + (pose_model_quality||'Normal'));
     }
 
     data_filter[0] = {
@@ -574,7 +568,6 @@ vision,
 estimatePoses: function (video, dummy, nowInMs) {
   const landmarker = (options.use_holistic_landmarker) ? holistic_landmarker : pose_landmarker;
   let result = landmarker.detectForVideo(video, nowInMs);
-//console.log(result)
 
   let pose_names;
   let result_hands, result_face;
@@ -615,16 +608,13 @@ estimatePoses: function (video, dummy, nowInMs) {
    }
   }
 
-//console.log(Object.assign(result, { poseLandmarks:result[pose_names[0]][0], za:result[pose_names[1]][0] }, result_face, result_hands))
   return Promise.resolve(Object.assign(result, { poseLandmarks:result[pose_names[0]][0], za:result[pose_names[1]][0] }, result_face, result_hands));
 }
     };
 
     if (options.use_holistic_landmarker) {
-      console.log('(Mediapipe Holistic Landmarker initialized)');
     }
     else {
-      console.log('(Mediapipe Pose Landmarker initialized)');
       postMessageAT('(Mediapipe Pose Landmarker initialized)');
     }
   }
@@ -647,14 +637,12 @@ estimatePoses: function (video, dummy, nowInMs) {
       posenet = await poseDetection.createDetector(poseDetection.SupportedModels.BlazePose, detectorConfig);
 
       let msg = '(' + ((use_mediapipe) ? 'Mediapipe' : 'TFJS') + ' BlazePose initialized)';
-      console.log(msg)
       postMessageAT(msg)
     }
     else {
       const detectorConfig = {modelType: poseDetection.movenet.modelType.SINGLEPOSE_THUNDER};//{modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING};//
       posenet = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet, detectorConfig);
 
-      console.log('(MoveNet initialized)')
       postMessageAT('(MoveNet initialized)')
     }
   }
@@ -677,7 +665,6 @@ estimatePoses: function (video, dummy, nowInMs) {
 }
     );
 
-    console.log('(PoseNet initialized)')
     postMessageAT('(PoseNet initialized)')
   }
 
@@ -697,7 +684,6 @@ else {
         delegate: "GPU"
       },
     });
-    console.log('Pose model quality:' + (pose_model_quality||'Normal'));
   }
 }
 
@@ -775,7 +761,6 @@ estimateHands: async function (img, config) {
       };
     })();
 
-    console.log('(Mediapipe hands initialized)')
     postMessageAT('(Mediapipe hands initialized)')
   }
 
@@ -787,7 +772,6 @@ estimateHands: async function (img, config) {
 if (!handpose_initialized) {
   handpose_model = await mediapipe_hand_landmarker.load();
 
-  console.log('(Mediapipe hands initialized)')
   postMessageAT('(Mediapipe hands initialized)')
 }
 
@@ -846,7 +830,6 @@ vision,
 
   this.setup();
 
-  console.log('(Mediapipe Hand Landmarker initialized)');
   postMessageAT('(Mediapipe Hand Landmarker initialized)');
 
   return {
@@ -861,13 +844,11 @@ set_score: (()=>{
 //    let s = Math.min(Math.max(Math.max(w,h)/shoulder_width-5, 0)/5, 2);
     let s = Math.min(Math.max(Math.max(w,h)/shoulder_width-7.5, 0), 1);
     let index = (options.minHandDetectionConfidence != null) ? ((options.minHandDetectionConfidence < 0.5) ? 1 : 0) : Math.ceil(s);
-//console.log(s, index);
     if (index != f_index) {
       const t = Date.now();
       if (t > timestamp + 1000) {
         f_index = index;
         timestamp = t;
-//console.log(f_index, timestamp);
       }
     }
   };
@@ -886,7 +867,6 @@ estimateHands: (()=>{
     else {
       result = f[f_index].detectForVideo(video, nowInMs);
     }
-//console.log(result)
 
 // left and right hand labels swapped/handednesses=>handedness in v0.10.5
     result.handedness?.forEach(hand=>{hand.forEach(h=>{
@@ -1792,7 +1772,6 @@ async function process_video_buffer(rgba, w,h, options) {
     let assign_keypoints3D;
     if (options.use_holistic || use_mediapipe_pose_landmarker) {
       const _result = pose
-//console.log(_result)
       _keypoints3D = _result.ea || _result.za;
       if (_keypoints3D?.length && _result.poseLandmarks?.length) {
 // https://github.com/tensorflow/tfjs-models/blob/master/pose-detection/src/blazepose_mediapipe/detector.ts
@@ -1826,7 +1805,6 @@ name: BLAZEPOSE_KEYPOINTS[i]
     if (data_filter[0]) {
       let filter_factor = Math.max(w,h)/shoulder_width;
       filter_factor = (filter_factor < 5) ? 1 : Math.min(filter_factor/5, 3);
-//console.log(filter_factor)
       for (const p of ['landmarks', 'worldLandmarks']) {
         for (let i = 0; i < 33; i++) {
           const f = data_filter[0][p][i];
@@ -1892,7 +1870,6 @@ pose[0].keypoints3D = pose[0].keypoints.map((landmark, i)=>({
   name: BLAZEPOSE_KEYPOINTS[i]
 }));
 
-//console.log((pose[0].keypoints3D[23].z-pose[0].keypoints3D[24].z)/(_keypoints3D[23].z-_keypoints3D[24].z), hipL.name,hipR.name);
 
 pose[0].keypoints3D_raw = _keypoints3D.map((landmark, i) => ({
   x: landmark.x,
@@ -1934,7 +1911,6 @@ name: BLAZEPOSE_KEYPOINTS[i]
     if (pose[0].keypoints3D_raw)
       result.keypoints3D_raw = pose[0].keypoints3D_raw
 
-//console.log(result)
     return result;
   }
 
@@ -2005,7 +1981,6 @@ dis = hands.multiHandLandmarks.map((hand,i)=>{
   const palm = (canvas_hands && !from_native_backend) ? landmark_adjust(hand[0], clip) : [hand[0].x*w, hand[0].y*h];
   const x = wrist[0] - palm[0];
   const y = wrist[1] - palm[1];
-//console.log(i, wrist.slice(), palm.slice())
   return x*x + y*y;
 });
 
@@ -2018,7 +1993,6 @@ if (flip_side)
   side = (side == 'Left') ? 'Right' : 'Left';
 
 const dis = palm_distance_squared(side);
-//console.log((((dis[0] > dis[1]) ? hands.multiHandedness[0].score > hands.multiHandedness[1].score : hands.multiHandedness[0].score < hands.multiHandedness[1].score)?'higher':'lower')+' score discarded');
 
 return (dis[0] > dis[1]) ? 0 : 1;
     }
@@ -2043,7 +2017,6 @@ return h_list.some(_h=>(_h[0] >= clip[0]) && (_h[1] >= clip[1]) && (_h[0] <= cli
       return [];
 
 // legacy version of mediapipe hands may return more than 2 detections
-//if (hands.multiHandedness.length > 2) console.log(hands.multiHandedness.length);
     hands.multiHandedness = hands.multiHandedness.slice(0,2);
     hands.multiHandLandmarks = hands.multiHandLandmarks.slice(0,2);
     
@@ -2061,7 +2034,6 @@ return h_list.some(_h=>(_h[0] >= clip[0]) && (_h[1] >= clip[1]) && (_h[0] <= cli
         if (!clipped(0)) {
           if (discard_wrong_handedness || clipped(0,true)) {
             adjust_handedness[0] = true;
-//console.log('One side');
           }
         }
       }
@@ -2071,34 +2043,28 @@ return h_list.some(_h=>(_h[0] >= clip[0]) && (_h[1] >= clip[1]) && (_h[0] <= cli
           if (idx_list.every(i=>!clipped(i))) {
             if (discard_wrong_handedness || idx_list.some(i=>clipped(i,true))) {
               adjust_handedness[0] = adjust_handedness[1] = true;
-//console.log('Both sides');
             }
           }
         }
         else {
           if (idx_list.every(i=>clipped(i))) {
             adjust_handedness[index_to_flip_by_distance()] = true;
-//console.log('By dstance');
           }
           else if (idx_list.every(i=>clipped(i,true))) {
             if (discard_wrong_handedness) {
               adjust_handedness[0] = adjust_handedness[1] = true;
-//console.log('Discarded');
             }
             else {
               adjust_handedness[index_to_flip_by_distance(true)] = true;
             }
-//console.log('By dstance, flipped');
           }
           else {
             const idx_correct = idx_list.findIndex(i=>clipped(i));
             if (idx_correct != -1) {
               adjust_handedness[(idx_correct==0)?1:0] = true;
-//console.log('Flip the wrong side');
             }
             else if (discard_wrong_handedness) {
               adjust_handedness[0] = adjust_handedness[1] = true;
-//console.log('Discarded');
             }
           }
         }
@@ -2107,7 +2073,6 @@ return h_list.some(_h=>(_h[0] >= clip[0]) && (_h[1] >= clip[1]) && (_h[0] <= cli
     else {
       if ((hands.multiHandedness.length > 1) && (hands.multiHandedness[0].categoryName == hands.multiHandedness[1].categoryName)) {
         adjust_handedness[index_to_flip_by_distance()] = true;
-//console.log('By dstance');
       }
     }
 
@@ -2190,7 +2155,6 @@ hand_entry.worldLandmarks = {
 
       _hands.push(hand_entry);
     }
-//console.log(_hands)
 
 
     _hands.forEach(hand=>{
@@ -2219,7 +2183,6 @@ if (_adjust_ratio != 1) {
 s*s = ((x2*x2 + y2*y2)/1.5 - (x1*x1 + y1*y1))/(z1*z1 - z2*z2/1.5)
 */
   _adjust_ratio = Math.min(Math.sqrt(Math.abs(((palm_height[0]*palm_height[0] + palm_height[1]*palm_height[1])/s - (palm_width[0]*palm_width[0] + palm_width[1]*palm_width[1])) / (palm_width[2]*palm_width[2] - palm_height[2]*palm_height[2]/s))), 1.5 + 1.5*adjust_max);
-//console.log(_adjust_ratio)
   h.forEach(j=>{j[2] *= _adjust_ratio});
 }
 //hand.z_adjust_ratio = _adjust_ratio;
@@ -2243,7 +2206,6 @@ for (let f_idx = 0; f_idx < 5; f_idx++) {
     const min_length = ref_length * ((i < 2) ? 0.4 : 0.2);// * ((f_idx == 4) ? 0.75 : 1);
     if (f1[0]*f1[0] + f1[1]*f1[1] + f1[2]*f1[2] < min_length*min_length) {
       const z_mod = Math.sign(f1[2]) * Math.sqrt(min_length*min_length - (f1[0]*f1[0] + f1[1]*f1[1]));
-//console.log(hand.label+f_idx+':'+z_mod);
       for (let j = i+1; j < 4; j++)
         finger[j][2] += z_mod;
     }
@@ -2327,7 +2289,6 @@ for (const id of [9,10]) {
 
   if ((cw <= 0) || (ch <= 0)) continue;
 
-//console.log(id+':',x,y, cw,ch)
 // assumed mirrored
   clip.push([x,y, cw,ch, (id==9)?-1:1, kp.position.x,kp.position.y]);
 }
@@ -2420,7 +2381,6 @@ function process_facemesh(faces, w,h, bb) {
       coords[2] *= 256 * cw / size;
     });
     faces = [face]
-//console.log(face)
   }
   else {
     face = faces[0]
@@ -2650,7 +2610,6 @@ hands_worker_ready = false;
   else {
     vt = _t;
   }
-//console.log(vt)
 
   if (rgba instanceof ArrayBuffer)
     rgba = new ImageData(new Uint8ClampedArray(rgba), w,h)
@@ -2825,14 +2784,12 @@ let data = ((typeof e.data == "string") && (e.data.charAt(0) === "{")) ? JSON.pa
 
 if (typeof data === "string") {
   if (data == 'OK') {
-    console.log('(Object Detection worker loaded)');
     resolve();
   }
   object_detection_worker_ready = true;
 }
 else {
   object_detection_data = data;
-//  console.log(Date.now(), object_detection_data);
 }
           };
         });
@@ -2873,7 +2830,6 @@ else {
         let sm = face.scaledMesh;
 // NOTE: pass the full scaledMesh as it is needed to be passed and drawn on the facemesh worker
         facemesh = { faces:[{ faceInViewConfidence:face.faceScore||face.faceInViewConfidence||0, scaledMesh:sm, mesh:face.mesh, eyes:eyes, bb_center:face.bb_center, emotion:face.emotion, rotation:face.rotation, faceBlendshapes:result.faceBlendshapes?.[0] }] };
-//console.log(facemesh)
       }
     }
     else if (
@@ -3003,7 +2959,6 @@ else {
   }
 
   if (hands_worker_data) {
-//console.log(hands_worker_data)
     _t_hands = hands_worker_data._t;
     fps_hands = hands_worker_data.fps;
 
@@ -3128,7 +3083,6 @@ async function HandsAT_process_video_buffer() {
   else {
     vt = _t;
   }
-//console.log(vt)
 
   if (rgba instanceof ArrayBuffer)
     rgba = await createImageBitmap(new ImageData(new Uint8ClampedArray(rgba), w,h));
