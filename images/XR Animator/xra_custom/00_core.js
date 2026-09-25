@@ -32,7 +32,9 @@
       width: 640,
       height: 480,
       fps: 30,
-      mouse_locked: false
+      mouse_locked: false,
+      view_presets: [],
+      selected_view_preset: ''
     },
     pose_model: 'Normal',
     lip: {
@@ -118,6 +120,29 @@
       color: '#202020',
       path: 'backgrounds/default.png'
     },
+    avatar: {
+      filename: '',
+      pose_key: '',
+      offset_x: 0,
+      offset_y: 0,
+      offset_z: 0,
+      rotation_y: 0
+    },
+    stage: {
+      path: '',
+      enabled: false,
+      auto_center: false,
+      offset_x: 0,
+      offset_y: 0,
+      offset_z: 0,
+      scale: 1,
+      rotation_x: 0,
+      rotation_y: 0,
+      rotation_z: 0,
+      scene_zoom: 1,
+      lights_enabled: true,
+      lights_intensity: 1.0
+    },
     collider: {
       preset: 'CUSTOM',
       mode: 0,
@@ -133,10 +158,6 @@
       DOF: null
     },
     left_settings: {},
-    avatar: {
-      filename: '',
-      pose_key: ''
-    },
     devices: {
       mic_device_id: '',
       camera_device_id: '',
@@ -236,6 +257,30 @@
 
   config.tracking ||= {};
   config.body ||= {};
+
+  function migrateStageConfig(sourceCustom = null) {
+    config.stage ||= {};
+    const sourceStage = sourceCustom?.stage;
+    if (
+      sourceStage &&
+      !Object.prototype.hasOwnProperty.call(sourceStage, 'scene_zoom') &&
+      Object.prototype.hasOwnProperty.call(sourceStage, 'linked_zoom')
+    ) {
+      config.stage.scene_zoom = Number(sourceStage.linked_zoom);
+    }
+    const sceneZoom = Number(config.stage.scene_zoom);
+    config.stage.scene_zoom = Number.isFinite(sceneZoom)
+      ? Math.max(0.5, Math.min(8, sceneZoom))
+      : 1;
+    delete config.stage.linked_zoom_enabled;
+    delete config.stage.linked_zoom;
+    delete config.stage.auto_zoom_before_linked;
+    if (config.avatar) {
+      delete config.avatar.stage_positions;
+    }
+  }
+
+  migrateStageConfig(boot?.custom || null);
 
   // Unified body stabilization migration. Older profiles may store Body Stable,
   // Torso Guard and Podcast/Desk as separate modes. Preserve their stabilization
@@ -523,6 +568,7 @@
 
       for (const key of Object.keys(config)) delete config[key];
       Object.assign(config, merged);
+      migrateStageConfig(loaded.custom || null);
       cleanRetiredSettings();
 
       profile.version = loaded.version || 7.80;

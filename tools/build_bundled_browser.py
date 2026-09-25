@@ -90,6 +90,17 @@ def main() -> int:
             shutil.rmtree(TARGET)
         shutil.copytree(BASE_RELEASE, TARGET)
         restore_user_data(staging)
+        # Mirror root assets (stages, avatars, backgrounds, props) so repository changes take precedence
+        for asset_name in ("stages", "avatars", "backgrounds", "props"):
+            root_asset = ROOT / asset_name
+            target_asset = TARGET / asset_name
+            if root_asset.is_dir():
+                for existing in target_asset.glob("*"):
+                    if existing.is_file():
+                        existing.unlink()
+                for item in root_asset.glob("*"):
+                    if item.is_file():
+                        shutil.copy2(item, target_asset / item.name)
 
     bundled_server = TARGET / "XR_Animator"
     bundled_server.rename(TARGET / "xra_server")

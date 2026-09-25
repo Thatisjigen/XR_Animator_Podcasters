@@ -422,6 +422,7 @@
           config.avatar.pose_key = poseKey(resolved.pose);
           await XRA.profileService.save(0);
         }
+        XRA.stage?.applyAvatarPosition?.();
         return resolved.pose;
       }
       catch (error) {

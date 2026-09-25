@@ -485,9 +485,49 @@ def background_files(force=False):
     return files
 
 
+def save_stage_upload(filename, stream, length):
+    name = Path(unquote(str(filename or ""))).name
+    ext = Path(name).suffix.lower()
+    if ext not in {".glb", ".gltf", ".pmx", ".zip", ".fbx"}:
+        raise ValueError("Invalid stage extension")
+    stem = re.sub(r"[<>:\"/\\|?*\x00-\x1f]+", "_", Path(name).stem).strip().strip(".")
+    stem = (stem or "stage")[:160]
+    name = stem + ext
+    if length <= 0 or length > AVATAR_MAX_BYTES:
+        raise ValueError("Invalid stage size")
+    folder = ROOT / "stages"
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = (folder / name).resolve()
+    if dest.parent != folder:
+        raise ValueError("Invalid stage path")
+    import uuid
+    tmp = dest.with_name(dest.name + f".{uuid.uuid4().hex}.tmp")
+    remaining = length
+    try:
+        with tmp.open("wb") as handle:
+            while remaining:
+                data = stream.read(min(1024 * 1024, remaining))
+                if not data:
+                    raise IOError("Unexpected end of stage upload")
+                handle.write(data)
+                remaining -= len(data)
+        tmp.replace(dest)
+        STAGE_CACHE["ts"] = 0.0 # invalidate cache
+        STAGE_CACHE["files"] = []
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return dest.name
+
+
 def stage_files(force=False):
     now = time.monotonic()
-    if not force and STAGE_CACHE["files"] and now - STAGE_CACHE["ts"] < 10.0:
+    if force:
+        STAGE_CACHE["ts"] = 0.0
+        STAGE_CACHE["files"] = []
+    elif STAGE_CACHE["files"] and now - STAGE_CACHE["ts"] < 10.0:
         return list(STAGE_CACHE["files"])
     allowed = {".glb", ".gltf", ".pmx", ".zip", ".fbx"}
     (ROOT / "stages").mkdir(parents=True, exist_ok=True)
@@ -1315,9 +1355,12 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
         else:
             suffix = Path(path).suffix.lower()
-            if suffix in {".task", ".wasm", ".vrm", ".glb", ".gltf", ".fbx", ".bin"}:
-                # Heavy immutable-ish assets: avoid re-reading them on every local reload.
+            if suffix in {".task", ".wasm"}:
+                # Truly immutable ML model assets: avoid re-downloading on every reload.
                 self.send_header("Cache-Control", "public, max-age=86400")
+            elif suffix in {".vrm", ".glb", ".gltf", ".fbx", ".bin"}:
+                # Stage/avatar assets that the user may regenerate: do not store in disk cache!
+                self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
             else:
                 # Code stays easy to iterate on: browser may cache but must revalidate.
                 self.send_header("Cache-Control", "no-cache")
@@ -1680,6 +1723,21 @@ class Handler(SimpleHTTPRequestHandler):
                 filename = params.get("filename") or self.headers.get("X-Filename") or ""
                 length = int(self.headers.get("Content-Length", "0"))
                 stored = save_prop_upload(filename, self.rfile, length)
+                self.send_json({"ok": True, "filename": stored})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+
+        if path == "/__xra_stage":
+            try:
+                params = {}
+                for pair in parsed.query.split("&"):
+                    if "=" in pair:
+                        k, v = pair.split("=", 1)
+                        params[k] = unquote(v)
+                filename = params.get("filename") or self.headers.get("X-Filename") or ""
+                length = int(self.headers.get("Content-Length", "0"))
+                stored = save_stage_upload(filename, self.rfile, length)
                 self.send_json({"ok": True, "filename": stored})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, status=400)

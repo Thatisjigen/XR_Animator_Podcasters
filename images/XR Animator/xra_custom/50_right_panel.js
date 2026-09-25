@@ -301,7 +301,9 @@
       try {
         window.System?.Gadget?.Settings?.writeString?.('MMDTrackballCamera', locked ? 'non_default' : '');
       } catch (e) {}
-      lockStatus.textContent = locked ? 'Controlli mouse: BLOCCATI (inquadratura fissa)' : 'Controlli mouse: ATTIVI';
+      lockStatus.textContent = locked
+        ? 'Controlli mouse: BLOCCATI (inquadratura fissa)'
+        : 'Controlli mouse: ATTIVI';
     };
 
     const shouldBlockEvent = (e) => {
@@ -328,7 +330,14 @@
     window.addEventListener('pointerdown', blockEvent, true);
     window.addEventListener('mousemove', blockMoveEvent, true);
     window.addEventListener('pointermove', blockMoveEvent, true);
-    window.addEventListener('wheel', blockEvent, { capture: true, passive: false });
+    window.addEventListener('wheel', (e) => {
+      if (isUiElement(e.target)) {
+        e.stopPropagation();
+      } else if (shouldBlockEvent(e)) {
+        e.stopImmediatePropagation();
+        e.preventDefault();
+      }
+    }, { capture: true, passive: false });
     window.addEventListener('touchstart', blockEvent, true);
     window.addEventListener('touchmove', blockEvent, true);
     window.addEventListener('contextmenu', blockEvent, true);
@@ -357,6 +366,74 @@
       isDefault: () => !config.camera?.mouse_locked,
       sub: 'Disabilita rotazione, rotellina dello zoom e Ctrl+trascinamento per evitare modifiche involontarie all\'inquadratura.'
     });
+
+    const viewPresetSelect = select([['', '-- inquadratura corrente --']]);
+    const refreshViewPresetOptions = () => {
+      const presets = XRA.stage?.listCameraViewPresets?.() || [];
+      const selected = String(config.camera?.selected_view_preset || '');
+      viewPresetSelect.innerHTML = '';
+      const currentOption = document.createElement('option');
+      currentOption.value = '';
+      currentOption.textContent = '-- inquadratura corrente --';
+      viewPresetSelect.appendChild(currentOption);
+      for (const preset of presets) {
+        const option = document.createElement('option');
+        option.value = preset.name;
+        option.textContent = preset.name;
+        viewPresetSelect.appendChild(option);
+      }
+      viewPresetSelect.value = presets.some(preset => preset.name === selected) ? selected : '';
+      deleteViewPresetBtn.disabled = !viewPresetSelect.value;
+    };
+
+    const viewPresetActions = el('div', 'xra-actions');
+    const saveViewPresetBtn = button('Salva inquadratura…', 'xra-action primary');
+    const deleteViewPresetBtn = button('Elimina', 'xra-action danger');
+    viewPresetActions.append(saveViewPresetBtn, deleteViewPresetBtn);
+
+    bindRefresh(refreshViewPresetOptions);
+    viewPresetSelect.onchange = async () => {
+      const name = viewPresetSelect.value;
+      if (!name) {
+        deleteViewPresetBtn.disabled = true;
+        return;
+      }
+      if (!XRA.stage?.applyCameraViewPreset?.(name)) {
+        XRA.toast('Impossibile richiamare l\'inquadratura', 'error');
+        return;
+      }
+      deleteViewPresetBtn.disabled = false;
+      await XRA.profileService.save();
+      XRA.toast(`Inquadratura “${name}” richiamata`, 'info');
+    };
+
+    saveViewPresetBtn.onclick = async () => {
+      const suggestedName = viewPresetSelect.value || '';
+      const name = window.prompt('Nome dell\'inquadratura:', suggestedName);
+      if (name === null || !name.trim()) return;
+      const preset = XRA.stage?.saveCameraViewPreset?.(name);
+      if (!preset) {
+        XRA.toast('Camera non ancora disponibile', 'error');
+        return;
+      }
+      await XRA.profileService.save();
+      refreshAll();
+      XRA.toast(`Inquadratura “${preset.name}” salvata`, 'success');
+    };
+
+    deleteViewPresetBtn.onclick = async () => {
+      const name = viewPresetSelect.value;
+      if (!name || !window.confirm(`Eliminare l\'inquadratura “${name}”?`)) return;
+      if (!XRA.stage?.deleteCameraViewPreset?.(name)) return;
+      await XRA.profileService.save();
+      refreshAll();
+      XRA.toast(`Inquadratura “${name}” eliminata`, 'info');
+    };
+
+    row(box.body, 'Inquadratura salvata', viewPresetSelect, {
+      sub: 'Richiama posizione, orientamento, punto di mira, FOV e zoom della camera.'
+    });
+    box.body.appendChild(viewPresetActions);
 
     const resetBtn = button('Reset camera view', 'xra-action');
     resetBtn.onclick = () => {
@@ -2547,7 +2624,14 @@
             }
           }
           dom.querySelectorAll('li.cr, .controller, .cr.function, .lil-gui-controller, .close-button, .close-top, .close-bottom, button').forEach(el => {
-            if (/hide controls/i.test(el.textContent) || el.classList.contains('close-button') || el.classList.contains('close-bottom') || el.classList.contains('close-top')) {
+            const text = String(el.textContent || '');
+            if (
+              /hide controls/i.test(text) ||
+              /FOV\s*\(main camera\)/i.test(text) ||
+              el.classList.contains('close-button') ||
+              el.classList.contains('close-bottom') ||
+              el.classList.contains('close-top')
+            ) {
               el.remove();
             }
           });
@@ -2690,9 +2774,15 @@
       }
       stageSelect.value = [...stageSelect.options].some(o => o.value === current) ? current : '';
       stagesLoaded = true;
+      if (force && XRA.toast) {
+        XRA.toast(`Elenco scenografie aggiornato (${files.length} trovate)`, 'info');
+      }
     }
     catch (e) {
       console.warn(TAG, 'stage list failed', e);
+      if (force && XRA.toast) {
+        XRA.toast('Errore aggiornamento scenografie: ' + e.message, 'error');
+      }
     }
   }
 
@@ -2701,6 +2791,47 @@
     box.details.addEventListener('toggle', () => {
       if (box.details.open && !stagesLoaded) refreshStages();
     });
+
+    const uploadStageBtn = button('+ Importa scenografia 3D (.glb / .fbx)', 'xra-action');
+    uploadStageBtn.style.marginBottom = '8px';
+    uploadStageBtn.onclick = () => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.glb,.gltf,.fbx,.pmx,.zip';
+      input.onchange = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        try {
+          const body = new Uint8Array(await file.arrayBuffer());
+          const res = await fetch(`/__xra_stage?filename=${encodeURIComponent(file.name)}`, {
+            method: 'POST',
+            body: body,
+            headers: { 'Content-Length': String(body.byteLength) }
+          });
+          const json = await res.json();
+          if (json.ok) {
+            XRA.toast('Scenografia 3D caricata con successo', 'success');
+            stagesLoaded = false;
+            await refreshStages(true);
+            const stageRelPath = `stages/${json.filename}`;
+            config.stage ||= {};
+            config.stage.path = stageRelPath;
+            config.stage.enabled = true;
+            enabled.checked = true;
+            if (stageSelect) stageSelect.value = stageRelPath;
+            XRA.stage?.apply();
+            await XRA.profileService.save();
+            refreshAll();
+          } else {
+            throw new Error(json.error || 'Upload fallito');
+          }
+        } catch (err) {
+          XRA.toast('Errore caricamento scenografia: ' + err.message, 'error', 5000);
+        }
+      };
+      input.click();
+    };
+    box.body.appendChild(uploadStageBtn);
 
     const enabled = document.createElement('input');
     enabled.type = 'checkbox';
@@ -2729,6 +2860,17 @@
     });
 
     stageSelect = select([['', '-- choose 3D stage --']]);
+    bindRefresh(() => {
+      if (stageSelect && config.stage?.path) {
+        if (![...stageSelect.options].some(o => o.value === config.stage.path)) {
+          const option = document.createElement('option');
+          option.value = config.stage.path;
+          option.textContent = '[current] ' + config.stage.path.replace(/^stages\//, '');
+          stageSelect.appendChild(option);
+        }
+        stageSelect.value = config.stage.path;
+      }
+    });
     stageSelect.onchange = async () => {
       config.stage ||= {};
       config.stage.path = stageSelect.value;
@@ -2751,7 +2893,11 @@
       isDefault: () => !config.stage?.path
     });
 
-    const makeStageRow = (label, key, min, max, step, defVal, sub = '') => {
+    const refreshStageFiles = button('↻ Refresh 3D stage files');
+    refreshStageFiles.onclick = async () => { stagesLoaded = false; await refreshStages(true); };
+    box.body.appendChild(refreshStageFiles);
+
+    const makeStageRow = (parentNode, label, key, min, max, step, defVal, sub = '', onUpdate = null) => {
       const wrap = el('div', 'xra-stack-control');
       const flex = el('div');
       flex.style.cssText = 'display:flex;align-items:center;gap:8px;width:100%;';
@@ -2780,11 +2926,14 @@
       });
 
       const commit = (val) => {
+        const nextValue = Math.max(min, Math.min(max, Number(val)));
+        if (!Number.isFinite(nextValue)) return;
         config.stage ||= {};
-        config.stage[key] = val;
-        slider.value = String(val);
-        numInput.value = String(val);
-        XRA.stage?.updateTransform();
+        config.stage[key] = nextValue;
+        slider.value = String(nextValue);
+        numInput.value = String(nextValue);
+        if (onUpdate) onUpdate();
+        else XRA.stage?.updateTransform();
       };
 
       slider.oninput = () => commit(Number(slider.value));
@@ -2796,27 +2945,160 @@
       };
       numInput.onchange = async () => { await XRA.profileService.save(); };
 
-      row(box.body, label, wrap, {
+      row(parentNode, label, wrap, {
         reset: async () => {
           config.stage ||= {};
           config.stage[key] = defVal;
-          XRA.stage?.updateTransform();
+          if (onUpdate) onUpdate();
+          else XRA.stage?.updateTransform();
         },
         isDefault: () => Number(config.stage?.[key] ?? defVal) === defVal,
         sub
       });
     };
 
-    makeStageRow('Position X', 'offset_x', -3000, 3000, 2.0, 0.0, 'Spostamento laterale (sinistra/destra).');
-    makeStageRow('Position Y', 'offset_y', -3000, 3000, 2.0, 0.0, 'Spostamento verticale (alto/basso).');
-    makeStageRow('Position Z', 'offset_z', -3000, 3000, 2.0, 0.0, 'Spostamento in profondità (avanti/indietro).');
-    makeStageRow('Stage scale', 'scale', 0.05, 50.0, 0.05, 1.0, 'Scala scenografia.');
-    makeStageRow('Rotation Y', 'rotation_y', -180, 180, 1, 0, 'Rotazione orizzontale (yaw).');
-    makeStageRow('Rotation X', 'rotation_x', -180, 180, 1, 0, 'Inclinazione avanti/dietro (pitch).');
-    makeStageRow('Rotation Z', 'rotation_z', -180, 180, 1, 0, 'Inclinazione laterale (roll).');
+    makeStageRow(
+      box.body, 'Zoom scena', 'scene_zoom', 0.5, 4.0, 0.01, 1.0,
+      'Zoom ottico comune di avatar e scenografia. Si combina con rotellina, pan e controlli camera nativi.',
+      () => XRA.stage?.applySceneZoom()
+    );
 
-    const btnRow = el('div', 'xra-actions');
-    const resetCenterBtn = button('↺ Reset stage position');
+    const lightsEnabled = document.createElement('input');
+    lightsEnabled.type = 'checkbox';
+    bindRefresh(() => {
+      lightsEnabled.checked = config.stage?.lights_enabled !== false;
+    });
+    lightsEnabled.onchange = async () => {
+      config.stage ||= {};
+      config.stage.lights_enabled = lightsEnabled.checked;
+      XRA.stage?.applyStageLights?.();
+      await XRA.profileService.save();
+    };
+    row(box.body, 'Luci scenografia 3D', lightsEnabled, {
+      reset: async () => {
+        config.stage ||= {};
+        config.stage.lights_enabled = true;
+        XRA.stage?.applyStageLights?.();
+      },
+      isDefault: () => config.stage?.lights_enabled !== false,
+      sub: 'Attiva o disattiva le sorgenti luminose incorporate nel file della scenografia.'
+    });
+
+    makeStageRow(
+      box.body, 'Intensità luci stage', 'lights_intensity', 0.0, 3.0, 0.05, 1.0,
+      'Regola la potenza e brillantezza delle luci incorporate nella scenografia.',
+      () => XRA.stage?.applyStageLights?.()
+    );
+
+    const secAvatarPos = details(box.body, '🧍 Posizione personaggio (solo avatar)');
+
+    const makeAvatarRow = (parentNode, label, key, min, max, step, defVal, sub = '') => {
+      const wrap = el('div', 'xra-stack-control');
+      const flex = el('div');
+      flex.style.cssText = 'display:flex;align-items:center;gap:8px;width:100%;';
+
+      const slider = document.createElement('input');
+      slider.type = 'range';
+      slider.min = String(min);
+      slider.max = String(max);
+      slider.step = String(step);
+      slider.style.flex = '1';
+
+      const numInput = stopInputPropagation(document.createElement('input'));
+      numInput.type = 'number';
+      numInput.min = '-20000';
+      numInput.max = '20000';
+      numInput.step = String(step);
+      numInput.style.cssText = 'width:68px;padding:2px 4px;font-size:12px;text-align:right;background:#181c20;color:#eee;border:1px solid #444;border-radius:4px;';
+
+      flex.append(slider, numInput);
+      wrap.appendChild(flex);
+
+      bindRefresh(() => {
+        const val = Number(config.avatar?.[key] ?? defVal);
+        slider.value = String(val);
+        numInput.value = String(val);
+      });
+
+      const commit = (val) => {
+        const nextValue = Math.max(min, Math.min(max, Number(val)));
+        if (!Number.isFinite(nextValue)) return;
+        config.avatar ||= {};
+        config.avatar[key] = nextValue;
+        slider.value = String(nextValue);
+        numInput.value = String(nextValue);
+        XRA.stage?.applyAvatarPosition?.();
+      };
+
+      slider.oninput = () => commit(Number(slider.value));
+      slider.onchange = async () => { await XRA.profileService.save(); };
+
+      numInput.oninput = () => {
+        const val = parseFloat(numInput.value);
+        if (!isNaN(val)) commit(val);
+      };
+      numInput.onchange = async () => { await XRA.profileService.save(); };
+
+      row(parentNode, label, wrap, {
+        reset: async () => {
+          config.avatar ||= {};
+          config.avatar[key] = defVal;
+          XRA.stage?.applyAvatarPosition?.();
+        },
+        isDefault: () => Number(config.avatar?.[key] ?? defVal) === defVal,
+        sub
+      });
+    };
+
+    makeAvatarRow(secAvatarPos.body, 'Personaggio X', 'offset_x', -50.0, 50.0, 0.1, 0.0, 'Sposta solo l\'avatar a sinistra o a destra; stage e camera restano fissi.');
+    makeAvatarRow(secAvatarPos.body, 'Personaggio Y', 'offset_y', -20.0, 20.0, 0.1, 0.0, 'Sposta solo l\'avatar verso l\'alto o verso il basso; stage e camera restano fissi.');
+    makeAvatarRow(secAvatarPos.body, 'Personaggio Z', 'offset_z', -50.0, 50.0, 0.1, 0.0, 'Sposta solo l\'avatar in profondità; stage e camera restano fissi.');
+    makeAvatarRow(secAvatarPos.body, 'Rotazione Y (Yaw)', 'rotation_y', -180, 180, 1, 0, 'Ruota l\'avatar sul posto.');
+
+    const resetAvatarPosBtn = button('↺ Ripristina posizione personaggio');
+    resetAvatarPosBtn.onclick = async () => {
+      config.avatar ||= {};
+      config.avatar.offset_x = 0.0;
+      config.avatar.offset_y = 0.0;
+      config.avatar.offset_z = 0.0;
+      config.avatar.rotation_y = 0.0;
+      XRA.stage?.applyAvatarPosition?.();
+      await XRA.profileService.save();
+      refreshAll();
+    };
+    secAvatarPos.body.appendChild(resetAvatarPosBtn);
+
+    const stageAdvanced = details(box.body, '⚙️ Allineamento stage avanzato');
+    const autoCenter = document.createElement('input');
+    autoCenter.type = 'checkbox';
+    bindRefresh(() => {
+      autoCenter.checked = !!config.stage?.auto_center;
+    });
+    autoCenter.onchange = async () => {
+      config.stage ||= {};
+      config.stage.auto_center = autoCenter.checked;
+      XRA.stage?.apply();
+      await XRA.profileService.save();
+      refreshAll();
+    };
+    row(stageAdvanced.body, 'Auto-center origin', autoCenter, {
+      reset: async () => {
+        config.stage ||= {};
+        config.stage.auto_center = false;
+        XRA.stage?.apply();
+      },
+      isDefault: () => !config.stage?.auto_center,
+      sub: 'Centra la bounding box sull\'origine (disattivato di default per preservare l\'origine dell\'autore).'
+    });
+    makeStageRow(stageAdvanced.body, 'Stage X', 'offset_x', -100.0, 100.0, 0.5, 0.0, 'Sposta soltanto la scenografia a sinistra o a destra.');
+    makeStageRow(stageAdvanced.body, 'Stage Y', 'offset_y', -100.0, 100.0, 0.5, 0.0, 'Sposta soltanto la scenografia in alto o in basso.');
+    makeStageRow(stageAdvanced.body, 'Stage Z', 'offset_z', -100.0, 100.0, 0.5, 0.0, 'Sposta soltanto la scenografia avanti o indietro.');
+    makeStageRow(stageAdvanced.body, 'Stage scale', 'scale', 0.1, 10.0, 0.05, 1.0, 'Scala scenografia (moltiplicatore).');
+    makeStageRow(stageAdvanced.body, 'Rotation Y', 'rotation_y', -180, 180, 1, 0, 'Rotazione orizzontale (yaw).');
+    makeStageRow(stageAdvanced.body, 'Rotation X', 'rotation_x', -180, 180, 1, 0, 'Inclinazione avanti/dietro (pitch).');
+    makeStageRow(stageAdvanced.body, 'Rotation Z', 'rotation_z', -180, 180, 1, 0, 'Inclinazione laterale (roll).');
+
+    const resetCenterBtn = button('↺ Ripristina stage e inquadratura');
     resetCenterBtn.onclick = async () => {
       config.stage ||= {};
       config.stage.offset_x = 0.0;
@@ -2826,14 +3108,14 @@
       config.stage.rotation_y = 0.0;
       config.stage.rotation_z = 0.0;
       config.stage.scale = 1.0;
-      XRA.stage?.updateTransform();
+      config.stage.auto_center = false;
+      config.stage.scene_zoom = 1.0;
+      await XRA.stage?.apply?.();
+      XRA.stage?.resetCamera?.();
       await XRA.profileService.save();
       refreshAll();
     };
-    const refresh = button('↻ Refresh 3D stage files');
-    refresh.onclick = () => { stagesLoaded = false; refreshStages(true); };
-    btnRow.append(resetCenterBtn, refresh);
-    box.body.appendChild(btnRow);
+    stageAdvanced.body.appendChild(resetCenterBtn);
   }
 
   function downloadJSON(name, object) {
