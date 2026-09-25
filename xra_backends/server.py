@@ -581,6 +581,27 @@ class InferenceWorker:
             capture.CAPTURE.stop()
             engine.ENGINE.unload()
             return {"ok": True, **self._status()}
+
+        # The control socket re-sends `load` after every reconnect.  Do not
+        # pause/reopen the webcam when the requested engine is already live:
+        # EngineDispatcher.load() is idempotent too, but the old code paused
+        # capture before reaching that guard.
+        engine_state = engine.ENGINE.status()
+        try:
+            same_complexity = (
+                model_complexity is None
+                or int(model_complexity)
+                == int(engine_state.get("model_complexity", 1))
+            )
+        except (TypeError, ValueError):
+            same_complexity = False
+        if (
+            engine_state.get("ready")
+            and engine_state.get("model") == model
+            and same_complexity
+        ):
+            return {"ok": True, "unchanged": True, **self._status()}
+
         if not registry.is_installed(model):
             return {
                 "ok": False,

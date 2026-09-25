@@ -218,27 +218,38 @@ class ObjectDetectorWorker:
                     center_x = (bbox.origin_x + bbox.width / 2.0) / w
                     center_y = (bbox.origin_y + bbox.height / 2.0) / h
 
-                    # Determine hand proximity if hand landmarks are available
-                    assigned_hand = None
                     dists = {}
                     if hands_info:
-                        min_dist = 0.50  # Generous threshold in normalized screen distance
                         for hand_side in ("right", "left"):
                             wrist = hands_info.get(f"{hand_side}_wrist")
                             if wrist:
                                 wx, wy = wrist[0], wrist[1]
                                 dist = float(np.hypot(center_x - wx, center_y - wy))
-                                dists[hand_side] = round(dist, 3)
-                                if dist < min_dist:
-                                    min_dist = dist
-                                    assigned_hand = hand_side
+                                dists[hand_side] = dist
 
                     detections.append({
                         "category": category_name,
                         "score": round(score, 3),
                         "bbox": norm_bbox,
-                        "hand": assigned_hand,
+                        "_dists": dists,
+                        "hand": None,
                     })
+
+                # Assign each hand to at most ONE detection (the closest within 0.22 normalized distance)
+                MAX_HAND_DIST = 0.22
+                for hand_side in ("right", "left"):
+                    best_det = None
+                    best_dist = MAX_HAND_DIST
+                    for d in detections:
+                        dist = d.get("_dists", {}).get(hand_side)
+                        if dist is not None and dist < best_dist:
+                            best_dist = dist
+                            best_det = d
+                    if best_det is not None:
+                        best_det["hand"] = hand_side
+
+                for d in detections:
+                    d.pop("_dists", None)
 
                 payload = {
                     "type": "object_detection",

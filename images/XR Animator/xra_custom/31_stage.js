@@ -874,6 +874,7 @@
   }
 
   async function loadProp(propKey, glbPath, anchor) {
+    if (activeProps[propKey]) return activeProps[propKey];
     const scene = getScene();
     if (!scene) return null;
     const loader = await getGLTFLoader();
@@ -991,12 +992,35 @@
     const prop = activeProps[propKey];
     if (!prop || !prop.mesh) return;
 
-    const bone = getWristBone(handSide);
+    const manual = config.object_tracking?.manual_attach?.[propKey] || 'auto';
+    if (manual === 'hidden') {
+      prop.mesh.visible = false;
+      prop.currentHand = null;
+      return;
+    }
+    if (manual === 'desk') {
+      prop.currentHand = null;
+      prop.mesh.visible = true;
+      prop.mesh.position.set(...prop.staticPos);
+      prop.mesh.rotation.set(...prop.staticRot);
+      prop.mesh.scale.set(prop.staticScale, prop.staticScale, prop.staticScale);
+      return;
+    }
+
+    const actualHand = (manual === 'right' || manual === 'left') ? manual : handSide;
+    const bone = getWristBone(actualHand);
     if (!bone) return;
 
-    if (prop.currentHand !== handSide) {
-      prop.currentHand = handSide;
-      events.emit('prop-attached', { prop: propKey, hand: handSide });
+    // Hand exclusivity: only 1 prop per hand. Detach any other prop held on this hand
+    for (const [otherKey, otherProp] of Object.entries(activeProps)) {
+      if (otherKey !== propKey && otherProp.currentHand === actualHand) {
+        detachProp(otherKey);
+      }
+    }
+
+    if (prop.currentHand !== actualHand) {
+      prop.currentHand = actualHand;
+      events.emit('prop-attached', { prop: propKey, hand: actualHand });
     }
 
     prop.mesh.visible = true;
@@ -1007,6 +1031,19 @@
     const prop = activeProps[propKey];
     if (!prop || !prop.mesh) return;
 
+    const manual = config.object_tracking?.manual_attach?.[propKey] || 'auto';
+    if (manual === 'right' || manual === 'left') {
+      return;
+    }
+    if (manual === 'desk') {
+      prop.currentHand = null;
+      prop.mesh.visible = true;
+      prop.mesh.position.set(...prop.staticPos);
+      prop.mesh.rotation.set(...prop.staticRot);
+      prop.mesh.scale.set(prop.staticScale, prop.staticScale, prop.staticScale);
+      return;
+    }
+
     const changed = !!prop.currentHand || prop.mesh.visible;
     prop.mesh.visible = false;
     prop.currentHand = null;
@@ -1016,12 +1053,54 @@
 
   function resetAllProps() {
     for (const propKey of Object.keys(activeProps)) {
-      detachProp(propKey);
+      const prop = activeProps[propKey];
+      if (!prop || !prop.mesh) continue;
+      prop.mesh.visible = false;
+      prop.currentHand = null;
+      prop.lastSeenTime = 0;
     }
   }
 
-  function setObjectTrackingEnabled(enabled) {
-    if (!enabled) resetAllProps();
+  function applyManualAttaches() {
+    if (!config.object_tracking?.enabled) {
+      resetAllProps();
+      return;
+    }
+    const manualMap = config.object_tracking?.manual_attach || {};
+    for (const [propKey, prop] of Object.entries(activeProps)) {
+      if (!prop || !prop.mesh) continue;
+      const mode = manualMap[propKey] || 'auto';
+      if (mode === 'right' || mode === 'left') {
+        attachPropToHand(propKey, mode);
+      } else if (mode === 'desk') {
+        prop.currentHand = null;
+        prop.mesh.visible = true;
+        prop.mesh.position.set(...prop.staticPos);
+        prop.mesh.rotation.set(...prop.staticRot);
+        prop.mesh.scale.set(prop.staticScale, prop.staticScale, prop.staticScale);
+      } else if (mode === 'hidden') {
+        prop.currentHand = null;
+        prop.mesh.visible = false;
+      } else {
+        // 'auto'
+        if (prop.currentHand) {
+          prop.mesh.visible = true;
+        } else {
+          prop.mesh.visible = false;
+        }
+      }
+    }
+    updateHeldProps();
+  }
+
+  async function setObjectTrackingEnabled(enabled) {
+    if (!enabled) {
+      resetAllProps();
+    } else {
+      await initDefaultProps();
+      applyManualAttaches();
+      updateHeldProps();
+    }
   }
 
   function updateGripTransforms() {
@@ -1040,37 +1119,72 @@
 
     const now = performance.now();
     const detectedMap = {};
+    const CLASS_TO_PROP = {
+      'cell phone': 'cell_phone', 'remote': 'cell_phone',
+      'cup': 'cup', 'wine glass': 'cup',
+      'bottle': 'bottle',
+      'microphone': 'microphone',
+      'book': 'book',
+      'laptop': 'laptop',
+      'scissors': 'scissors',
+      'knife': 'knife',
+      'fork': 'fork',
+      'spoon': 'spoon',
+      'apple': 'apple',
+      'orange': 'orange',
+      'banana': 'banana',
+      'donut': 'donut',
+      'mouse': 'mouse',
+      'toothbrush': 'toothbrush',
+      'vase': 'vase',
+    };
+
+    const handCandidates = { right: null, left: null };
+
     for (const det of detections) {
       const cat = (det.category || '').toLowerCase();
-      // Map COCO class to prop key (loads props/<key>.glb)
-      const CLASS_TO_PROP = {
-        'cell phone': 'cell_phone', 'remote': 'cell_phone',
-        'cup': 'cup', 'wine glass': 'cup',
-        'bottle': 'bottle',
-        'microphone': 'microphone',
-        'book': 'book',
-        'laptop': 'laptop',
-        'scissors': 'scissors',
-        'knife': 'knife',
-        'fork': 'fork',
-        'spoon': 'spoon',
-        'apple': 'apple',
-        'orange': 'orange',
-        'banana': 'banana',
-        'donut': 'donut',
-        'mouse': 'mouse',
-        'toothbrush': 'toothbrush',
-        'vase': 'vase',
-      };
       let propKey = null;
       for (const [cls, key] of Object.entries(CLASS_TO_PROP)) {
         if (cat.includes(cls)) { propKey = key; break; }
       }
 
-      if (propKey) {
-        if (det.hand) {
-          detectedMap[propKey] = det.hand;
+      if (propKey && det.hand) {
+        // Skip props manually set to hidden
+        const manual = config.object_tracking?.manual_attach?.[propKey] || 'auto';
+        if (manual === 'hidden') continue;
+
+        // Custom AI triggers: check if user configured other props to trigger on this detection
+        const aiTriggers = config.object_tracking?.ai_trigger || {};
+        for (const [customKey, triggerClass] of Object.entries(aiTriggers)) {
+          if (triggerClass === propKey && customKey !== propKey) {
+            const customManual = config.object_tracking?.manual_attach?.[customKey] || 'auto';
+            if (customManual !== 'hidden') {
+              propKey = customKey;
+            }
+          }
         }
+
+        const score = Number(det.score || 0);
+        const hand = det.hand;
+        if (!handCandidates[hand] || score > handCandidates[hand].score) {
+          handCandidates[hand] = { propKey, score };
+        }
+      }
+    }
+
+    if (handCandidates.right) detectedMap[handCandidates.right.propKey] = 'right';
+    if (handCandidates.left) detectedMap[handCandidates.left.propKey] = 'left';
+
+    // Auto-load any detected prop that isn't loaded yet
+    for (const [propKey, targetHand] of Object.entries(detectedMap)) {
+      const manual = config.object_tracking?.manual_attach?.[propKey] || 'auto';
+      if (manual === 'hidden') continue;
+      if (!activeProps[propKey]) {
+        loadProp(propKey, `props/${propKey}.glb`).then((p) => {
+          if (p && config.object_tracking?.enabled) {
+            attachPropToHand(propKey, targetHand);
+          }
+        });
       }
     }
 
@@ -1078,6 +1192,9 @@
 
     // Attach or evaluate holding hysteresis
     for (const [propKey, prop] of Object.entries(activeProps)) {
+      const manual = config.object_tracking?.manual_attach?.[propKey] || 'auto';
+      if (manual !== 'auto') continue;
+
       const targetHand = detectedMap[propKey];
       if (targetHand) {
         prop.lastSeenTime = now;
@@ -1108,6 +1225,8 @@
     const now = performance.now();
     const raisedThreshold = getHandRaisedThreshold();
     for (const [propKey, prop] of Object.entries(activeProps)) {
+      const manual = config.object_tracking?.manual_attach?.[propKey] || 'auto';
+      if (manual !== 'auto') continue;
       if (!prop.currentHand) continue;
       const wristPos = getWristWorldPosition(prop.currentHand);
       const isHandRaised = wristPos ? wristPos.y > raisedThreshold : false;
@@ -1119,11 +1238,10 @@
 
   // Initialize default sample props if available
   async function initDefaultProps() {
-    if (!config.object_tracking?.enabled) return;
     const propFiles = await listProps();
     for (const file of propFiles) {
-      const name = file.replace(/^props\//, '').replace(/\.glb$/i, '');
-      if (DEFAULT_PROP_ANCHORS[name] && !activeProps[name]) {
+      const name = file.replace(/^props\//, '').replace(/\.(glb|gltf|pmx|x|fbx)$/i, '');
+      if (!activeProps[name]) {
         const prop = await loadProp(name, file);
         if (prop?.mesh) prop.mesh.visible = false;
       }
@@ -1136,7 +1254,13 @@
     setTimeout(setupTrackballCamera, 700);
     setTimeout(applySceneZoom, 800);
     setTimeout(applyAvatarPosition, 900);
-    setTimeout(initDefaultProps, 1200);
+    setTimeout(async () => {
+      await initDefaultProps();
+      if (config.object_tracking?.enabled) {
+        applyManualAttaches();
+        updateHeldProps();
+      }
+    }, 1200);
   });
   window.addEventListener('SA_Dungeon_onstart', () => {
     setTimeout(applyStage, 500);
@@ -1163,8 +1287,14 @@
     applyStage();
     applyAvatarPosition();
     setupTrackballCamera();
-    if (config.object_tracking?.enabled) updateGripTransforms();
-    else resetAllProps();
+    if (config.object_tracking?.enabled) {
+      initDefaultProps().then(() => {
+        applyManualAttaches();
+        updateGripTransforms();
+      });
+    } else {
+      resetAllProps();
+    }
   });
 
   XRA.stage = {
@@ -1186,6 +1316,7 @@
     updateGripTransforms,
     resetAllProps,
     setObjectTrackingEnabled,
+    applyManualAttaches,
     listStages,
     listProps,
     loadProp,

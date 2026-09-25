@@ -317,6 +317,11 @@
       `Backend ${backendLabel} · Mocap ${effectivePoseFps()} Hz`;
     if (worker) text += ` · AI ${worker}`;
     text += `\n${recLabel}${gate ? ' · Mic ' + gate : ''}`;
+    const renderInfo = window.MMD_SA?.THREEX?.renderer?.obj?.info;
+    const renderStats = renderInfo?.render || {};
+    const memoryStats = renderInfo?.memory || {};
+    text += `\nDBG cap ${Number(window.XRA_render_fps_limit || 0).toFixed(1)} · hidden ${document.hidden ? 1 : 0} · focus ${document.hasFocus?.() ? 1 : 0}`;
+    text += ` · calls ${Number(renderStats.calls || 0)} · tris ${Number(renderStats.triangles || 0)} · geo ${Number(memoryStats.geometries || 0)} · tex ${Number(memoryStats.textures || 0)}`;
     node.textContent = text;
   }
 

@@ -549,6 +549,12 @@ class _OpenCVGrabber:
                     pass
             return False
 
+        # Keep Linux hardware capture at the stable MJPEG 30 Hz mode.  The
+        # runtime/adaptive FPS value controls inference pacing, not the UVC
+        # transport: asking some cameras for MJPEG at 12/20/24 Hz makes their
+        # driver silently negotiate uncompressed YUYV instead.
+        hardware_fps = 30.0 if sys.platform.startswith("linux") else self.fps
+
         # Ask for MJPEG before geometry: on V4L2 this often unlocks low-cost
         # 16:9 modes and avoids USB/raw-frame bandwidth spikes.
         if sys.platform.startswith("linux"):
@@ -558,21 +564,26 @@ class _OpenCVGrabber:
                 pass
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-        cap.set(cv2.CAP_PROP_FPS, self.fps)
+        cap.set(cv2.CAP_PROP_FPS, hardware_fps)
         if sys.platform.startswith("linux"):
             # Verify if the driver kept MJPEG or fell back to uncompressed YUYV after geometry negotiation.
-            # If it fell back, re-apply MJPEG and enforce the hardware frame rate via v4l2-ctl.
+            # If it fell back, repeat the complete format/geometry/FPS sequence;
+            # changing FOURCC can reset both geometry and frame interval.
             try:
                 fourcc_val = int(cap.get(cv2.CAP_PROP_FOURCC) or 0)
                 cur_fmt = "".join(chr((fourcc_val >> (8 * s)) & 0xFF) for s in range(4)).rstrip("\x00").upper()
                 if cur_fmt != "MJPG":
                     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-                    cap.set(cv2.CAP_PROP_FPS, self.fps)
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                    cap.set(cv2.CAP_PROP_FPS, hardware_fps)
             except Exception:
                 pass
-            self.v4l2_optimization = _optimize_v4l2_device(self.device, target_fps=self.fps)
+            self.v4l2_optimization = _optimize_v4l2_device(
+                self.device, target_fps=hardware_fps
+            )
         if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 2)
         try:
             self.actual_width = int(round(cap.get(cv2.CAP_PROP_FRAME_WIDTH)))
             self.actual_height = int(round(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
@@ -1347,8 +1358,11 @@ class CaptureSource:
             if fps is not None:
                 tfps = max(1.0, min(30.0, float(fps)))
                 if abs(tfps - self._target_fps) > 0.5:
+                    # Runtime adaptation changes the inference cadence.  Reopening
+                    # the V4L2 device here blanks the webcam for its full USB/MJPEG
+                    # renegotiation window every time the renderer gets busy.
+                    # A later device/geometry reopen will pick up the new value.
                     self._target_fps = tfps
-                    needs_reopen = True
 
         if requested_mode is not None:
             mode_result = engine.ENGINE.configure_mode(requested_mode)

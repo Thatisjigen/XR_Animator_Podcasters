@@ -1209,7 +1209,7 @@
     toggle.onchange = async () => {
       config.object_tracking ||= {};
       config.object_tracking.enabled = toggle.checked;
-      XRA.stage?.setObjectTrackingEnabled?.(toggle.checked);
+      await XRA.stage?.setObjectTrackingEnabled?.(toggle.checked);
       XRA.xraBackend?.setObjectDetection(toggle.checked, {
         interval_ms: config.object_tracking.interval_ms ?? 350,
         min_score: config.object_tracking.min_score ?? 0.45,
@@ -1471,7 +1471,10 @@
     }
 
     bindRefresh(syncGripInputs);
-    propSelect.onchange = syncGripInputs;
+    propSelect.onchange = () => {
+      syncGripInputs();
+      XRA.stage?.applyManualAttaches?.();
+    };
 
     function applyGripTweak() {
       const pKey = propSelect.value;
@@ -1493,6 +1496,7 @@
         scale: Number(scaleInput.value),
       };
       syncGripInputs();
+      XRA.stage?.applyManualAttaches?.();
       XRA.stage?.updateGripTransforms?.();
     }
 
