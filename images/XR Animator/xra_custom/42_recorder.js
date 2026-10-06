@@ -1028,13 +1028,13 @@
       : `Audio ${(Number(c.audio_bps || 0) / 1000).toFixed(0)} kbps · ${c.audio_profile === 'call' ? tr('Call') : tr('Podcast')}${c.noise_gate && !(c.mode === 'audio' && variant === 'raw') ? ` · Gate ${Number(c.gate_threshold_db ?? -48)} dB (${state.gate_open ? 'OPEN' : 'CLOSED'})` : ''}`;
     const free = state.free_bytes == null ? '' : ` · disk ${humanBytes(state.free_bytes)} free`;
     const raw = state.raw_path ? `\nRAW mic: ${state.raw_path}` : '';
-    const sourceName = nativeXr ? 'XR native output' : (state.capture_strategy === 'classic_v74' ? 'Classic output' : 'Clean scene');
+    const sourceName = nativeModeActive ? 'XR native output' : (state.capture_strategy === 'classic_v74' ? 'Classic output' : 'Clean scene');
     const sourceLine = c.mode === 'audio' ? '' : `\nSource: ${sourceName} · ${state.source_render_width || sourceRenderWidth || '—'}×${state.source_render_height || sourceRenderHeight || '—'}${state.source_upscaled ? ' · ⚠ source below target' : ''}`;
     const formatHead = `${String(c.output_format || 'webm').toUpperCase()} · ${c.preset || 'CUSTOM'}`;
-    const progressLine = nativeXr && state.active
+    const progressLine = nativeModeActive && state.active
       ? `Native high-quality capture · final size on STOP${free} · 30 min ≈ ${humanBytes(estimateBytes(30))}`
       : `Written ${humanBytes(state.bytes)}${free} · 30 min ≈ ${humanBytes(estimateBytes(30))}`;
-    const targetPath = state.path || (nativeXr && state.active
+    const targetPath = state.path || (nativeModeActive && state.active
       ? `Target: ${(String(c.output_dir || '').trim() || '[XR Animator]/recordings')} / ${expandedFilename()}.${String(c.output_format || 'webm').toLowerCase()}`
       : 'Preparing file…');
     h.info.textContent = `${formatHead} · ${videoLine}\n${audioLine}${sourceLine}\n${progressLine}\n${targetPath}${raw}`;

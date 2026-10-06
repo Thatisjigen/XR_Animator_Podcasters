@@ -46,7 +46,6 @@ static void add_anti_throttling_flags(char **new_argv, int *next_arg) {
     new_argv[(*next_arg)++] = "--disable-background-timer-throttling";
     new_argv[(*next_arg)++] = "--disable-renderer-backgrounding";
     new_argv[(*next_arg)++] = "--disable-backgrounding-occluded-windows";
-    new_argv[(*next_arg)++] = "--ignore-gpu-blocklist";
     new_argv[(*next_arg)++] = "--enable-gpu-rasterization";
     new_argv[(*next_arg)++] = "--enable-webaudio-input";
     new_argv[(*next_arg)++] = "--auto-accept-camera-and-microphone-capture";
