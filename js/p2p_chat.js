@@ -51,6 +51,12 @@
   let isChatMinimized = false;
   let unreadChatCount = 0;
   let unreadDividerInserted = false;
+  // Audio output (sink) selected by the user. Kept separately from the <select> value so we
+  // can detect when the device disappears (e.g. PipeWire switching Speaker <-> Headphones profile).
+  let desiredOutputId = '';
+  let desiredOutputLabel = '';
+  let outputSwitchChain = Promise.resolve();
+  let deviceChangeTimer = null;
   const AVATAR_POSE_VERSION = 2;
   const AVATAR_FRAME_INTERVAL_MS = 33;
   const AVATAR_MAX_BUFFERED_BYTES = 128 * 1024;
@@ -1693,6 +1699,7 @@
     if (audioTracks.length) {
       ui.remoteAudio.srcObject = new MediaStream(audioTracks);
       ui.remoteAudio.play().catch(() => {});
+      logAudioOutput('remote audio attached (PeerJS)');
     }
     if (stream.getVideoTracks().length) {
       if (displayStream) {
@@ -2022,18 +2029,115 @@
     }
   }
 
-  async function switchAudioOutput(deviceId) {
-    syncDeviceSelects('audiooutput', deviceId);
-    const label = getDeviceLabel(ui.audioOutput, deviceId);
-    if (typeof ui.remoteAudio?.setSinkId === 'function') {
-      try {
-        await ui.remoteAudio.setSinkId(deviceId || '');
-        appendMessage('system', `🔊 Uscita audio aggiornata: ${label}`);
-      } catch (err) {
-        console.warn('[Studio Link] audio output sink error', err);
-        appendMessage('system', `⚠️ Errore impostazione uscita audio: ${err.message}`);
+  function logAudioOutput(event, extra = {}) {
+    console.info('[Studio Link][audio-out]', event, {
+      desiredOutputId,
+      desiredOutputLabel,
+      elementSinkId: ui.remoteAudio?.sinkId ?? '(n/a)',
+      hasRemoteAudio: Boolean(ui.remoteAudio?.srcObject),
+      remoteAudioPaused: ui.remoteAudio?.paused,
+      ...extra,
+    });
+  }
+
+  async function applySinkId(deviceId) {
+    const el = ui.remoteAudio;
+    try {
+      await el.setSinkId(deviceId);
+      return;
+    } catch (err) {
+      if (err?.name !== 'AbortError') throw err;
+      logAudioOutput('setSinkId AbortError, retrying with detached stream', { deviceId });
+    }
+    // Chromium may abort while moving a live WebRTC stream to another device (typically while
+    // PipeWire is recreating the sink). Detach the stream, set the sink, then reattach it so the
+    // output device is opened from scratch.
+    const src = el.srcObject;
+    el.srcObject = null;
+    try {
+      await el.setSinkId(deviceId);
+    } finally {
+      if (src) {
+        el.srcObject = src;
+        el.play().catch(() => {});
       }
     }
+  }
+
+  // Updates the desired output synchronously (so a concurrent devicechange reconciliation sees
+  // the latest user choice) and applies it through a serialized chain, so rapid repeated
+  // selections never run setSinkId concurrently.
+  function switchAudioOutput(deviceId, { reason = 'user' } = {}) {
+    desiredOutputId = deviceId || '';
+    desiredOutputLabel = desiredOutputId ? getDeviceLabel(ui.audioOutput, desiredOutputId) : '';
+    syncDeviceSelects('audiooutput', desiredOutputId);
+    const run = () => applyDesiredOutput(reason);
+    outputSwitchChain = outputSwitchChain.then(run, run);
+    return outputSwitchChain;
+  }
+
+  async function applyDesiredOutput(reason) {
+    const targetId = desiredOutputId;
+    const label = targetId ? (desiredOutputLabel || 'Uscita selezionata') : getDeviceLabel(ui.audioOutput, '');
+    if (typeof ui.remoteAudio?.setSinkId !== 'function') {
+      logAudioOutput('setSinkId not supported by this browser');
+      if (reason === 'user') appendMessage('system', '⚠️ Questo browser non permette di scegliere l’uscita audio: usa le impostazioni audio di sistema.');
+      return;
+    }
+    if (reason !== 'user' && ui.remoteAudio.sinkId === targetId) return;
+    try {
+      await applySinkId(targetId);
+      logAudioOutput('applied', { reason, targetId });
+      if (reason === 'user') appendMessage('system', `🔊 Uscita audio aggiornata: ${label}`);
+    } catch (err) {
+      console.warn('[Studio Link] audio output sink error', err);
+      logAudioOutput('failed', { reason, targetId, error: `${err?.name}: ${err?.message}` });
+      if (!targetId) {
+        appendMessage('system', `⚠️ Errore impostazione uscita audio predefinita: ${err?.message || err}`);
+        return;
+      }
+      // A newer choice was made meanwhile: let that one win.
+      if (desiredOutputId !== targetId) return;
+      // Fall back to the system default so the remote voice stays audible somewhere,
+      // instead of leaving the element bound to a dead/unopenable device.
+      desiredOutputId = '';
+      desiredOutputLabel = '';
+      syncDeviceSelects('audiooutput', '');
+      try {
+        await applySinkId('');
+        logAudioOutput('fallback to default applied');
+      } catch (fallbackErr) {
+        console.warn('[Studio Link] audio output fallback error', fallbackErr);
+      }
+      appendMessage('system', `⚠️ Uscita "${label}" non disponibile (${err?.name || 'errore'}): torno all’uscita predefinita di sistema.`);
+    }
+  }
+
+  // Called after every device enumeration: makes sure the <audio> element is really bound to
+  // an existing device. Handles sinks that vanish or are recreated with a new id (e.g. plugging
+  // headphones on laptops where Speaker and Headphones live in mutually exclusive profiles).
+  function reconcileAudioOutput(outputs) {
+    logAudioOutput('devices', {
+      outputs: outputs.map(device => `${device.label || '?'} [${device.deviceId.slice(0, 8)}]`),
+    });
+    if (typeof ui.remoteAudio?.setSinkId !== 'function') return;
+    if (!desiredOutputId) {
+      // Default requested: make sure the element is not stuck on a stale explicit sink.
+      if (ui.remoteAudio.sinkId) void switchAudioOutput('', { reason: 'reconcile' });
+      return;
+    }
+    if (outputs.some(device => device.deviceId === desiredOutputId)) {
+      if (ui.remoteAudio.sinkId !== desiredOutputId) void switchAudioOutput(desiredOutputId, { reason: 'reconcile' });
+      return;
+    }
+    const sameLabel = desiredOutputLabel && outputs.find(device => device.label === desiredOutputLabel);
+    if (sameLabel) {
+      logAudioOutput('device id changed, re-binding by label', { newId: sameLabel.deviceId });
+      void switchAudioOutput(sameLabel.deviceId, { reason: 'reconcile' });
+      return;
+    }
+    appendMessage('system', `⚠️ Uscita "${desiredOutputLabel || 'selezionata'}" scollegata o non più disponibile: passo all’uscita predefinita di sistema.`);
+    void switchAudioOutput('', { reason: 'reconcile' });
   }
 
   async function refreshDevices() {
@@ -2042,7 +2146,7 @@
       const devices = await navigator.mediaDevices.enumerateDevices();
       const fill = (select, kind, fallback) => {
         if (!select) return;
-        const selected = select.value;
+        const selected = kind === 'audiooutput' ? desiredOutputId : select.value;
         select.replaceChildren(new Option(fallback, ''));
         devices.filter(device => device.kind === kind).forEach((device, index) => {
           select.add(new Option(device.label || `${kind === 'audioinput' ? 'Microfono' : 'Uscita'} ${index + 1}`, device.deviceId));
@@ -2056,6 +2160,8 @@
 
       if (ui.sessionAudioInput && ui.audioInput) ui.sessionAudioInput.value = ui.audioInput.value;
       if (ui.sessionAudioOutput && ui.audioOutput) ui.sessionAudioOutput.value = ui.audioOutput.value;
+
+      reconcileAudioOutput(devices.filter(device => device.kind === 'audiooutput'));
     }
     catch (error) {
       console.warn('[Studio Link] devices', error);
@@ -2118,6 +2224,7 @@
         if (audioTracks.length) {
           ui.remoteAudio.srcObject = new MediaStream(audioTracks);
           ui.remoteAudio.play().catch(() => {});
+          logAudioOutput('remote audio attached (Nostr)');
         }
         appendMessage('system', 'Audio Nostr collegato');
         ui.muteBtn.disabled = false;
@@ -2469,7 +2576,12 @@
   ui.sessionAudioInput?.addEventListener('change', () => switchAudioInput(ui.sessionAudioInput.value));
   ui.audioOutput.addEventListener('change', () => switchAudioOutput(ui.audioOutput.value));
   ui.sessionAudioOutput?.addEventListener('change', () => switchAudioOutput(ui.sessionAudioOutput.value));
-  navigator.mediaDevices?.addEventListener?.('devicechange', refreshDevices);
+  navigator.mediaDevices?.addEventListener?.('devicechange', () => {
+    // PipeWire profile switches (e.g. headphones plugged) emit bursts of devicechange events:
+    // re-enumerate once they settle.
+    clearTimeout(deviceChangeTimer);
+    deviceChangeTimer = setTimeout(() => { void refreshDevices(); }, 400);
+  });
   window.addEventListener('beforeunload', event => {
     if (isStreamingAvatar && remoteReceiverRecording) {
       event.preventDefault();
