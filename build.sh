@@ -20,9 +20,11 @@ usage() {
 Usage: ./build.sh [VERSION]
        ./build.sh --version VERSION
 
-Build XR Animator and create release/XRA_vVERSION_Linux_x64.zip.
-If VERSION is omitted in an interactive terminal, the script asks for it.
-For unattended builds use the argument or XRA_RELEASE_VERSION.
+Build XR Animator. With a VERSION it also creates
+release/XRA_vVERSION_Linux_x64.zip.
+If VERSION is omitted in an interactive terminal, the script asks for it;
+an empty answer builds without the archive. Unattended builds create the
+archive only when the argument or XRA_RELEASE_VERSION is given.
 EOF
 }
 
@@ -56,18 +58,11 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if [ -z "$RELEASE_VERSION" ]; then
-  if [ -t 0 ]; then
-    version_input=""
-    read -r -p "Release version [1.0.0]: " version_input || true
-    RELEASE_VERSION="${version_input:-1.0.0}"
-  else
-    RELEASE_VERSION="1.0.0"
-    echo "[build] No release version supplied; using $RELEASE_VERSION."
-  fi
+if [ -z "$RELEASE_VERSION" ] && [ -t 0 ]; then
+  read -r -p "Release version (empty = no archive): " RELEASE_VERSION || true
 fi
 RELEASE_VERSION="${RELEASE_VERSION#v}"
-if [[ ! "$RELEASE_VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+if [ -n "$RELEASE_VERSION" ] && [[ ! "$RELEASE_VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
   echo "ERROR: invalid release version: $RELEASE_VERSION" >&2
   exit 2
 fi
@@ -86,7 +81,7 @@ echo " XR Animator v9.2 - bundled NW.js build"
 echo " Python 3.11 + native MediaPipe Tasks"
 echo "=================================================="
 echo "Repository: $ROOT_DIR"
-echo "Release:    $RELEASE_VERSION"
+echo "Release:    ${RELEASE_VERSION:-none (no archive)}"
 
 create_venv() {
   mkdir -p -- "$(dirname -- "$VENV_DIR")"
@@ -267,14 +262,18 @@ for doc_file in "LEGGIMI_PODCASTER.txt" "README_PODCASTER.txt" "xra_profile_exam
   fi
 done
 
-echo "[build] Creating clean release archive..."
-"$PYTHON_BIN" "$ROOT_DIR/tools/package_release.py" --version "$RELEASE_VERSION"
+if [ -n "$RELEASE_VERSION" ]; then
+  echo "[build] Creating clean release archive..."
+  "$PYTHON_BIN" "$ROOT_DIR/tools/package_release.py" --version "$RELEASE_VERSION"
 
-ARCHIVE_PATH="$ROOT_DIR/release/XRA_v${RELEASE_VERSION}_Linux_x64.zip"
-CHECKSUM_PATH="$ARCHIVE_PATH.sha256"
-if [ ! -f "$ARCHIVE_PATH" ] || [ ! -f "$CHECKSUM_PATH" ]; then
-  echo "ERROR: release archive or checksum was not produced." >&2
-  exit 7
+  ARCHIVE_PATH="$ROOT_DIR/release/XRA_v${RELEASE_VERSION}_Linux_x64.zip"
+  CHECKSUM_PATH="$ARCHIVE_PATH.sha256"
+  if [ ! -f "$ARCHIVE_PATH" ] || [ ! -f "$CHECKSUM_PATH" ]; then
+    echo "ERROR: release archive or checksum was not produced." >&2
+    exit 7
+  fi
+else
+  echo "[build] No release version: skipping the release archive."
 fi
 
 echo "=================================================="
@@ -282,6 +281,8 @@ echo "Build complete"
 echo "Bundle: $BUNDLE_DIR"
 echo "Launch: $BUNDLE_DIR/XR_Animator"
 echo "or:     $ROOT_DIR/XR_Animator"
-echo "Archive: $ARCHIVE_PATH"
-echo "SHA256:  $CHECKSUM_PATH"
+if [ -n "$RELEASE_VERSION" ]; then
+  echo "Archive: $ARCHIVE_PATH"
+  echo "SHA256:  $CHECKSUM_PATH"
+fi
 echo "=================================================="

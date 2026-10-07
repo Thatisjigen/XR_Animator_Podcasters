@@ -42,6 +42,23 @@ static void add_wayland_flags(char **new_argv, int *next_arg) {
     new_argv[(*next_arg)++] = "--enable-features=AcceleratedVideoDecodeLinuxGL,VaapiVideoDecoder,AcceleratedVideoDecodeLinuxZeroCopyGL";
 }
 
+/*
+ * Wayland screen/window sharing reads the compositor's PipeWire DMA-BUFs
+ * through the default EGL display. Under PRIME offload the NVIDIA EGL claims
+ * that display and cannot import the iGPU buffers, so the capture never
+ * starts. On X11 ANGLE renders through GLX: pinning EGL to Mesa keeps the
+ * capture on the compositor's GPU and the rendering on the NVIDIA one.
+ */
+static void keep_capture_egl_on_compositor_gpu(void) {
+    const char *mesa_vendor = "/usr/share/glvnd/egl_vendor.d/50_mesa.json";
+    if (getenv("__EGL_VENDOR_LIBRARY_FILENAMES") || access(mesa_vendor, R_OK) != 0) {
+        return;
+    }
+    setenv("__EGL_VENDOR_LIBRARY_FILENAMES", mesa_vendor, 1);
+    /* launcher.js drops the override again for the bundled server. */
+    setenv("XRA_EGL_VENDOR_OVERRIDE", "1", 1);
+}
+
 static void add_anti_throttling_flags(char **new_argv, int *next_arg) {
     new_argv[(*next_arg)++] = "--disable-background-timer-throttling";
     new_argv[(*next_arg)++] = "--disable-renderer-backgrounding";
@@ -91,6 +108,7 @@ static void apply_gpu_preference(const char *dir, char **new_argv, int *next_arg
             setenv("__VK_LAYER_NV_optimus", "NVIDIA_only", 1);
             if (is_hybrid_nvidia && use_wayland) {
                 new_argv[(*next_arg)++] = "--ozone-platform=x11";
+                keep_capture_egl_on_compositor_gpu();
             } else if (use_wayland) {
                 add_wayland_flags(new_argv, next_arg);
             }

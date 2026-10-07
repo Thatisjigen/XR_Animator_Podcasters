@@ -64,6 +64,17 @@ async function waitForServer(port) {
   return false;
 }
 
+// The native launcher may pin EGL to Mesa for the browser's screen capture;
+// MediaPipe in the bundled server keeps the system's EGL vendor selection.
+function serverEnv() {
+  const env = { ...process.env };
+  if (env.XRA_EGL_VENDOR_OVERRIDE === '1') {
+    delete env.__EGL_VENDOR_LIBRARY_FILENAMES;
+    delete env.XRA_EGL_VENDOR_OVERRIDE;
+  }
+  return env;
+}
+
 function stopOwnedServer() {
   if (!serverProcess || serverProcess.killed) return;
   try { serverProcess.kill('SIGTERM'); } catch (_) {}
@@ -243,6 +254,7 @@ async function start() {
   const port = await canBind(DEFAULT_PORT) ? DEFAULT_PORT : await freePort();
   serverProcess = childProcess.spawn(SERVER_PATH, ['--port', String(port), '--no-browser'], {
     cwd: APP_ROOT,
+    env: serverEnv(),
     stdio: 'inherit',
     windowsHide: true
   });

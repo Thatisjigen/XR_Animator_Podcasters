@@ -43,7 +43,6 @@
   let remoteStream = null;
   let remoteVideoStream = null;
   let isRemoteSharingScreen = false;
-  let remoteShareRequestedAt = 0;
   let connectedPeerId = '';
   let isLocalSharePreview = false;
   let closingMedia = false;
@@ -683,13 +682,9 @@
   }
 
   function isRemoteSharingActive() {
-    if (!isRemoteSharingScreen) return false;
-    const stream = remoteVideoStream || remoteStream;
-    const videoTracks = stream?.getVideoTracks?.() || [];
-    if (videoTracks.length) {
-      return videoTracks.some(t => t.readyState === 'live' && !t.muted);
-    }
-    return Boolean(remoteShareRequestedAt && (Date.now() - remoteShareRequestedAt < 4000));
+    // Remote video tracks stay muted until the first frame and while the shared
+    // surface is static, so `muted` must not decide whether the stage is shown.
+    return Boolean(isRemoteSharingScreen);
   }
 
   function isScreenShareActive() {
@@ -1451,15 +1446,12 @@
       }
       if (payload && typeof payload === 'object' && payload.type === 'xra-screen-start') {
         isRemoteSharingScreen = true;
-        remoteShareRequestedAt = Date.now();
         updateShareButtonsUi();
         appendMessage('system', 'L’altro partecipante ha avviato la condivisione dello schermo.');
-        setTimeout(() => updateShareButtonsUi(), 4200);
         return;
       }
       if (payload && typeof payload === 'object' && payload.type === 'xra-screen-stop') {
         isRemoteSharingScreen = false;
-        remoteShareRequestedAt = 0;
         resetVideoStage(false);
         updateShareButtonsUi();
         appendMessage('system', 'L’altro partecipante ha interrotto la condivisione dello schermo (la voce prosegue).');
@@ -1687,14 +1679,6 @@
             updateShareButtonsUi();
           }
         }, { once: true });
-        track.addEventListener('mute', () => {
-          updateShareButtonsUi();
-          updateSessionLayout();
-        });
-        track.addEventListener('unmute', () => {
-          updateShareButtonsUi();
-          updateSessionLayout();
-        });
       });
       ui.mainVideo.srcObject = new MediaStream(videoTracks);
       ui.mainVideo.style.display = 'block';
@@ -1828,9 +1812,12 @@
   function screenShareConstraints() {
     return {
       video: {
-        frameRate: { ideal: 30, max: 30 }
+        frameRate: { ideal: 30, max: 30 },
+        displaySurface: 'window'
       },
-      audio: false
+      audio: false,
+      surfaceSwitching: 'include',
+      selfBrowserSurface: 'exclude'
     };
   }
 
@@ -1860,10 +1847,7 @@
           ui.muteBtn.disabled = false;
           updateMuteButtonUi();
         } else if (mode === 'screen') {
-          displayStream = await Promise.race([
-          navigator.mediaDevices.getDisplayMedia(screenShareConstraints()),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout richiesta schermo (Il sistema Wayland/PipeWire non risponde)')), 8000))
-        ]);
+          displayStream = await navigator.mediaDevices.getDisplayMedia(screenShareConstraints());
           await nostrAdapter?.setLocalScreen(displayStream);
           showVideo(displayStream, true);
           updateShareButtonsUi();
@@ -1871,10 +1855,6 @@
           screenTrack.addEventListener('ended', () => {
             if (!displayStream) return;
             stopScreenShare('Condivisione schermo interrotta');
-          }, { once: true });
-          screenTrack.addEventListener('mute', () => {
-            if (!displayStream) return;
-            stopScreenShare('Condivisione schermo non disponibile (flusso video non pronto)');
           }, { once: true });
           appendMessage('system', 'Condivisione schermo avviata');
         }
@@ -1897,14 +1877,12 @@
     }
     try {
       const audio = await getLocalAudio();
-      
-      let newDisplayStream = null;
-      if (mode === 'screen') {
-        newDisplayStream = await Promise.race([
-          navigator.mediaDevices.getDisplayMedia(screenShareConstraints()),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout richiesta schermo (Il sistema Wayland/PipeWire non risponde)')), 8000))
-        ]);
-      }
+      // Pick the surface before touching the voice call, so a cancelled or
+      // failed picker leaves the running call alone. The system picker can
+      // legitimately stay open for a long time: never race it with a timeout.
+      const newDisplayStream = mode === 'screen'
+        ? await navigator.mediaDevices.getDisplayMedia(screenShareConstraints())
+        : null;
 
       if (mediaCall) {
         closingMedia = true;
@@ -1917,7 +1895,7 @@
       }
 
       let outgoing = new MediaStream(audio.getAudioTracks());
-      if (mode === 'screen' && newDisplayStream) {
+      if (newDisplayStream) {
         displayStream = newDisplayStream;
         outgoing = new MediaStream([...audio.getAudioTracks(), ...displayStream.getVideoTracks()]);
         showVideo(displayStream, true);
@@ -1926,11 +1904,6 @@
         screenTrack.addEventListener('ended', () => {
           if (!displayStream) return;
           stopScreenShare('Condivisione schermo interrotta');
-        }, { once: true });
-        screenTrack.addEventListener('mute', () => {
-          if (!displayStream) return;
-          console.warn('[Studio Link] screen track muted');
-          stopScreenShare('Condivisione schermo non disponibile (flusso video non pronto)');
         }, { once: true });
       }
       const call = peer.call(target, outgoing, { metadata: { mode } });
@@ -1947,15 +1920,13 @@
         stopTracks(displayStream);
         displayStream = null;
       }
-      if (connection?.open) {
-        try { connection.send({ type: 'xra-screen-stop' }); } catch (_) {}
-      }
       updateShareButtonsUi();
       if (!mediaCall) {
         stopTracks(localAudio);
         localAudio = null;
       }
-      if (!displayStream) resetVideoStage(true);
+      // Keep the remote voice playing when the voice call survived the failure.
+      if (!displayStream) resetVideoStage(!mediaCall);
     }
   }
 
@@ -2240,16 +2211,13 @@
         }
         if (payload && typeof payload === 'object' && payload.type === 'xra-screen-start') {
           isRemoteSharingScreen = true;
-          remoteShareRequestedAt = Date.now();
           if (remoteVideoStream) showVideo(remoteVideoStream, false);
           appendMessage('system', 'L’altro partecipante ha avviato la condivisione dello schermo.');
           updateShareButtonsUi();
-          setTimeout(() => updateShareButtonsUi(), 4200);
           return;
         }
         if (payload && typeof payload === 'object' && payload.type === 'xra-screen-stop') {
           isRemoteSharingScreen = false;
-          remoteShareRequestedAt = 0;
           resetVideoStage(false);
           updateShareButtonsUi();
           appendMessage('system', 'L’altro partecipante ha interrotto la condivisione dello schermo (la voce prosegue).');
@@ -2715,8 +2683,9 @@
     ui.nostrTokenInput.value = nostrParam;
     connectWithNostrToken(nostrParam);
   } else if (peerParam) {
+    // setEngine() creates the Peer; a second one would race the first for the
+    // auto-connect and could leave the wrong ID on screen.
     setEngine('peerjs');
-    initializePeer();
   } else {
     setEngine(currentEngine);
   }
