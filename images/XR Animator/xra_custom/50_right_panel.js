@@ -532,6 +532,42 @@
       sub: 'Podcast disattiva l\'elaborazione aggressiva del browser preservando il timbro naturale; Call attiva AGC ed eco-cancellation.'
     });
 
+    const cleanupToggle = document.createElement('input');
+    cleanupToggle.type = 'checkbox';
+    const noiseControl = document.createElement('input');
+    noiseControl.type = 'range';
+    noiseControl.min = '0'; noiseControl.max = '20'; noiseControl.step = '1';
+    const noiseValue = el('div', 'xra-sub');
+    const noiseWrap = el('div', 'xra-stack-control');
+    noiseWrap.append(noiseControl, noiseValue);
+    const refreshCleanup = () => {
+      cleanupToggle.checked = config.recorder?.audio_cleanup !== false;
+      noiseControl.disabled = !cleanupToggle.checked;
+      noiseControl.value = String(config.recorder?.noise_reduction_db ?? 10);
+      noiseValue.textContent = `${noiseControl.value} dB`;
+    };
+    bindRefresh(refreshCleanup);
+    cleanupToggle.onchange = async () => {
+      config.recorder.audio_cleanup = cleanupToggle.checked;
+      refreshCleanup();
+      await XRA.profileService.save();
+    };
+    row(box.body, 'Voice cleanup', cleanupToggle, {
+      reset: async () => { config.recorder.audio_cleanup = true; refreshCleanup(); await XRA.profileService.save(); },
+      isDefault: () => config.recorder?.audio_cleanup !== false,
+      sub: 'Applies noise reduction, voice EQ and automatic volume with peak protection when saving. Applies to the next recording; RAW stays unchanged.'
+    });
+    noiseControl.oninput = () => {
+      config.recorder.noise_reduction_db = Number(noiseControl.value);
+      noiseValue.textContent = `${noiseControl.value} dB`;
+    };
+    noiseControl.onchange = () => XRA.profileService.save();
+    row(box.body, 'Noise reduction', noiseWrap, {
+      reset: async () => { config.recorder.noise_reduction_db = 10; refreshCleanup(); await XRA.profileService.save(); },
+      isDefault: () => (config.recorder?.noise_reduction_db ?? 10) === 10,
+      sub: 'Lower values preserve more room sound; higher values reduce more noise. At 0 dB only EQ and volume processing remain.'
+    });
+
     // --- Sezione Lip-sync avatar ---
     const lipSecTitle = el('div', 'xra-section-title', '👄 Parametri Lip-sync (Bocca avatar)');
     lipSecTitle.style.cssText = 'margin:12px 0 6px;font-size:12px;font-weight:600;color:#88c0d0;';

@@ -271,6 +271,8 @@
       video_bps: 3000000,
       audio_bps: 128000,
       audio_profile: 'podcast',
+      audio_cleanup: true,
+      noise_reduction_db: 10,
       noise_gate: true,
       gate_threshold_db: -48,
       gate_noise_floor_db: null,

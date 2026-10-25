@@ -22,6 +22,10 @@
   // Source strings intentionally use standard UI wording.
   const D = {
   "en": {
+    "Voice cleanup": "Voice cleanup",
+    "Noise reduction": "Noise reduction",
+    "Applies noise reduction, voice EQ and automatic volume with peak protection when saving. Applies to the next recording; RAW stays unchanged.": "Applies noise reduction, voice EQ and automatic volume with peak protection when saving. Applies to the next recording; RAW stays unchanged.",
+    "Lower values preserve more room sound; higher values reduce more noise. At 0 dB only EQ and volume processing remain.": "Lower values preserve more room sound; higher values reduce more noise. At 0 dB only EQ and volume processing remain.",
     "1 frame": "1 frame",
     "1080p (Full HD - Consigliato)": "1080p (Full HD · Recommended)",
     "1080p (Full HD · Recommended)": "1080p (Full HD · Recommended)",
@@ -401,6 +405,10 @@
     "Opens or closes this section.": "Opens or closes this section."
   },
   "it": {
+    "Voice cleanup": "Pulizia voce",
+    "Noise reduction": "Riduzione rumore",
+    "Applies noise reduction, voice EQ and automatic volume with peak protection when saving. Applies to the next recording; RAW stays unchanged.": "Applica riduzione rumore, equalizzazione voce e volume automatico con protezione dei picchi al salvataggio. Vale dalla prossima registrazione; il RAW resta invariato.",
+    "Lower values preserve more room sound; higher values reduce more noise. At 0 dB only EQ and volume processing remain.": "Valori più bassi conservano più suono della stanza; valori più alti attenuano più rumore. A 0 dB restano solo equalizzazione e regolazione del volume.",
     "+ Importa scenografia 3D (.glb / .fbx)": "+ Importa scenografia 3D (.glb / .fbx)",
     "-- choose 3D stage --": "-- scegli ambiente 3D --",
     "-- choose background --": "-- scegli sfondo --",

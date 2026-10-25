@@ -11,6 +11,7 @@ import uuid
 import subprocess
 import sys
 import os
+import math
 
 if getattr(sys, "frozen", False):
     import importlib.machinery
@@ -95,7 +96,7 @@ STAGE_CACHE = {"ts": 0.0, "files": []}
 PROP_CACHE = {"ts": 0.0, "files": []}
 RECORDINGS_DIR = ROOT / "recordings"
 RECORDING_MANIFEST_DIR = ROOT / ".xra_recording_sessions"
-XRA_RECORDER_API_VERSION = 766
+XRA_RECORDER_API_VERSION = 767
 RECORDING_MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
 AVATAR_DIR = ROOT / "avatars"
 AVATAR_DIR.mkdir(parents=True, exist_ok=True)
@@ -150,6 +151,7 @@ DEFAULT_CUSTOM = {
     "recorder": {
         "preset": "PODCAST", "mode": "video_audio", "audio_only_variant": "both", "width": 1280, "height": 720, "fps": 30,
         "video_bps": 3000000, "audio_bps": 128000, "audio_profile": "podcast",
+        "audio_cleanup": True, "noise_reduction_db": 10,
         "noise_gate": True, "gate_threshold_db": -48, "gate_noise_floor_db": None, "gate_hold_ms": 160, "gate_release_ms": 120,
         "segment_minutes": 0, "output_format": "webm", "output_dir": "",
         "filename": "XR_Animator_{date}_{time}", "raw_audio_backup": True, "raw_audio_format": "flac", "hardware_encode": "auto", "chroma_safe": True, "force_render_resolution": True, "capture_source": "classic_v74",
@@ -1107,6 +1109,8 @@ def write_recording_manifest(session, info, error=""):
             "output_format": info.get("output_format", "webm"), "mode": info.get("mode", "video_audio"),
             "video_bps": int(info.get("video_bps") or 0), "audio_bps": int(info.get("audio_bps") or 0),
             "hardware_encode": info.get("hardware_encode", "auto"), "error": str(error or ""),
+            "audio_cleanup": bool(info.get("audio_cleanup")),
+            "noise_reduction_db": info.get("noise_reduction_db", 10),
         }
         tmp = _manifest_path(session).with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -1170,39 +1174,105 @@ def _run_ffmpeg_with_fallback(base_cmd, output_path, requested="auto"):
     raise RuntimeError(last_err or "FFmpeg H.264 conversion failed")
 
 
+def _measure_recording_loudness(ffmpeg, source, filters=""):
+    meter = "loudnorm=I=-18:TP=-1:LRA=11:print_format=json"
+    result = subprocess.run(
+        [ffmpeg, "-hide_banner", "-nostdin", "-nostats", "-i", str(source),
+         "-vn", "-af", f"{filters},{meter}" if filters else meter,
+         "-f", "null", "-"], capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or "Audio loudness measurement failed").strip()[-3000:])
+    matches = re.findall(r'\{\s*"input_i".*?\}', result.stderr, flags=re.S)
+    if not matches:
+        raise RuntimeError("FFmpeg did not return an audio loudness measurement")
+    measured = json.loads(matches[-1])
+    return {key: float(measured[key]) for key in ("input_i", "input_tp")}
+
+
+def _recording_audio_filter(info, source, ffmpeg):
+    if not info.get("audio_cleanup") or info.get("mode") == "video":
+        return ""
+    measured = _measure_recording_loudness(ffmpeg, source)
+    if not all(math.isfinite(value) for value in measured.values()):
+        return ""
+    target = -18.0
+    gain = max(-24.0, min(30.0, target - measured["input_i"]))
+    noise_floor = max(-80.0, min(-20.0, -32.97 - gain))
+    reduction = max(0.0, min(20.0, float(info.get("noise_reduction_db", 10))))
+    chain = ["aresample=48000", "apad=pad_dur=0.025", "highpass=f=75:p=2"]
+    if reduction > 0:
+        chain += [f"afftdn=nr={reduction:.3f}:nf={noise_floor:.3f}:tn=0:gs=10"]
+    if reduction == 0:
+        chain.remove("apad=pad_dur=0.025")
+    chain += [
+        "equalizer=f=220:t=q:w=0.8:g=-1.5",
+        "equalizer=f=2600:t=q:w=0.8:g=2",
+    ]
+    if reduction > 0:
+        chain += ["atrim=start=0.025", "asetpts=PTS-0.025/TB"]
+    chain += [
+        f"volume={gain:.5f}dB",
+        "acompressor=threshold=0.125893:ratio=1.6:attack=20:release=180:makeup=1:knee=2.82843",
+    ]
+    treatment = ",".join(chain)
+    cleaned = _measure_recording_loudness(ffmpeg, source, treatment)
+    makeup = target - cleaned["input_i"] if math.isfinite(cleaned["input_i"]) else 0
+    makeup = max(-12.0, min(12.0, makeup))
+    return (f"{treatment},volume={makeup:.5f}dB,"
+            "alimiter=limit=0.891251:attack=5:release=80:level=0:latency=1")
+
+
 def convert_recording(info):
     source = Path(info["path"]); final = Path(info["final_path"]); fmt = str(info.get("output_format", "webm")).lower()
-    if source == final: return final
+    cleanup = bool(info.get("audio_cleanup")) and info.get("mode") != "video"
+    if source == final and not cleanup: return final
     ffmpeg = find_ffmpeg()
     if not ffmpeg: raise RuntimeError("FFmpeg is required for this output format. Checked PATH and common Linux locations (/usr/bin, /usr/local/bin, /snap/bin).")
     mode = info.get("mode", "video_audio")
     video_bps = max(100000, int(info.get("video_bps") or 3000000)); audio_bps = max(32000, int(info.get("audio_bps") or 128000))
+    filters = _recording_audio_filter(info, source, ffmpeg)
+    if source == final and not filters: return final
+    audio_options = ["-af", filters, "-ar", "48000"] if filters else []
     common = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", str(source)]
-    if fmt == "mkv":
-        result = subprocess.run(common + ["-map", "0", "-c", "copy", str(final)], capture_output=True, text=True)
+    output = final.with_name(f".{final.stem}_{uuid.uuid4().hex}.final{final.suffix}")
+    try:
+        _convert_recording_output(common, output, fmt, mode, video_bps, audio_bps,
+                                  audio_options, info.get("hardware_encode", "auto"))
+        if not output.exists() or output.stat().st_size <= 0:
+            raise RuntimeError(f"Final recording was not created: {final}")
+        os.replace(output, final)
+    finally:
+        output.unlink(missing_ok=True)
+    if source != final:
+        source.unlink(missing_ok=True)
+    return final
+
+
+def _convert_recording_output(common, output, fmt, mode, video_bps, audio_bps, audio_options, hardware):
+    if fmt in {"mkv", "webm"}:
+        options = (["-map", "0", "-c:v", "copy", "-c:a", "libopus", "-b:a", str(audio_bps)]
+                   if audio_options else ["-map", "0", "-c", "copy"])
+        result = subprocess.run(common + options + audio_options + [str(output)], capture_output=True, text=True)
         if result.returncode != 0: raise RuntimeError((result.stderr or "FFmpeg MKV remux failed").strip()[-3000:])
     elif fmt == "mp4":
         if mode == "audio":
-            result = subprocess.run(common + ["-vn", "-c:a", "aac", "-b:a", str(audio_bps), "-movflags", "+faststart", str(final)], capture_output=True, text=True)
+            result = subprocess.run(common + audio_options + ["-vn", "-c:a", "aac", "-b:a", str(audio_bps), "-movflags", "+faststart", str(output)], capture_output=True, text=True)
             if result.returncode != 0: raise RuntimeError((result.stderr or "FFmpeg MP4 audio conversion failed").strip()[-3000:])
         elif mode == "video":
-            _run_ffmpeg_with_fallback(common + ["-an", "-b:v", str(video_bps), "-pix_fmt", "yuv420p", "-movflags", "+faststart"], final, info.get("hardware_encode", "auto"))
+            _run_ffmpeg_with_fallback(common + ["-an", "-b:v", str(video_bps), "-pix_fmt", "yuv420p", "-movflags", "+faststart"], output, hardware)
         else:
-            _run_ffmpeg_with_fallback(common + ["-b:v", str(video_bps), "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", str(audio_bps), "-movflags", "+faststart"], final, info.get("hardware_encode", "auto"))
+            _run_ffmpeg_with_fallback(common + audio_options + ["-b:v", str(video_bps), "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", str(audio_bps), "-movflags", "+faststart"], output, hardware)
     elif fmt == "flac":
-        result = subprocess.run(common + ["-vn", "-c:a", "flac", str(final)], capture_output=True, text=True)
+        result = subprocess.run(common + audio_options + ["-vn", "-c:a", "flac", str(output)], capture_output=True, text=True)
         if result.returncode != 0: raise RuntimeError((result.stderr or "FFmpeg FLAC conversion failed").strip()[-3000:])
     elif fmt == "wav":
-        result = subprocess.run(common + ["-vn", "-c:a", "pcm_s16le", str(final)], capture_output=True, text=True)
+        result = subprocess.run(common + audio_options + ["-vn", "-c:a", "pcm_s24le" if audio_options else "pcm_s16le", str(output)], capture_output=True, text=True)
         if result.returncode != 0: raise RuntimeError((result.stderr or "FFmpeg WAV conversion failed").strip()[-3000:])
     elif fmt == "opus":
-        result = subprocess.run(common + ["-vn", "-c:a", "libopus", "-b:a", str(audio_bps), str(final)], capture_output=True, text=True)
+        result = subprocess.run(common + audio_options + ["-vn", "-c:a", "libopus", "-b:a", str(audio_bps), str(output)], capture_output=True, text=True)
         if result.returncode != 0: raise RuntimeError((result.stderr or "FFmpeg Opus conversion failed").strip()[-3000:])
     else: raise RuntimeError(f"Unsupported output format: {fmt}")
-    if not final.exists() or final.stat().st_size <= 0: raise RuntimeError(f"Final recording was not created: {final}")
-    try: source.unlink(missing_ok=True)
-    except Exception: pass
-    return final
 
 
 def finalize_native_recording(video_info, audio_info=None):
@@ -1223,7 +1293,7 @@ def finalize_native_recording(video_info, audio_info=None):
         raise RuntimeError(f"Native XR video source is missing or empty: {video}")
 
     if audio is None:
-        if fmt == "webm":
+        if fmt == "webm" and not video_info.get("audio_cleanup"):
             final.parent.mkdir(parents=True, exist_ok=True)
             if final.exists(): final.unlink()
             shutil.move(str(video), str(final))
@@ -1238,12 +1308,31 @@ def finalize_native_recording(video_info, audio_info=None):
 
     common = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
               "-i", str(video), "-i", str(audio), "-map", "0:v:0", "-map", "1:a:0", "-shortest"]
+    filters = _recording_audio_filter(audio_info, audio, ffmpeg)
+    if filters:
+        common += ["-af", filters, "-ar", "48000"]
+    output = final.with_name(f".{final.stem}_{uuid.uuid4().hex}.final{final.suffix}")
+    try:
+        _mux_native_output(common, output, fmt, video_bps, audio_bps, video_info.get("hardware_encode", "auto"))
+        if not output.exists() or output.stat().st_size <= 0:
+            raise RuntimeError(f"Final native recording was not created: {final}")
+        os.replace(output, final)
+    finally:
+        output.unlink(missing_ok=True)
+    try: video.unlink(missing_ok=True)
+    except Exception: pass
+    try: audio.unlink(missing_ok=True)
+    except Exception: pass
+    return final
+
+
+def _mux_native_output(common, final, fmt, video_bps, audio_bps, hardware):
 
     if fmt == "mp4":
         _run_ffmpeg_with_fallback(
             common + ["-b:v", str(video_bps), "-pix_fmt", "yuv420p",
                       "-c:a", "aac", "-b:a", str(audio_bps), "-movflags", "+faststart"],
-            final, video_info.get("hardware_encode", "auto")
+            final, hardware
         )
     elif fmt == "mkv":
         cmd = common + ["-c:v", "copy", "-c:a", "libopus", "-b:a", str(audio_bps), str(final)]
@@ -1266,15 +1355,6 @@ def finalize_native_recording(video_info, audio_info=None):
                 raise RuntimeError((result.stderr or "FFmpeg native WebM mux failed").strip()[-3000:])
     else:
         raise RuntimeError(f"Unsupported native output format: {fmt}")
-
-    if not final.exists() or final.stat().st_size <= 0:
-        raise RuntimeError(f"Final native recording was not created: {final}")
-    try: video.unlink(missing_ok=True)
-    except Exception: pass
-    try: audio.unlink(missing_ok=True)
-    except Exception: pass
-    return final
-
 
 _proc_cpu_last_time = 0.0
 _proc_cpu_last_monotonic = 0.0
@@ -1516,7 +1596,8 @@ class Handler(SimpleHTTPRequestHandler):
 
         if path == "/__xra_recording/capabilities":
             caps = ffmpeg_encoders()
-            caps.update({"default_dir": str(RECORDINGS_DIR.resolve()), "recoveries": len(recovery_list())})
+            caps.update({"default_dir": str(RECORDINGS_DIR.resolve()), "recoveries": len(recovery_list()),
+                         "api_version": XRA_RECORDER_API_VERSION, "audio_cleanup_preset": "podcast"})
             self.send_json(caps)
             return
 
@@ -1801,10 +1882,15 @@ class Handler(SimpleHTTPRequestHandler):
                 mime = str(obj.get("mime_type") or "video/webm")
                 fmt = str(obj.get("output_format") or "webm").lower()
                 mode = str(obj.get("mode") or "video_audio")
+                audio_cleanup = obj.get("audio_cleanup") is True and mode != "video"
+                noise_reduction = float(obj.get("noise_reduction_db", 10))
+                if not math.isfinite(noise_reduction):
+                    raise ValueError("Noise reduction must be a finite number")
+                noise_reduction = max(0.0, min(20.0, noise_reduction))
                 src_ext = source_extension_for_mime(mime, obj.get("source_format") or "webm")
                 final_ext = final_extension(fmt, mode)
                 temporary = bool(obj.get("temporary"))
-                force_source_temp = bool(obj.get("force_source_temp")) or temporary
+                force_source_temp = bool(obj.get("force_source_temp")) or temporary or audio_cleanup
                 if temporary:
                     final_path = folder / f".{base}_{session}.temp{final_ext}"
                 else:
@@ -1819,6 +1905,7 @@ class Handler(SimpleHTTPRequestHandler):
                     "output_format": fmt, "mode": mode, "temporary": temporary,
                     "video_bps": int(obj.get("video_bps") or 0), "audio_bps": int(obj.get("audio_bps") or 0),
                     "hardware_encode": str(obj.get("hardware_encode") or "auto"),
+                    "audio_cleanup": audio_cleanup, "noise_reduction_db": noise_reduction,
                 }
                 with RECORDING_LOCK:
                     RECORDING_SESSIONS[session] = info

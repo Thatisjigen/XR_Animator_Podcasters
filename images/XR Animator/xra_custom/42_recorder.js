@@ -787,13 +787,16 @@
 
   async function beginServerSession(state, { mimeType, mode, outputFormat, filename, audioBps = null, temporary = false, forceSourceTemp = false }) {
     const c = cfg();
+    const cleanup = c.audio_cleanup !== false && mode !== 'video' && state.kind !== 'raw'
+      && !(mode === 'audio' && audioOnlyVariant() === 'raw');
     const response = await fetch('/__xra_recording/start', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         filename, mime_type: mimeType || (mode === 'audio' ? 'audio/webm' : 'video/webm'), source_format: 'webm',
         mode, output_format: outputFormat, output_dir: c.output_dir || '',
         video_bps: Number(c.video_bps || 0), audio_bps: Number(audioBps ?? c.audio_bps ?? 0),
-        hardware_encode: c.hardware_encode || 'auto', temporary: !!temporary, force_source_temp: !!forceSourceTemp
+        hardware_encode: c.hardware_encode || 'auto', temporary: !!temporary, force_source_temp: !!forceSourceTemp,
+        audio_cleanup: cleanup, noise_reduction_db: Number(c.noise_reduction_db ?? 10)
       })
     });
     const data = await response.json().catch(() => ({}));
@@ -945,12 +948,14 @@
       const oldSession = mainSession;
       await stopMediaRecorder(recorder);
       await flushSession(oldSession);
+      if (!stopRequested) {
+        segmentIndex++;
+        await buildMainRecorder({ reuseStream: true });
+        recorder.start(5000);
+      }
       const closed = await finishServerSession(oldSession);
       completedBytes += Number(closed?.bytes || oldSession?.bytes || 0);
       if (stopRequested) return false;
-      segmentIndex++;
-      await buildMainRecorder({ reuseStream: true });
-      recorder.start(5000);
       scheduleSegmentRotation();
       return true;
     })();
@@ -1098,6 +1103,11 @@
     let final = null;
     let rawFinal = null;
 
+    const stopped = await Promise.allSettled([
+      stopMediaRecorder(rawRecorder), stopMediaRecorder(recorder)
+    ]);
+    stopped.forEach(result => { if (result.status === 'rejected') failure ||= result.reason; });
+
     if (rotationPromise) {
       try { await rotationPromise; } catch (e) { failure ||= e; }
     }
@@ -1110,7 +1120,6 @@
       try { final = await finishServerSession(mainSession); } catch (e) { failure ||= e; }
     }
 
-    try { await stopMediaRecorder(rawRecorder); } catch (e) { failure ||= e; }
     try { await flushSession(rawSession); } catch (e) { failure ||= e; }
     try { rawFinal = await finishServerSession(rawSession); } catch (e) { failure ||= e; }
 
